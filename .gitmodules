@@ -1,3 +1,6 @@
 [submodule "superhuman"]
 	path = superhuman
 	url = git@github.com:georgolden/superhuman.git
+[submodule "PocketFlow-Typescript"]
+	path = PocketFlow-Typescript
+	url = git@github.com:The-Pocket/PocketFlow-Typescript.git
