@@ -1,0 +1,24 @@
+{
+  "name": "agi",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/georgolden/agi.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/georgolden/agi/issues"
+  },
+  "homepage": "https://github.com/georgolden/agi#readme",
+  "dependencies": {
+    "create-pocketflow": "^0.1.3"
+  }
+}
