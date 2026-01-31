@@ -1,0 +1,43 @@
+{
+  "name": "reminder-bot",
+  "version": "0.1.0",
+  "description": "TypeScript template for PocketFlow",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "dev": "ts-node src/index.ts",
+    "start": "npm run build && node dist/index.js",
+    "test": "vitest",
+    "lint": "eslint src --ext .ts,.js,.jsx,.tsx"
+  },
+  "keywords": [
+    "pocketflow",
+    "template",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^9.23.0",
+    "@stylistic/eslint-plugin": "^5.7.1",
+    "@types/node": "^25.1.0",
+    "@types/prompt-sync": "^4.2.3",
+    "@typescript-eslint/eslint-plugin": "^8.28.0",
+    "@typescript-eslint/parser": "^8.28.0",
+    "eslint": "^9.23.0",
+    "globals": "^17.2.0",
+    "prettier": "^3.8.1",
+    "prompt-sync": "^4.2.0",
+    "ts-node": "^10.9.2",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.28.0",
+    "vitest": "^4.0.18"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "openai": "^6.17.0",
+    "pocketflow": "^1.0.4"
+  }
+}
