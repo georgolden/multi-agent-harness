@@ -75,6 +75,23 @@ export function generateReminderId(): string {
 }
 
 /**
+ * Map database row (snake_case) to Reminder type (camelCase)
+ */
+function mapDbRowToReminder(row: any): Reminder {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    chatId: row.chat_id,
+    text: row.text,
+    scheduleType: row.schedule_type,
+    scheduleValue: row.schedule_value,
+    timezone: row.timezone,
+    createdAt: row.created_at,
+    active: row.active,
+  }
+}
+
+/**
  * Save a new reminder to the database
  */
 export async function saveReminder(params: {
@@ -89,7 +106,7 @@ export async function saveReminder(params: {
   const db = getPool()
   const id = params.reminderId || generateReminderId()
 
-  const result = await db.query<Reminder>(
+  const result = await db.query(
     `INSERT INTO reminders (id, user_id, chat_id, text, schedule_type, schedule_value, timezone)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
@@ -104,7 +121,7 @@ export async function saveReminder(params: {
     ],
   )
 
-  const reminder = result.rows[0]
+  const reminder = mapDbRowToReminder(result.rows[0])
   console.log(`[Storage] Saved reminder '${id}': ${params.text.slice(0, 50)}...`)
   return reminder
 }
@@ -114,13 +131,13 @@ export async function saveReminder(params: {
  */
 export async function getReminders(userId: string): Promise<Reminder[]> {
   const db = getPool()
-  const result = await db.query<Reminder>(
+  const result = await db.query(
     `SELECT * FROM reminders
      WHERE user_id = $1 AND active = TRUE
      ORDER BY created_at DESC`,
     [userId],
   )
-  return result.rows
+  return result.rows.map(mapDbRowToReminder)
 }
 
 /**
@@ -128,8 +145,8 @@ export async function getReminders(userId: string): Promise<Reminder[]> {
  */
 export async function getReminder(reminderId: string): Promise<Reminder | null> {
   const db = getPool()
-  const result = await db.query<Reminder>('SELECT * FROM reminders WHERE id = $1', [reminderId])
-  return result.rows[0] || null
+  const result = await db.query('SELECT * FROM reminders WHERE id = $1', [reminderId])
+  return result.rows[0] ? mapDbRowToReminder(result.rows[0]) : null
 }
 
 /**
@@ -140,12 +157,12 @@ export async function getReminderForUser(
   userId: string,
 ): Promise<Reminder | null> {
   const db = getPool()
-  const result = await db.query<Reminder>(
+  const result = await db.query(
     `SELECT * FROM reminders
      WHERE id = $1 AND user_id = $2 AND active = TRUE`,
     [reminderId, userId],
   )
-  return result.rows[0] || null
+  return result.rows[0] ? mapDbRowToReminder(result.rows[0]) : null
 }
 
 /**
@@ -153,8 +170,8 @@ export async function getReminderForUser(
  */
 export async function getAllReminders(): Promise<Reminder[]> {
   const db = getPool()
-  const result = await db.query<Reminder>('SELECT * FROM reminders WHERE active = TRUE')
-  return result.rows
+  const result = await db.query('SELECT * FROM reminders WHERE active = TRUE')
+  return result.rows.map(mapDbRowToReminder)
 }
 
 /**
