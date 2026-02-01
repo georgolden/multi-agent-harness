@@ -1,4 +1,3 @@
-"use strict";
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __esm = (fn, res) => function __init() {
@@ -24,8 +23,10 @@ __export(storage_exports, {
   saveReminder: () => saveReminder,
   setUserTimezone: () => setUserTimezone
 });
+import { Pool } from "pg";
+import { randomBytes } from "crypto";
 async function initStorage(connectionString) {
-  pool = new import_pg.Pool({ connectionString });
+  pool = new Pool({ connectionString });
   await pool.query(`
     CREATE TABLE IF NOT EXISTS reminders (
       id VARCHAR(16) PRIMARY KEY,
@@ -65,7 +66,20 @@ function getPool() {
   return pool;
 }
 function generateReminderId() {
-  return (0, import_crypto.randomBytes)(4).toString("hex");
+  return randomBytes(4).toString("hex");
+}
+function mapDbRowToReminder(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    chatId: row.chat_id,
+    text: row.text,
+    scheduleType: row.schedule_type,
+    scheduleValue: row.schedule_value,
+    timezone: row.timezone,
+    createdAt: row.created_at,
+    active: row.active
+  };
 }
 async function saveReminder(params) {
   const db = getPool();
@@ -84,7 +98,7 @@ async function saveReminder(params) {
       params.timezone
     ]
   );
-  const reminder = result.rows[0];
+  const reminder = mapDbRowToReminder(result.rows[0]);
   console.log(`[Storage] Saved reminder '${id}': ${params.text.slice(0, 50)}...`);
   return reminder;
 }
@@ -96,12 +110,12 @@ async function getReminders(userId) {
      ORDER BY created_at DESC`,
     [userId]
   );
-  return result.rows;
+  return result.rows.map(mapDbRowToReminder);
 }
 async function getReminder(reminderId) {
   const db = getPool();
   const result = await db.query("SELECT * FROM reminders WHERE id = $1", [reminderId]);
-  return result.rows[0] || null;
+  return result.rows[0] ? mapDbRowToReminder(result.rows[0]) : null;
 }
 async function getReminderForUser(reminderId, userId) {
   const db = getPool();
@@ -110,12 +124,12 @@ async function getReminderForUser(reminderId, userId) {
      WHERE id = $1 AND user_id = $2 AND active = TRUE`,
     [reminderId, userId]
   );
-  return result.rows[0] || null;
+  return result.rows[0] ? mapDbRowToReminder(result.rows[0]) : null;
 }
 async function getAllReminders() {
   const db = getPool();
   const result = await db.query("SELECT * FROM reminders WHERE active = TRUE");
-  return result.rows;
+  return result.rows.map(mapDbRowToReminder);
 }
 async function deleteReminder(reminderId) {
   const db = getPool();
@@ -148,40 +162,38 @@ async function setUserTimezone(userId, timezone) {
   );
   console.log(`[Storage] Set timezone for user ${userId}: ${timezone}`);
 }
-var import_pg, import_crypto, pool;
+var pool;
 var init_storage = __esm({
   "src/services/storage.ts"() {
     "use strict";
-    import_pg = require("pg");
-    import_crypto = require("crypto");
     pool = null;
   }
 });
 
 // src/index.ts
-var import_config = require("dotenv/config");
-var import_telegraf = require("telegraf");
+import "dotenv/config";
+import { Telegraf } from "telegraf";
 
 // src/flow.ts
-var import_pocketflow2 = require("pocketflow");
+import { Flow } from "pocketflow";
 
 // src/nodes.ts
-var import_pocketflow = require("pocketflow");
-var import_date_fns3 = require("date-fns");
-var import_date_fns_tz2 = require("date-fns-tz");
 init_storage();
+import { Node } from "pocketflow";
+import { format } from "date-fns";
+import { formatInTimeZone } from "date-fns-tz";
 
 // src/services/scheduler.ts
-var import_agenda = require("agenda");
-var import_postgres_backend = require("@agendajs/postgres-backend");
-var import_date_fns = require("date-fns");
-var import_date_fns_tz = require("date-fns-tz");
+import { Agenda } from "agenda";
+import { PostgresBackend } from "@agendajs/postgres-backend";
+import { parseISO } from "date-fns";
+import { toZonedTime } from "date-fns-tz";
 var agenda = null;
 async function initScheduler(connectionString) {
-  const backend = new import_postgres_backend.PostgresBackend({
+  const backend = new PostgresBackend({
     connectionString
   });
-  agenda = new import_agenda.Agenda({
+  agenda = new Agenda({
     backend,
     processEvery: "30 seconds",
     maxConcurrency: 20
@@ -205,8 +217,8 @@ function getScheduler() {
 }
 async function scheduleOnce(params) {
   const scheduler = getScheduler();
-  const parsedDate = typeof params.runDate === "string" ? (0, import_date_fns.parseISO)(params.runDate) : params.runDate;
-  const zonedDate = (0, import_date_fns_tz.toZonedTime)(parsedDate, params.timezone);
+  const parsedDate = typeof params.runDate === "string" ? parseISO(params.runDate) : params.runDate;
+  const zonedDate = toZonedTime(parsedDate, params.timezone);
   scheduler.define(params.jobId, params.callback);
   await scheduler.schedule(parsedDate, params.jobId, params.callbackData);
   console.log(`[Scheduler] Scheduled one-time job '${params.jobId}' for ${zonedDate} ${params.timezone}`);
@@ -225,36 +237,42 @@ async function scheduleCron(params) {
     skipImmediate: true
   });
   if (params.endDate) {
-    const parsedEndDate = typeof params.endDate === "string" ? (0, import_date_fns.parseISO)(params.endDate) : params.endDate;
+    const parsedEndDate = typeof params.endDate === "string" ? parseISO(params.endDate) : params.endDate;
+    console.log(`[Scheduler] Setting end date for job '${params.jobId}': ${parsedEndDate}`);
     job.endDate(parsedEndDate);
   }
   await job.save();
   const endInfo = params.endDate ? ` (ends: ${params.endDate})` : "";
   console.log(`[Scheduler] Scheduled cron job '${params.jobId}' with expression '${params.cronExpression}' (tz: ${params.timezone})${endInfo}`);
+  console.log(`[Scheduler] Job attrs:`, job.attrs);
 }
 async function removeJob(jobId) {
   const scheduler = getScheduler();
-  const removed = await scheduler.cancel({ name: jobId });
-  if (removed > 0) {
-    console.log(`[Scheduler] Removed job '${jobId}'`);
-    return true;
-  } else {
-    console.log(`[Scheduler] Job '${jobId}' not found`);
+  console.log(`[Scheduler.removeJob] Attempting to remove job: '${jobId}'`);
+  try {
+    const removed = await scheduler.cancel({ name: jobId });
+    console.log(`[Scheduler.removeJob] Canceled ${removed} job(s) with name '${jobId}'`);
+    if (removed > 0) {
+      console.log(`[Scheduler] Removed job '${jobId}'`);
+      return true;
+    } else {
+      console.log(`[Scheduler] Job '${jobId}' not found`);
+      return false;
+    }
+  } catch (error) {
+    console.error(`[Scheduler.removeJob] Error removing job '${jobId}':`, error);
     return false;
   }
 }
-function getAgenda() {
-  return getScheduler();
-}
 
 // src/utils/callLlm.ts
-var import_openai = require("openai");
+import { OpenAI } from "openai";
 async function callLlmWithTools(messages, tools) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) {
     throw new Error("DEEPSEEK_API_KEY environment variable not set");
   }
-  const client = new import_openai.OpenAI({
+  const client = new OpenAI({
     apiKey,
     baseURL: "https://api.deepseek.com",
     timeout: 6e4
@@ -275,7 +293,7 @@ async function callLlmWithTools(messages, tools) {
 }
 
 // src/utils/validation.ts
-var import_date_fns2 = require("date-fns");
+import { parseISO as parseISO2, isValid } from "date-fns";
 function validateTimezone(timezone) {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: timezone });
@@ -286,8 +304,8 @@ function validateTimezone(timezone) {
 }
 function parseIsoDatetime(dateStr) {
   try {
-    const date = (0, import_date_fns2.parseISO)(dateStr.replace("Z", "+00:00"));
-    if (!(0, import_date_fns2.isValid)(date)) {
+    const date = parseISO2(dateStr.replace("Z", "+00:00"));
+    if (!isValid(date)) {
       return { date: null, error: `Invalid datetime: ${dateStr}` };
     }
     return { date, error: null };
@@ -617,7 +635,7 @@ var TOOLS = [
 
 // src/nodes.ts
 var MAX_CONTEXT_MESSAGES = 20;
-var ParseInput = class extends import_pocketflow.Node {
+var ParseInput = class extends Node {
   async prep(shared) {
     return {
       userId: shared.userId,
@@ -638,7 +656,7 @@ var ParseInput = class extends import_pocketflow.Node {
     return "default";
   }
 };
-var DecideAction = class extends import_pocketflow.Node {
+var DecideAction = class extends Node {
   constructor() {
     super(3, 1);
   }
@@ -664,7 +682,7 @@ var DecideAction = class extends import_pocketflow.Node {
   }
   async exec(inputs) {
     const userTz = await getUserTimezone(inputs.userId);
-    const currentDt = (0, import_date_fns_tz2.formatInTimeZone)(/* @__PURE__ */ new Date(), userTz, "yyyy-MM-dd HH:mm:ss zzz");
+    const currentDt = formatInTimeZone(/* @__PURE__ */ new Date(), userTz, "yyyy-MM-dd HH:mm:ss zzz");
     const userReminders = inputs.userReminders;
     let remindersContext = "";
     if (userReminders.length > 0) {
@@ -728,7 +746,7 @@ var DecideAction = class extends import_pocketflow.Node {
     }
   }
 };
-var AskUser = class extends import_pocketflow.Node {
+var AskUser = class extends Node {
   async prep(shared) {
     return shared.question;
   }
@@ -743,7 +761,7 @@ var AskUser = class extends import_pocketflow.Node {
     return void 0;
   }
 };
-var ScheduleOnce = class extends import_pocketflow.Node {
+var ScheduleOnce = class extends Node {
   async prep(shared) {
     const args = shared.toolArgs;
     return {
@@ -787,7 +805,7 @@ var ScheduleOnce = class extends import_pocketflow.Node {
     return "confirm";
   }
 };
-var ScheduleCronFinite = class extends import_pocketflow.Node {
+var ScheduleCronFinite = class extends Node {
   async prep(shared) {
     const args = shared.toolArgs;
     return {
@@ -840,7 +858,7 @@ var ScheduleCronFinite = class extends import_pocketflow.Node {
     return "confirm";
   }
 };
-var ScheduleCron = class extends import_pocketflow.Node {
+var ScheduleCron = class extends Node {
   async prep(shared) {
     const args = shared.toolArgs;
     return {
@@ -888,7 +906,7 @@ var ScheduleCron = class extends import_pocketflow.Node {
     return "confirm";
   }
 };
-var ListReminders = class extends import_pocketflow.Node {
+var ListReminders = class extends Node {
   async prep(shared) {
     return shared.userId;
   }
@@ -902,7 +920,7 @@ var ListReminders = class extends import_pocketflow.Node {
     return "confirm";
   }
 };
-var CancelReminder = class extends import_pocketflow.Node {
+var CancelReminder = class extends Node {
   async prep(shared) {
     return {
       reminderId: shared.toolArgs.reminder_id,
@@ -927,7 +945,7 @@ var CancelReminder = class extends import_pocketflow.Node {
     return "confirm";
   }
 };
-var CancelAllReminders = class extends import_pocketflow.Node {
+var CancelAllReminders = class extends Node {
   async prep(shared) {
     return shared.userId;
   }
@@ -950,7 +968,7 @@ var CancelAllReminders = class extends import_pocketflow.Node {
     return "confirm";
   }
 };
-var EditReminder = class extends import_pocketflow.Node {
+var EditReminder = class extends Node {
   async prep(shared) {
     const args = shared.toolArgs;
     return {
@@ -989,7 +1007,7 @@ var EditReminder = class extends import_pocketflow.Node {
     return "decide_action";
   }
 };
-var SetTimezone = class extends import_pocketflow.Node {
+var SetTimezone = class extends Node {
   async prep(shared) {
     return {
       userId: shared.userId,
@@ -1010,7 +1028,7 @@ var SetTimezone = class extends import_pocketflow.Node {
     return "confirm";
   }
 };
-var Confirm = class extends import_pocketflow.Node {
+var Confirm = class extends Node {
   async prep(shared) {
     return {
       toolName: shared.toolName,
@@ -1026,7 +1044,7 @@ var Confirm = class extends import_pocketflow.Node {
     try {
       const dt = new Date(dtStr.replace("Z", "+00:00"));
       const tz = storedTz;
-      return (0, import_date_fns_tz2.formatInTimeZone)(dt, tz, "MMM dd 'at' HH:mm");
+      return formatInTimeZone(dt, tz, "MMM dd 'at' HH:mm");
     } catch {
       return dtStr;
     }
@@ -1038,7 +1056,7 @@ var Confirm = class extends import_pocketflow.Node {
       cronExpr = cron;
       try {
         const endDt = new Date(endStr);
-        endInfo = ` (until ${(0, import_date_fns3.format)(endDt, "HH:mm")})`;
+        endInfo = ` (until ${format(endDt, "HH:mm")})`;
       } catch {
       }
     }
@@ -1050,14 +1068,19 @@ var Confirm = class extends import_pocketflow.Node {
     let desc = cronExpr;
     if (cronExpr.trim() === "* * * * *") {
       desc = "every minute";
-    } else if (minute === "0" && hour === "*") {
+    } else if (minute === "0" && hour === "*" && day === "*" && month === "*" && dow === "*") {
       desc = "every hour";
-    } else if (minute !== "*" && hour !== "*" && day === "*" && month === "*" && dow === "*") {
-      desc = `daily at ${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
-    } else if (minute.startsWith("*/")) {
+    } else if (minute.startsWith("*/") && hour.startsWith("*/")) {
+      desc = `every ${minute.slice(2)} minutes, every ${hour.slice(2)} hours`;
+    } else if (minute.startsWith("*/") && hour.includes("-")) {
+      const [hourStart, hourEnd] = hour.split("-");
+      desc = `every ${minute.slice(2)} minutes between ${hourStart}:00-${hourEnd}:59`;
+    } else if (minute.startsWith("*/") && hour === "*") {
       desc = `every ${minute.slice(2)} minutes`;
-    } else if (hour.startsWith("*/")) {
+    } else if (hour.startsWith("*/") && minute === "0") {
       desc = `every ${hour.slice(2)} hours`;
+    } else if (minute !== "*" && hour !== "*" && !minute.includes("*") && !hour.includes("*") && day === "*" && month === "*" && dow === "*") {
+      desc = `daily at ${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
     }
     return desc + endInfo;
   }
@@ -1161,7 +1184,7 @@ function createReminderFlow() {
   cancelAllReminders.on("confirm", confirm);
   editReminder.on("decide_action", decideAction);
   setTimezone.on("confirm", confirm);
-  return new import_pocketflow2.Flow(parseInput);
+  return new Flow(parseInput);
 }
 
 // src/index.ts
@@ -1203,8 +1226,6 @@ async function scheduleReminderJob(r) {
     reminderId: r.id,
     scheduleType: r.scheduleType
   };
-  const agenda2 = getAgenda();
-  agenda2.define(r.id, sendReminder);
   if (r.scheduleType === "once") {
     await scheduleOnce({
       jobId: r.id,
@@ -1313,7 +1334,7 @@ async function main() {
   console.log("[Bot] Starting...", { dbUrl });
   await initStorage(dbUrl);
   await initScheduler(dbUrl);
-  const bot = new import_telegraf.Telegraf(token);
+  const bot = new Telegraf(token);
   globalBot = bot;
   await restoreScheduledJobs();
   console.log("[Bot] Ready!");

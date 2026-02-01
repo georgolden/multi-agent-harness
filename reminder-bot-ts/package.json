@@ -1,12 +1,13 @@
 {
   "name": "reminder-bot",
   "version": "0.1.0",
+  "type": "module",
   "description": "TypeScript template for PocketFlow",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsup",
-    "dev": "ts-node src/index.ts",
+    "dev": "tsx src/index.ts",
     "start": "npm run build && node dist/index.js",
     "test": "vitest",
     "lint": "eslint src --ext .ts,.js,.jsx,.tsx"
