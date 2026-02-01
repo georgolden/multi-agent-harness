@@ -76,10 +76,6 @@ async function scheduleReminderJob(r: Reminder): Promise<void> {
     scheduleType: r.scheduleType,
   }
 
-  // Define the job handler
-  const agenda = getAgenda()
-  agenda.define(r.id, sendReminder)
-
   if (r.scheduleType === 'once') {
     await scheduleOnce({
       jobId: r.id,

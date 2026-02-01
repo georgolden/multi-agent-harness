@@ -114,6 +114,7 @@ export async function scheduleCron(params: {
   // Set end date if provided
   if (params.endDate) {
     const parsedEndDate = typeof params.endDate === 'string' ? parseISO(params.endDate) : params.endDate
+    console.log(`[Scheduler] Setting end date for job '${params.jobId}': ${parsedEndDate}`)
     job.endDate(parsedEndDate)
   }
 
@@ -121,6 +122,7 @@ export async function scheduleCron(params: {
 
   const endInfo = params.endDate ? ` (ends: ${params.endDate})` : ''
   console.log(`[Scheduler] Scheduled cron job '${params.jobId}' with expression '${params.cronExpression}' (tz: ${params.timezone})${endInfo}`)
+  console.log(`[Scheduler] Job attrs:`, job.attrs)
 }
 
 /**
@@ -128,13 +130,23 @@ export async function scheduleCron(params: {
  */
 export async function removeJob(jobId: string): Promise<boolean> {
   const scheduler = getScheduler()
-  const removed = await scheduler.cancel({ name: jobId })
 
-  if (removed > 0) {
-    console.log(`[Scheduler] Removed job '${jobId}'`)
-    return true
-  } else {
-    console.log(`[Scheduler] Job '${jobId}' not found`)
+  console.log(`[Scheduler.removeJob] Attempting to remove job: '${jobId}'`)
+
+  try {
+    // Use cancel to remove jobs matching the name
+    const removed = await scheduler.cancel({ name: jobId })
+    console.log(`[Scheduler.removeJob] Canceled ${removed} job(s) with name '${jobId}'`)
+
+    if (removed > 0) {
+      console.log(`[Scheduler] Removed job '${jobId}'`)
+      return true
+    } else {
+      console.log(`[Scheduler] Job '${jobId}' not found`)
+      return false
+    }
+  } catch (error) {
+    console.error(`[Scheduler.removeJob] Error removing job '${jobId}':`, error)
     return false
   }
 }

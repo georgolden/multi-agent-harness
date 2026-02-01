@@ -601,16 +601,28 @@ export class Confirm extends Node<ReminderBotSharedState> {
     const [minute, hour, day, month, dow] = parts
 
     let desc = cronExpr
+
+    // Handle common patterns
     if (cronExpr.trim() === '* * * * *') {
       desc = 'every minute'
-    } else if (minute === '0' && hour === '*') {
+    } else if (minute === '0' && hour === '*' && day === '*' && month === '*' && dow === '*') {
       desc = 'every hour'
-    } else if (minute !== '*' && hour !== '*' && day === '*' && month === '*' && dow === '*') {
-      desc = `daily at ${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
-    } else if (minute.startsWith('*/')) {
+    } else if (minute.startsWith('*/') && hour.startsWith('*/')) {
+      // e.g., "*/30 */2 * * *" - every X minutes, every Y hours
+      desc = `every ${minute.slice(2)} minutes, every ${hour.slice(2)} hours`
+    } else if (minute.startsWith('*/') && hour.includes('-')) {
+      // e.g., "*/30 14-19 * * *" - every X minutes between Y-Z hours
+      const [hourStart, hourEnd] = hour.split('-')
+      desc = `every ${minute.slice(2)} minutes between ${hourStart}:00-${hourEnd}:59`
+    } else if (minute.startsWith('*/') && hour === '*') {
+      // e.g., "*/15 * * * *" - every X minutes
       desc = `every ${minute.slice(2)} minutes`
-    } else if (hour.startsWith('*/')) {
+    } else if (hour.startsWith('*/') && minute === '0') {
+      // e.g., "0 */3 * * *" - every X hours
       desc = `every ${hour.slice(2)} hours`
+    } else if (minute !== '*' && hour !== '*' && !minute.includes('*') && !hour.includes('*') && day === '*' && month === '*' && dow === '*') {
+      // e.g., "30 14 * * *" - daily at specific time
+      desc = `daily at ${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
     }
 
     return desc + endInfo
