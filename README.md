@@ -83,3 +83,31 @@ But switch to TypeScript - so `PocketFlow-Typescript` is planned to be used.
 4. And write an even more powerful agentic system than `clawdbot`.
 
 I bet on quality
+
+1. is done
+
+Insights: 
+
+ - you need to write scripts for features better because model sucks on determine stuff
+
+ - better model must use your expertise to extract good scripts from you
+
+ - think about features nicely and write good feature description
+
+ - research how to write feature descriptions and PRD short and nicely for LLMs
+
+### Works fine with typescript
+
+Go to agents!
+
+1. Write templates for system prompt and regular prompt templates for coding agent, then for context retriaval agent
+
+2. Check instructions of other's agents and check Cody prompt it was super nice even back then
+
+3. Feature description and PRD and system design templates and check lists
+
+Do small setup for each agent to play around and quickly check results
+
+Think about test cases - agents that are developing agent are also nice
+
+When refactoring a mess needs breakdown and also needs to fill up feature guidelines with templates/check lists
