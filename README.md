@@ -98,6 +98,16 @@ Insights:
 
 ### Works fine with typescript
 
+What went wrong with reminder bot:
+
+No documentation done
+
+No scripts, no feature guidelines done
+
+No clear feature description
+
+Result is a bit buggy but it is working anyways
+
 Go to agents!
 
 1. Write templates for system prompt and regular prompt templates for coding agent, then for context retriaval agent
