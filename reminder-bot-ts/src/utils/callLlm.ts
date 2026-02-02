@@ -35,19 +35,19 @@ export async function callLlmWithTools(
   messages: ConversationMessage[],
   tools: OpenAI.ChatCompletionTool[],
 ): Promise<LLMMessage> {
-  const apiKey = process.env.DEEPSEEK_API_KEY
+  const apiKey = process.env.OPENROUTER_API_KEY
   if (!apiKey) {
-    throw new Error('DEEPSEEK_API_KEY environment variable not set')
+    throw new Error('OPENROUTER_API_KEY environment variable not set')
   }
 
   const client = new OpenAI({
     apiKey,
-    baseURL: 'https://api.deepseek.com',
+    baseURL: 'https://openrouter.ai/api/v1',
     timeout: 60000,
   })
 
   const response = await client.chat.completions.create({
-    model: 'deepseek-chat',
+    model: 'moonshotai/kimi-k2.5',
     messages,
     tools,
     tool_choice: 'required',
