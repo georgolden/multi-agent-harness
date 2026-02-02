@@ -50,7 +50,7 @@ export async function callLlmWithTools(
     model: 'deepseek-chat',
     messages,
     tools,
-    tool_choice: 'auto',
+    tool_choice: 'required',
     temperature: 0.3,
   })
 
