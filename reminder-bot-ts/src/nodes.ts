@@ -574,8 +574,8 @@ export class Confirm extends Node<ReminderBotSharedState> {
 
   formatDatetime(dtStr: string, storedTz: string, userId?: string): string {
     try {
-      // Format in user's timezone
-      return dayjs(dtStr).tz(storedTz).format('MMM DD [at] HH:mm')
+      // Parse in user's timezone and format
+      return dayjs.tz(dtStr, storedTz).format('MMM DD [at] HH:mm')
     } catch {
       return dtStr
     }
@@ -588,7 +588,7 @@ export class Confirm extends Node<ReminderBotSharedState> {
       const [cron, endStr] = cronExpr.split('|ends:')
       cronExpr = cron
       try {
-        endInfo = ` (until ${dayjs(endStr).format('HH:mm')})`
+        endInfo = ` (until ${dayjs(endStr).format('MMM DD [at] HH:mm')})`
       } catch {
         // Ignore
       }

@@ -1014,7 +1014,7 @@ var Confirm = class extends Node {
   }
   formatDatetime(dtStr, storedTz, userId) {
     try {
-      return dayjs3(dtStr).tz(storedTz).format("MMM DD [at] HH:mm");
+      return dayjs3.tz(dtStr, storedTz).format("MMM DD [at] HH:mm");
     } catch {
       return dtStr;
     }
@@ -1025,7 +1025,7 @@ var Confirm = class extends Node {
       const [cron, endStr] = cronExpr.split("|ends:");
       cronExpr = cron;
       try {
-        endInfo = ` (until ${dayjs3(endStr).format("HH:mm")})`;
+        endInfo = ` (until ${dayjs3(endStr).format("MMM DD [at] HH:mm")})`;
       } catch {
       }
     }
