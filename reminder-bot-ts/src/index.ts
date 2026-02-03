@@ -5,10 +5,10 @@ import 'dotenv/config'
 import { Telegraf, Context } from 'telegraf'
 import { Update } from 'telegraf/types'
 import type { Job } from 'agenda'
-import { createReminderFlow } from './flow'
-import { initStorage, closeStorage, getAllReminders } from './services/storage'
-import { initScheduler, stopScheduler, scheduleOnce, scheduleCron, getAgenda } from './services/scheduler'
-import type { ConversationMessage, Reminder, ReminderBotSharedState } from './types'
+import { createReminderFlow } from './flow.js'
+import { initStorage, closeStorage, getAllReminders, deleteReminder } from './services/storage.js'
+import { initScheduler, stopScheduler, scheduleOnce, scheduleCron, getAgenda } from './services/scheduler.js'
+import type { ConversationMessage, Reminder, ReminderBotSharedState } from './types.js'
 
 // Global flow instance
 const reminderFlow = createReminderFlow()
@@ -59,7 +59,6 @@ async function sendReminder(job: Job): Promise<void> {
 
   // Auto-delete one-time reminders after firing
   if (scheduleType === 'once') {
-    const { deleteReminder } = await import('./services/storage')
     await deleteReminder(reminderId)
     console.log(`[Reminder] Auto-deleted one-time reminder ${reminderId}`)
   }

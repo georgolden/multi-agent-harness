@@ -16,8 +16,8 @@ import {
   EditReminder,
   SetTimezone,
   Confirm,
-} from './nodes'
-import type { ReminderBotSharedState } from './types'
+} from './nodes.js'
+import type { ReminderBotSharedState } from './types.js'
 
 /**
  * Create and return the reminder agent flow

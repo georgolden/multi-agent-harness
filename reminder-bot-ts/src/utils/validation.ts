@@ -1,7 +1,10 @@
 /**
  * Validation utilities for timezones, dates, and cron expressions
  */
-import { parseISO, isValid } from 'date-fns'
+import dayjs from 'dayjs'
+import customParseFormat from 'dayjs/plugin/customParseFormat.js'
+
+dayjs.extend(customParseFormat)
 
 /**
  * Validate an IANA timezone string
@@ -21,11 +24,11 @@ export function validateTimezone(timezone: string): string | null {
  */
 export function parseIsoDatetime(dateStr: string): { date: Date | null; error: string | null } {
   try {
-    const date = parseISO(dateStr.replace('Z', '+00:00'))
-    if (!isValid(date)) {
+    const parsed = dayjs(dateStr)
+    if (!parsed.isValid()) {
       return { date: null, error: `Invalid datetime: ${dateStr}` }
     }
-    return { date, error: null }
+    return { date: parsed.toDate(), error: null }
   } catch {
     return { date: null, error: `Invalid datetime: ${dateStr}` }
   }

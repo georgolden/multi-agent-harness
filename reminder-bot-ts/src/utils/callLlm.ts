@@ -2,7 +2,7 @@
  * LLM integration using OpenAI-compatible API (DeepSeek)
  */
 import { OpenAI } from 'openai'
-import type { LLMMessage, ConversationMessage } from '../types'
+import type { LLMMessage, ConversationMessage } from '../types.js'
 
 /**
  * Simple LLM call without tools

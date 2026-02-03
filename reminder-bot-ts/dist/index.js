@@ -1,30 +1,20 @@
-var __defProp = Object.defineProperty;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-};
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
+// src/index.ts
+import "dotenv/config";
+import { Telegraf } from "telegraf";
+
+// src/flow.ts
+import { Flow } from "pocketflow";
+
+// src/nodes.ts
+import { Node } from "pocketflow";
+import dayjs3 from "dayjs";
+import utc2 from "dayjs/plugin/utc.js";
+import timezone2 from "dayjs/plugin/timezone.js";
 
 // src/services/storage.ts
-var storage_exports = {};
-__export(storage_exports, {
-  closeStorage: () => closeStorage,
-  deleteReminder: () => deleteReminder,
-  generateReminderId: () => generateReminderId,
-  getAllReminders: () => getAllReminders,
-  getReminder: () => getReminder,
-  getReminderForUser: () => getReminderForUser,
-  getReminders: () => getReminders,
-  getUserTimezone: () => getUserTimezone,
-  initStorage: () => initStorage,
-  saveReminder: () => saveReminder,
-  setUserTimezone: () => setUserTimezone
-});
 import { Pool } from "pg";
 import { randomBytes } from "crypto";
+var pool = null;
 async function initStorage(connectionString) {
   pool = new Pool({ connectionString });
   await pool.query(`
@@ -112,11 +102,6 @@ async function getReminders(userId) {
   );
   return result.rows.map(mapDbRowToReminder);
 }
-async function getReminder(reminderId) {
-  const db = getPool();
-  const result = await db.query("SELECT * FROM reminders WHERE id = $1", [reminderId]);
-  return result.rows[0] ? mapDbRowToReminder(result.rows[0]) : null;
-}
 async function getReminderForUser(reminderId, userId) {
   const db = getPool();
   const result = await db.query(
@@ -153,41 +138,24 @@ async function getUserTimezone(userId) {
   }
   return result.rows[0].timezone;
 }
-async function setUserTimezone(userId, timezone) {
+async function setUserTimezone(userId, timezone3) {
   const db = getPool();
   await db.query(
     `INSERT INTO users (id, timezone) VALUES ($1, $2)
      ON CONFLICT (id) DO UPDATE SET timezone = $2`,
-    [userId, timezone]
+    [userId, timezone3]
   );
-  console.log(`[Storage] Set timezone for user ${userId}: ${timezone}`);
+  console.log(`[Storage] Set timezone for user ${userId}: ${timezone3}`);
 }
-var pool;
-var init_storage = __esm({
-  "src/services/storage.ts"() {
-    "use strict";
-    pool = null;
-  }
-});
-
-// src/index.ts
-import "dotenv/config";
-import { Telegraf } from "telegraf";
-
-// src/flow.ts
-import { Flow } from "pocketflow";
-
-// src/nodes.ts
-init_storage();
-import { Node } from "pocketflow";
-import { format } from "date-fns";
-import { formatInTimeZone } from "date-fns-tz";
 
 // src/services/scheduler.ts
 import { Agenda } from "agenda";
 import { PostgresBackend } from "@agendajs/postgres-backend";
-import { parseISO } from "date-fns";
-import { toZonedTime } from "date-fns-tz";
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
+dayjs.extend(utc);
+dayjs.extend(timezone);
 var agenda = null;
 async function initScheduler(connectionString) {
   const backend = new PostgresBackend({
@@ -217,8 +185,8 @@ function getScheduler() {
 }
 async function scheduleOnce(params) {
   const scheduler = getScheduler();
-  const parsedDate = typeof params.runDate === "string" ? parseISO(params.runDate) : params.runDate;
-  const zonedDate = toZonedTime(parsedDate, params.timezone);
+  const parsedDate = typeof params.runDate === "string" ? dayjs.tz(params.runDate, params.timezone).toDate() : params.runDate;
+  const zonedDate = dayjs(parsedDate).tz(params.timezone).format();
   scheduler.define(params.jobId, params.callback);
   await scheduler.schedule(parsedDate, params.jobId, params.callbackData);
   console.log(`[Scheduler] Scheduled one-time job '${params.jobId}' for ${zonedDate} ${params.timezone}`);
@@ -237,7 +205,7 @@ async function scheduleCron(params) {
     skipImmediate: true
   });
   if (params.endDate) {
-    const parsedEndDate = typeof params.endDate === "string" ? parseISO(params.endDate) : params.endDate;
+    const parsedEndDate = typeof params.endDate === "string" ? dayjs.tz(params.endDate, params.timezone).toDate() : params.endDate;
     console.log(`[Scheduler] Setting end date for job '${params.jobId}': ${parsedEndDate}`);
     job.endDate(parsedEndDate);
   }
@@ -268,20 +236,20 @@ async function removeJob(jobId) {
 // src/utils/callLlm.ts
 import { OpenAI } from "openai";
 async function callLlmWithTools(messages, tools) {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
-    throw new Error("DEEPSEEK_API_KEY environment variable not set");
+    throw new Error("OPENROUTER_API_KEY environment variable not set");
   }
   const client = new OpenAI({
     apiKey,
-    baseURL: "https://api.deepseek.com",
+    baseURL: "https://openrouter.ai/api/v1",
     timeout: 6e4
   });
   const response = await client.chat.completions.create({
-    model: "deepseek-chat",
+    model: "moonshotai/kimi-k2.5",
     messages,
     tools,
-    tool_choice: "auto",
+    tool_choice: "required",
     temperature: 0.3
   });
   const message = response.choices[0].message;
@@ -293,22 +261,24 @@ async function callLlmWithTools(messages, tools) {
 }
 
 // src/utils/validation.ts
-import { parseISO as parseISO2, isValid } from "date-fns";
-function validateTimezone(timezone) {
+import dayjs2 from "dayjs";
+import customParseFormat from "dayjs/plugin/customParseFormat.js";
+dayjs2.extend(customParseFormat);
+function validateTimezone(timezone3) {
   try {
-    new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone3 });
     return null;
   } catch {
-    return `Invalid timezone: ${timezone}`;
+    return `Invalid timezone: ${timezone3}`;
   }
 }
 function parseIsoDatetime(dateStr) {
   try {
-    const date = parseISO2(dateStr.replace("Z", "+00:00"));
-    if (!isValid(date)) {
+    const parsed = dayjs2(dateStr);
+    if (!parsed.isValid()) {
       return { date: null, error: `Invalid datetime: ${dateStr}` };
     }
-    return { date, error: null };
+    return { date: parsed.toDate(), error: null };
   } catch {
     return { date: null, error: `Invalid datetime: ${dateStr}` };
   }
@@ -634,6 +604,8 @@ var TOOLS = [
 ];
 
 // src/nodes.ts
+dayjs3.extend(utc2);
+dayjs3.extend(timezone2);
 var MAX_CONTEXT_MESSAGES = 20;
 var ParseInput = class extends Node {
   async prep(shared) {
@@ -682,7 +654,7 @@ var DecideAction = class extends Node {
   }
   async exec(inputs) {
     const userTz = await getUserTimezone(inputs.userId);
-    const currentDt = formatInTimeZone(/* @__PURE__ */ new Date(), userTz, "yyyy-MM-dd HH:mm:ss zzz");
+    const currentDt = dayjs3().tz(userTz).format("YYYY-MM-DD HH:mm:ss z");
     const userReminders = inputs.userReminders;
     let remindersContext = "";
     if (userReminders.length > 0) {
@@ -1042,9 +1014,7 @@ var Confirm = class extends Node {
   }
   formatDatetime(dtStr, storedTz, userId) {
     try {
-      const dt = new Date(dtStr.replace("Z", "+00:00"));
-      const tz = storedTz;
-      return formatInTimeZone(dt, tz, "MMM dd 'at' HH:mm");
+      return dayjs3(dtStr).tz(storedTz).format("MMM DD [at] HH:mm");
     } catch {
       return dtStr;
     }
@@ -1055,8 +1025,7 @@ var Confirm = class extends Node {
       const [cron, endStr] = cronExpr.split("|ends:");
       cronExpr = cron;
       try {
-        const endDt = new Date(endStr);
-        endInfo = ` (until ${format(endDt, "HH:mm")})`;
+        endInfo = ` (until ${dayjs3(endStr).format("HH:mm")})`;
       } catch {
       }
     }
@@ -1188,7 +1157,6 @@ function createReminderFlow() {
 }
 
 // src/index.ts
-init_storage();
 var reminderFlow = createReminderFlow();
 var globalBot = null;
 var MAX_CONVERSATION_MESSAGES = 20;
@@ -1214,8 +1182,7 @@ async function sendReminder(job) {
     return;
   }
   if (scheduleType === "once") {
-    const { deleteReminder: deleteReminder2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
-    await deleteReminder2(reminderId);
+    await deleteReminder(reminderId);
     console.log(`[Reminder] Auto-deleted one-time reminder ${reminderId}`);
   }
 }

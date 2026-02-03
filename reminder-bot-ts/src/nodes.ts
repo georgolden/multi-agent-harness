@@ -3,9 +3,13 @@
  * Each node has a clear, single responsibility.
  */
 import { Node } from 'pocketflow'
-import { format } from 'date-fns'
-import { formatInTimeZone } from 'date-fns-tz'
-import type { ReminderBotSharedState, Reminder, ConversationMessage } from './types'
+import dayjs from 'dayjs'
+import utc from 'dayjs/plugin/utc.js'
+import timezone from 'dayjs/plugin/timezone.js'
+import type { ReminderBotSharedState, Reminder, ConversationMessage } from './types.js'
+
+dayjs.extend(utc)
+dayjs.extend(timezone)
 import {
   getReminders,
   getReminderForUser,
@@ -14,12 +18,12 @@ import {
   generateReminderId,
   getUserTimezone,
   setUserTimezone,
-} from './services/storage'
-import { removeJob } from './services/scheduler'
-import { callLlmWithTools } from './utils/callLlm'
-import { validateTimezone, parseIsoDatetime, validateCronExpression } from './utils/validation'
-import { createSystemPrompt } from './prompts'
-import { TOOLS } from './tools'
+} from './services/storage.js'
+import { removeJob } from './services/scheduler.js'
+import { callLlmWithTools } from './utils/callLlm.js'
+import { validateTimezone, parseIsoDatetime, validateCronExpression } from './utils/validation.js'
+import { createSystemPrompt } from './prompts.js'
+import { TOOLS } from './tools.js'
 
 const MAX_CONTEXT_MESSAGES = 20
 
@@ -85,7 +89,7 @@ export class DecideAction extends Node<ReminderBotSharedState> {
     const userTz = await getUserTimezone(inputs.userId)
 
     // Format current datetime in user's timezone
-    const currentDt = formatInTimeZone(new Date(), userTz, 'yyyy-MM-dd HH:mm:ss zzz')
+    const currentDt = dayjs().tz(userTz).format('YYYY-MM-DD HH:mm:ss z')
 
     // Build user's reminders context
     const userReminders: Reminder[] = inputs.userReminders
@@ -570,10 +574,8 @@ export class Confirm extends Node<ReminderBotSharedState> {
 
   formatDatetime(dtStr: string, storedTz: string, userId?: string): string {
     try {
-      const dt = new Date(dtStr.replace('Z', '+00:00'))
       // Format in user's timezone
-      const tz = storedTz
-      return formatInTimeZone(dt, tz, 'MMM dd \'at\' HH:mm')
+      return dayjs(dtStr).tz(storedTz).format('MMM DD [at] HH:mm')
     } catch {
       return dtStr
     }
@@ -586,8 +588,7 @@ export class Confirm extends Node<ReminderBotSharedState> {
       const [cron, endStr] = cronExpr.split('|ends:')
       cronExpr = cron
       try {
-        const endDt = new Date(endStr)
-        endInfo = ` (until ${format(endDt, 'HH:mm')})`
+        endInfo = ` (until ${dayjs(endStr).format('HH:mm')})`
       } catch {
         // Ignore
       }

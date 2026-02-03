@@ -4,7 +4,7 @@
  */
 import { Pool } from 'pg'
 import { randomBytes } from 'crypto'
-import type { Reminder, User } from '../types'
+import type { Reminder, User } from '../types.js'
 
 // Database connection pool
 let pool: Pool | null = null

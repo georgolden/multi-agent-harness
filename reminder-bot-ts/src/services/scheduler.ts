@@ -5,8 +5,12 @@
 import { Agenda } from 'agenda'
 import type { Job } from 'agenda'
 import { PostgresBackend } from '@agendajs/postgres-backend'
-import { parseISO } from 'date-fns'
-import { toZonedTime } from 'date-fns-tz'
+import dayjs from 'dayjs'
+import utc from 'dayjs/plugin/utc.js'
+import timezone from 'dayjs/plugin/timezone.js'
+
+dayjs.extend(utc)
+dayjs.extend(timezone)
 
 let agenda: Agenda | null = null
 
@@ -62,13 +66,13 @@ export async function scheduleOnce(params: {
 }): Promise<void> {
   const scheduler = getScheduler()
 
-  // Parse the run date
+  // Parse the run date (in user's timezone if no timezone info in string)
   const parsedDate = typeof params.runDate === 'string'
-    ? parseISO(params.runDate)
+    ? dayjs.tz(params.runDate, params.timezone).toDate()
     : params.runDate
 
   // Convert to the user's timezone for display/logging
-  const zonedDate = toZonedTime(parsedDate, params.timezone)
+  const zonedDate = dayjs(parsedDate).tz(params.timezone).format()
 
   // Define the job type with the callback
   scheduler.define(params.jobId, params.callback)
@@ -111,9 +115,9 @@ export async function scheduleCron(params: {
     skipImmediate: true,
   })
 
-  // Set end date if provided
+  // Set end date if provided (in user's timezone if no timezone info in string)
   if (params.endDate) {
-    const parsedEndDate = typeof params.endDate === 'string' ? parseISO(params.endDate) : params.endDate
+    const parsedEndDate = typeof params.endDate === 'string' ? dayjs.tz(params.endDate, params.timezone).toDate() : params.endDate
     console.log(`[Scheduler] Setting end date for job '${params.jobId}': ${parsedEndDate}`)
     job.endDate(parsedEndDate)
   }
