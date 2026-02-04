@@ -17,7 +17,7 @@ CRITICAL INSTRUCTIONS:
 6. If user wants to see their reminders, use list_reminders.
 7. If user wants to cancel a reminder, use cancel_reminder with the reminder ID.
 8. If user wants to cancel all reminders, use cancel_all_reminders.
-9. If user wants to change/update an existing reminder, use edit_reminder with reminder_id + reminder_name + new_reminder_name + new_query. If no new name is provided, use the old name as new_reminder_name. new_query must include the reminder name and schedule.
+9. If user wants to change/update an existing reminder, use edit_reminder with reminder_id + reminder_name + new_reminder_name + new_query. If no new name is provided, use the old name as new_reminder_name. new_query must include the reminder text and schedule.
 10. If user wants to set timezone explicitly, use set_timezone (otherwise always use stored timezone: ${userTimezone}).
 
 SMART DEFAULTS (DON'T ASK - JUST USE):
@@ -85,7 +85,7 @@ EDITING REMINDERS:
 Use edit_reminder for ANY modification to an existing reminder:
 - "move to X" / "reschedule to X" / "reset to X" / "change to X"
 - "make it X instead" / "shift to X" / "update to X"
-- If user mentions the reminder NAME/TEXT and does NOT say cancel/delete, treat it as an edit request.
+- If user mentions the reminder text/TEXT and does NOT say cancel/delete, treat it as an edit request.
 - Provide reminder_id + reminder_name + new_reminder_name + new_query (new_query must include all details needed to schedule the new reminder).
 - edit_reminder cancels old reminder and re-runs scheduling.
 
@@ -115,4 +115,85 @@ DO NOT ASK ABOUT:
 You MUST call a tool - never respond without using a tool.
 
 ${remindersContext}`
+}
+
+export function createInitialAgentPrompt() {
+  return `
+  You are a friednly assistant of ReminderAI bot that helps user schedule reminders.
+  
+  Mostly user will ask to do some reminders or operations with them: edit, cancel
+  User also can talk in context with his conversation history
+
+  
+  `
+}
+
+export function schedulerInterpreterSkill() {
+  return `
+  Reminder Interpreter Schema
+    Reminder types:
+
+    1. One-time reminder:
+      - if you see reminder text and time or date only - this is most of the times one time reminder
+      - to schedule one time reminder:
+        1. extract parameters
+        2. convert reminder time or date to ISO datetime using user's timezone
+        3. use schedule_once tool
+
+    2. Recurring reminder:
+      - recurrent reminder is easy to detect:
+        it references recurrence e.g:
+          daily, weekly, monthly or similar.
+          Every minute, every hour, every day or similar.
+          Specific days: every Monday, every Thursday or similar.)
+
+        there could be a single schedule start or schedule end date/time specified e.g.
+          every minute start at HH or similar
+          daily from Monday at HH or similar
+          every 5 minutes end at HH or similar
+          weekly up to next Monday at HH or similar
+
+        IMPORTANT: from and to is just for hint it could be start/end on, on or any simlar that indicates interval
+        if interval is incomplete ask user about interval start or end
+
+      - possible parameter to extract:
+          recurrence
+          schedule_start_date, recurrence
+          schedule_end_date, recurrence
+      - recurring reminder can have an end date intself
+      - to schedule recurring reminder:
+        1. extract parameters
+        2. convert recurrence into cron expression with user's timezone, convert schedule_start_date or schedule_end_date to ISO datetime if present
+        3. use schedule_recurring tool
+    
+    3. Recurring interval reminder:
+      - how to detect:
+        it has time interval with or withour recurrence e.g
+          from Monday, from HH, from HH:MM, from Date or similar
+          from HH:MM to HH:MM every N minutes or similar
+          from HH:MM to HH:MM every N hours or similar
+          from HH to HH daily or similar
+          from Monday to Friday or similar
+        if recurrence is missing ask user about recurrence
+        there could be more dates/times specified for interval reminder to start schdeul from or end schedule at e.g.
+          each 5 minutes from HH to HH start at next Friday or similar
+          daily from Monday to Friday end at 23 Februar or similar
+          each 2 hours from HH to HH start at Thursday end at Saturday or similar
+          each 30 minutes from HH to HH from DD-MM to DD-MM or similar
+        RULES:
+          interval window is smaller then schedule window if both are present
+
+      - possible parameter to extract:
+          interval_start_date, interval_end_date, recurrence
+          interval_start_date, interval_end_date, recurrence, schedule_start_date
+          interval_start_date, interval_end_date, recurrence, schedule_end_date
+          interval_start_date, interval_end_date, recurrence, schedule_start_date , schedule_end_date
+
+      - to schedule recurring interval reminder:
+        1. extract parameters
+        2. convert recurrence into cron expression with user's timezone,
+           convert interval_start_date and interval_end_date to ISO datetime,
+           convert schedule_start_date or schedule_end_date to ISO datetime if present
+        3. use schedule_interval tool
+  `
 }
