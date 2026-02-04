@@ -4,3 +4,9 @@
 [submodule "PocketFlow-Typescript"]
 	path = PocketFlow-Typescript
 	url = git@github.com:The-Pocket/PocketFlow-Typescript.git
+[submodule "skills"]
+	path = skills
+	url = git@github.com:anthropics/skills.git
+[submodule "pi-mono"]
+	path = pi-mono
+	url = git@github.com:badlogic/pi-mono.git
