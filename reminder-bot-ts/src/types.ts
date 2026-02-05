@@ -1,83 +1,39 @@
+import { App } from './app.js';
+
 // Core domain types
 export interface Reminder {
-  id: string
-  userId: string
-  chatId: string
-  text: string
-  scheduleType: 'once' | 'cron'
-  scheduleValue: string // ISO datetime or cron expression
-  timezone: string
-  createdAt: Date
-  active: boolean
+  id: string;
+  userId: string;
+  chatId: string;
+  text: string;
+  scheduleType: 'once' | 'cron';
+  scheduleValue: string; // ISO datetime or cron expression
+  startDate?: Date;
+  endDate?: Date;
+  timezone: string;
+  createdAt: Date;
+  active: boolean;
 }
 
 export interface User {
-  id: string
-  timezone: string
+  id: string;
+  timezone: string;
 }
 
-// Conversation message
-export interface ConversationMessage {
-  role: 'user' | 'assistant' | 'system'
-  content: string
-}
-
-// Shared state for PocketFlow
-export interface ReminderBotSharedState {
-  // Input from Telegram
-  userId: string
-  chatId: string
-  message: string
-  conversation: ConversationMessage[]
-
-  // Working state
-  originalMessage?: string
-  toolName?: string
-  toolArgs?: Record<string, unknown>
-
-  // Results
-  reminder?: Reminder
-  remindersList?: Reminder[]
-  scheduleJob?: boolean
-  scheduleJobs?: Reminder[]
-
-  // Cancel results
-  cancelResult?: {
-    success: boolean
-    error?: string
-    reminder?: Reminder
-  }
-
-  cancelAllResult?: {
-    count: number
-    cancelled: Reminder[]
-  }
-
-  // Timezone result
-  timezoneResult?: {
-    success: boolean
-    timezone?: string
-    error?: string
-  }
-
-  // Question for user
-  question?: string
-
-  // Final response
-  response?: string
-  needsReply?: boolean
-}
+// Shared store for PocketFlow
+export type SharedStore = { app: App; context: Record<string, any> };
 
 // Tool call types
 export interface ToolCall {
   function: {
-    name: string
-    arguments: string
-  }
+    name: string;
+    arguments: string;
+  };
 }
 
-export interface LLMMessage {
-  role: 'user' | 'assistant' | 'system'
-  content: string | null
-  tool_calls?: ToolCall[]
-}
+export type {
+  ChatCompletion,
+  ChatCompletionMessage,
+  ChatCompletionMessageParam,
+  ChatCompletionMessageFunctionToolCall,
+} from 'openai/resources';
