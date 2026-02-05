@@ -1,7 +1,6 @@
 import { Telegraf, Context } from 'telegraf';
 import { message } from 'telegraf/filters';
 import { Update } from 'telegraf/types';
-import type { Job } from 'agenda';
 import type { App } from '../app.js';
 
 export class TelegramService {
@@ -26,7 +25,7 @@ export class TelegramService {
 
     // Restore scheduled jobs with the callback bound to this service
     // We do this here to ensure the scheduler has a valid callback to fire
-    await this.app.services.scheduler.restoreJobs(this.sendReminder.bind(this));
+    await this.app.services.scheduler.restoreJobs();
 
     // Launch bot
     await this.bot.launch(() => {
@@ -56,34 +55,6 @@ export class TelegramService {
   }
 
   /**
-   * Send reminder callback (executed by scheduler)
-   */
-  private async sendReminder(job: Job): Promise<void> {
-    const { chatId, text, reminderId, scheduleType } = job.attrs.data as {
-      chatId: string;
-      text: string;
-      reminderId: string;
-      scheduleType: string;
-    };
-
-    const message = `🔔 ${text}`;
-
-    try {
-      await this.bot.telegram.sendMessage(parseInt(chatId), message);
-      console.log(`[Reminder] Sent reminder ${reminderId} to chat ${chatId}`);
-    } catch (error) {
-      console.error(`[Reminder] Failed to send reminder ${reminderId} to chat ${chatId}:`, error);
-      return;
-    }
-
-    // Auto-delete one-time reminders after firing
-    if (scheduleType === 'once') {
-      await this.app.data.storage.deleteReminder(reminderId);
-      console.log(`[Reminder] Auto-deleted one-time reminder ${reminderId}`);
-    }
-  }
-
-  /**
    * Handle incoming messages
    */
   private async handleMessage(ctx: Context<Update.MessageUpdate>): Promise<void> {
@@ -99,6 +70,7 @@ export class TelegramService {
     const sharedStore = { app: this.app, context };
     try {
       await flow.run(sharedStore);
+      this.app.data.messageHistory.clearConversation(userId);
     } catch (error) {
       console.error('[Bot] Error:', error);
       await ctx.reply(`❌ Error: ${error instanceof Error ? error.message : String(error)}`);

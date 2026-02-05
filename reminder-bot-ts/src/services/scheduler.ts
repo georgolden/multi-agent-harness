@@ -121,15 +121,42 @@ export class Scheduler {
   }
 
   /**
+   * Callback function that executes when a reminder fires
+   */
+  private async onReminderFire(job: Job): Promise<void> {
+    const { chatId, text, reminderId, scheduleType } = job.attrs.data as {
+      chatId: string;
+      text: string;
+      reminderId: string;
+      scheduleType: string;
+    };
+    console.log(`[ReminderFire] Sending reminder ${reminderId} to chat ${chatId}`);
+
+    try {
+      await this.app.services.telegram.sendMessage(chatId, `⏰ Reminder: ${text}`);
+
+      // For one-time reminders, mark as inactive after firing
+      if (scheduleType === 'once') {
+        await this.app.data.storage.deleteReminder(reminderId);
+        console.log(`[ReminderFire] Deleted one-time reminder ${reminderId}`);
+      }
+    } catch (error) {
+      console.error(`[ReminderFire] Error sending reminder ${reminderId}:`, error);
+    }
+  }
+
+  /**
    * Schedule a reminder from a Reminder object
    */
-  async scheduleReminder(reminder: Reminder, callback: (job: Job) => Promise<void>): Promise<void> {
+  async scheduleReminder(reminder: Reminder): Promise<void> {
     const callbackData = {
       chatId: reminder.chatId,
       text: reminder.text,
       reminderId: reminder.id,
       scheduleType: reminder.scheduleType,
     };
+
+    const callback = (job: Job) => this.onReminderFire(job);
 
     if (reminder.scheduleType === 'once') {
       await this.scheduleOnce({
@@ -153,12 +180,12 @@ export class Scheduler {
   /**
    * Restore all active reminders from storage
    */
-  async restoreJobs(callback: (job: Job) => Promise<void>): Promise<void> {
+  async restoreJobs(): Promise<void> {
     const reminders = await this.app.data.storage.getAllReminders();
     console.log(`[Scheduler] Restoring ${reminders.length} reminders...`);
 
     for (const r of reminders) {
-      await this.scheduleReminder(r, callback);
+      await this.scheduleReminder(r);
       console.log(`[Scheduler] Restored reminder: ${r.id}`);
     }
   }

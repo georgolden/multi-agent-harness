@@ -3,9 +3,6 @@
  * Each node has a clear, single responsibility.
  */
 import { Node, ParallelBatchNode } from 'pocketflow';
-import dayjs from 'dayjs';
-import utc from 'dayjs/plugin/utc.js';
-import timezone from 'dayjs/plugin/timezone.js';
 import type {
   SharedStore,
   Reminder,
@@ -15,14 +12,39 @@ import type {
   ChatCompletionMessageFunctionToolCall,
 } from '../../types.js';
 
-dayjs.extend(utc);
-dayjs.extend(timezone);
-
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import { createSystemPrompt } from './prompts.js';
-import { TOOLS } from '../../tools.js';
+import { createToolHandler, TOOLS } from './tools.js';
 import { ConversationMessage } from '../../data/messageHistory.js';
-import { TelegramService } from '../../services/telegram.js';
+import { App } from '../../app.js';
+
+/**
+ * PrepareInput: Add user's message to conversation history (runs once)
+ */
+export class PrepareInput extends Node<SharedStore> {
+  async prep(shared: SharedStore) {
+    const { userId, message } = shared.context;
+    console.log(`[PrepareInput.prep] Adding user message to history: "${message}"`);
+
+    const newMessage: ChatCompletionMessageParam = {
+      role: 'user',
+      content: message,
+    };
+    shared.app.data.messageHistory.addMessage(userId, newMessage);
+
+    return { userId, message };
+  }
+
+  async exec(inputs: any) {
+    console.log(`[PrepareInput.exec] Message added to history`);
+    return 'done';
+  }
+
+  async post(shared: SharedStore, _prepRes: unknown, execRes: string) {
+    console.log(`[PrepareInput.post] Proceeding to DecideAction`);
+    return undefined;
+  }
+}
 
 /**
  * DecideAction: LLM decides what action to take
@@ -33,16 +55,17 @@ export class DecideAction extends Node<SharedStore> {
   }
 
   async prep(shared: SharedStore) {
-    const { userId, chatId, message } = shared.context;
+    const { userId } = shared.context;
+    console.log(`[DecideAction.prep] Getting conversation for userId: ${userId}`);
+
     const { data } = shared.app;
     const userReminders = await data.storage.getReminders(userId);
     const timezone = await data.storage.getUserTimezone(userId);
-    const newMessage = {
-      role: 'user',
-      content: message,
-    };
-    data.messageHistory.addMessage(userId, newMessage);
+    console.log(`[DecideAction.prep] Found ${userReminders.length} reminders, timezone: ${timezone}`);
+
     const conversation = data.messageHistory.getConversation(userId);
+    console.log(`[DecideAction.prep] Conversation has ${conversation.length} messages`);
+
     return {
       timezone: timezone,
       currentDate: new Date().toISOString(),
@@ -59,26 +82,44 @@ export class DecideAction extends Node<SharedStore> {
     const messages: ConversationMessage[] = [{ role: 'system', content: systemPrompt }, ...conversation];
 
     console.log(
-      `[DecideAction] Calling LLM with ${messages.length} messages (user_tz: ${timezone}, ${userReminders.length} reminders)`,
+      `[DecideAction.exec] Calling LLM with ${messages.length} messages (user_tz: ${timezone}, ${userReminders.length} reminders)`,
     );
+
+    // Log the full conversation being sent to LLM
+    console.log('[DecideAction.exec] CONVERSATION MESSAGES:');
+    conversation.forEach((msg: any, idx: number) => {
+      const preview =
+        typeof msg.content === 'string' ? msg.content.substring(0, 100) : JSON.stringify(msg.content).substring(0, 100);
+      console.log(`  [${idx}] role: ${msg.role}, content: "${preview}..."`);
+    });
 
     // Call LLM with tools
     const response = await callLlmWithTools(messages, TOOLS);
+
+    console.log(`[DecideAction.exec] LLM response:`, JSON.stringify(response[0].message, null, 2));
 
     return response[0].message;
   }
 
   async post(shared: SharedStore, _prepRes: unknown, execRes: any) {
+    shared.app.data.messageHistory.addMessage(shared.context.userId, execRes);
     const toolCalls = execRes.tool_calls;
+    console.log(`[DecideAction.post] Tool calls present: ${!!toolCalls}, count: ${toolCalls?.length || 0}`);
+
     if (!toolCalls || toolCalls.length === 0) {
       const { content, refusal } = execRes;
+      console.log(`[DecideAction.post] No tool calls. content: "${content}", refusal: "${refusal}"`);
+
       let output = '';
       if (content) output = `${output}${content}`;
       if (refusal) output = `${output}\n${refusal}`;
       if (!output) output = `AI is broken try again later`;
+
+      console.log(`[DecideAction.post] Setting response to: "${output}"`);
       shared.context.response = output;
       return 'ask_user';
     } else {
+      console.log(`[DecideAction.post] Processing ${toolCalls.length} tool calls`);
       shared.context.toolCalls = toolCalls;
       return 'tool_calls';
     }
@@ -90,34 +131,77 @@ export class DecideAction extends Node<SharedStore> {
  */
 export class AskUser extends Node<SharedStore> {
   async prep(shared: SharedStore) {
-    const { telegram } = shared.app.services;
-    const { output, chatId } = shared.context;
-    return { telegram, output, chatId };
+    const { app } = shared;
+    const { response, chatId } = shared.context;
+    console.log(`[AskUser.prep] chatId: ${chatId}, response: "${response}"`);
+
+    if (!response) {
+      console.error(`[AskUser.prep] ERROR: response is undefined!`);
+    }
+
+    return { app, output: response, chatId };
   }
 
-  async exec({ telegram, output, chatId }: { telegram: TelegramService; output: string; chatId: string }) {
-    await telegram.sendMessage(chatId, output);
+  async exec({ app, output, chatId }: { app: App; output: string; chatId: string }) {
+    console.log(`[AskUser.exec] Sending message to chatId: ${chatId}, output: "${output}"`);
+    await app.services.telegram.sendMessage(chatId, output);
+    console.log(`[AskUser.exec] Message sent successfully`);
     return 'sent';
   }
 
   async post(shared: SharedStore, _prepRes: unknown, execRes: string) {
+    console.log(`[AskUser.post] execRes: ${execRes}`);
     return undefined;
   }
 }
 
 export class ToolCalls extends ParallelBatchNode<SharedStore> {
   async prep(shared: SharedStore) {
-    const { toolCalls } = shared.context;
-    return toolCalls;
+    const { toolCalls, userId, chatId } = shared.context;
+    console.log(`[ToolCalls.prep] Processing ${toolCalls.length} tool calls for userId: ${userId}, chatId: ${chatId}`);
+    toolCalls.forEach((tc: ChatCompletionMessageFunctionToolCall, idx: number) => {
+      console.log(`[ToolCalls.prep] Tool ${idx}: ${tc.function.name}, args: ${tc.function.arguments}`);
+    });
+    return toolCalls.map((tc: ChatCompletionMessageFunctionToolCall) => ({ tc, app: shared.app, userId, chatId }));
   }
 
-  async exec(toolCall: ChatCompletionMessageFunctionToolCall) {
-    const args = JSON.parse(toolCall.function.arguments);
-    const { name } = toolCall.function;
+  async exec({
+    tc,
+    app,
+    userId,
+    chatId,
+  }: {
+    tc: ChatCompletionMessageFunctionToolCall;
+    app: App;
+    userId: string;
+    chatId: string;
+  }) {
+    const args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+    const { name } = tc.function;
+    console.log(`[ToolCalls.exec] Executing tool: ${name}, args:`, args);
 
+    const handler = createToolHandler(name);
+    const content = await handler(app, userId, chatId, args);
+
+    console.log(`[ToolCalls.exec] Tool ${name} returned: "${content}"`);
+
+    if (!content) {
+      console.error(`[ToolCalls.exec] ERROR: Tool ${name} returned undefined or empty content!`);
+    }
+
+    return { role: 'tool', content, id: tc.id, name };
   }
 
-  async post(shared: SharedStore, prepRes: ChatCompletionMessageFunctionToolCall[], execRes) {
+  async post(
+    shared: SharedStore,
+    _prepRes: ChatCompletionMessageFunctionToolCall[],
+    execRes: ChatCompletionMessageParam[],
+  ) {
+    console.log(`[ToolCalls.post] Adding ${execRes.length} tool result messages to history`);
+    execRes.forEach((msg, idx) => {
+      console.log(`[ToolCalls.post] Message ${idx}:`, JSON.stringify(msg, null, 2));
+    });
+    shared.app.data.messageHistory.addMessages(shared.context.userId, execRes);
     return undefined;
   }
 }

@@ -255,11 +255,21 @@ You must determine if the user wants to:
 
 ### Critical Rules
 
-- **NEVER** use conversation history to list reminders
-  - **ALWAYS** call a tool and use the tool response
+- **IMPORTANT - Check the conversation history FIRST:**
+  - Look at the last message in the conversation
+  - If the last message has role "tool", YOU ALREADY CALLED THAT TOOL - use the result to respond to the user
+  - DO NOT call the same tool again if you just received results from it
+  - Only call a tool if you haven't called it yet for the current user request
+
+- **Listing reminders:**
+  - If the last message is a tool result from list_reminders, use that to answer - DO NOT call list_reminders again
+  - Only call list_reminders if you haven't called it yet
+  - Never use the "Active Reminders" context data to answer
+
 - **To edit reminders:**
   - Create a new reminder
   - Cancel the old one
+
 - **Use many tools in parallel** when possible
 
 ## Available Skills

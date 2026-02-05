@@ -108,7 +108,7 @@ export class Storage {
 
     const result = await this.pool.query(
       `INSERT INTO reminders (id, user_id, chat_id, text, schedule_type, schedule_value, start_date, end_date, timezone)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         id,

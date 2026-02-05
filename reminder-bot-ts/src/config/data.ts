@@ -3,6 +3,6 @@ if (!process.env.DATABASE_URL) {
 }
 
 export default {
-  MessageHistory: { maxMessages: 10 },
+  MessageHistory: { maxMessages: 20 },
   Storage: { connectionString: process.env.DATABASE_URL },
 };

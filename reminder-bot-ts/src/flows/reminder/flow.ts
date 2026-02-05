@@ -3,7 +3,7 @@
  * Connects all nodes in a clear, directed graph.
  */
 import { Flow } from 'pocketflow';
-import { DecideAction, AskUser, ToolCalls } from './nodes.js';
+import { PrepareInput, DecideAction, AskUser, ToolCalls } from './nodes.js';
 import type { SharedStore } from '../../types.js';
 
 export type ReminderFlow = Flow<SharedStore>;
@@ -13,19 +13,23 @@ export type ReminderFlow = Flow<SharedStore>;
  */
 export function createReminderFlow(): Flow<SharedStore> {
   // Create nodes
+  const prepareInput = new PrepareInput();
   const decideAction = new DecideAction();
   const askUser = new AskUser();
   const toolCalls = new ToolCalls();
 
+  // PrepareInput runs once, then goes to DecideAction
+  prepareInput.next(decideAction);
+
   // DecideAction routes to different actions
-  decideAction.on('need_info', askUser);
+  decideAction.on('ask_user', askUser);
   decideAction.on('tool_calls', toolCalls);
 
   // AskUser ends the flow (response is the question)
 
-  // ToolCalls loop to decideAction
+  // ToolCalls loops back to DecideAction
   toolCalls.next(decideAction);
 
-  // Create flow starting with DecideAction
-  return new Flow<SharedStore>(decideAction);
+  // Create flow starting with PrepareInput
+  return new Flow<SharedStore>(prepareInput);
 }

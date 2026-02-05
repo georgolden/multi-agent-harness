@@ -54,6 +54,12 @@ export class MessageHistory {
     this.conversations.set(userId, this.trimConversation(history));
   }
 
+  addMessages(userId: string, messages: ConversationMessage[]): void {
+    const history = this.conversations.get(userId) || [];
+    history.push(...messages);
+    this.conversations.set(userId, this.trimConversation(history));
+  }
+
   /**
    * Get conversation history for a user
    */
