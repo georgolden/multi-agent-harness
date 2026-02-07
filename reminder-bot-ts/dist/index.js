@@ -646,8 +646,9 @@ var toolHandlers = {
   /**
    * Schedule a one-time reminder
    */
-  schedule_once: async (app2, userId, chatId, args) => {
+  schedule_once: async (app2, context, args) => {
     try {
+      const { userId, chatId } = context;
       const userTimezone = await app2.data.storage.getUserTimezone(userId);
       const reminder = await app2.data.storage.saveReminder({
         userId,
@@ -667,8 +668,9 @@ var toolHandlers = {
   /**
    * Schedule a recurring reminder using cron syntax
    */
-  schedule_recurring: async (app2, userId, chatId, args) => {
+  schedule_recurring: async (app2, context, args) => {
     try {
+      const { userId, chatId } = context;
       const userTimezone = await app2.data.storage.getUserTimezone(userId);
       let startDate;
       let endDate;
@@ -698,14 +700,15 @@ var toolHandlers = {
   /**
    * Schedule an interval reminder (similar to recurring)
    */
-  schedule_interval: async (app2, userId, chatId, args) => {
-    return toolHandlers.schedule_recurring(app2, userId, chatId, args);
+  schedule_interval: async (app2, context, args) => {
+    return toolHandlers.schedule_recurring(app2, context, args);
   },
   /**
    * List all active reminders for the user
    */
-  list_reminders: async (app2, userId, _chatId, _args) => {
+  list_reminders: async (app2, context, _args) => {
     try {
+      const { userId } = context;
       const reminders = await app2.data.storage.getReminders(userId);
       return { status: "success", reminders };
     } catch (error) {
@@ -716,8 +719,9 @@ var toolHandlers = {
   /**
    * Cancel a specific reminder by ID
    */
-  cancel_reminder: async (app2, userId, _chatId, args) => {
+  cancel_reminder: async (app2, context, args) => {
     try {
+      const { userId } = context;
       const reminder = await app2.data.storage.getReminderForUser(args.reminder_id, userId);
       if (!reminder) {
         return { status: "success" };
@@ -733,8 +737,9 @@ var toolHandlers = {
   /**
    * Cancel all reminders for the user
    */
-  cancel_all_reminders: async (app2, userId, _chatId, _args) => {
+  cancel_all_reminders: async (app2, context, _args) => {
     try {
+      const { userId } = context;
       const reminders = await app2.data.storage.getReminders(userId);
       if (reminders.length === 0) {
         return { status: "success" };
@@ -752,8 +757,9 @@ var toolHandlers = {
   /**
    * Set the user's preferred timezone
    */
-  set_timezone: async (app2, userId, _chatId, args) => {
+  set_timezone: async (app2, context, args) => {
     try {
+      const { userId } = context;
       const testDate = dayjs.tz(/* @__PURE__ */ new Date(), args.timezone);
       if (!testDate.isValid()) {
         return { status: "error", error: "Invalid timezone" };
@@ -771,8 +777,8 @@ function createToolHandler(name) {
   if (!handler) {
     throw new Error(`Unknown tool: ${name}`);
   }
-  return async (app2, userId, chatId, args) => {
-    const res = await handler(app2, userId, chatId, args);
+  return async (app2, context, args) => {
+    const res = await handler(app2, context, args);
     return JSON.stringify(res);
   };
 }
@@ -789,10 +795,10 @@ var PrepareInput = class extends Node {
     shared.app.data.messageHistory.addMessage(userId, newMessage);
     return { userId, message: message2 };
   }
-  async exec(inputs) {
+  async exec(_prepRes) {
     return "done";
   }
-  async post(shared, _prepRes, execRes) {
+  async post(_shared, _prepRes, execRes) {
     return void 0;
   }
 };
@@ -814,8 +820,8 @@ var DecideAction = class extends Node {
       userReminders: JSON.stringify(userReminders)
     };
   }
-  async exec(inputs) {
-    const { timezone: timezone2, currentDate, conversation, userReminders } = inputs;
+  async exec(prepRes) {
+    const { timezone: timezone2, currentDate, conversation, userReminders } = prepRes;
     const systemPrompt = createSystemPrompt(currentDate, timezone2, userReminders);
     const messages = [{ role: "system", content: systemPrompt }, ...conversation];
     console.log(
@@ -845,20 +851,21 @@ ${refusal}`;
       return "tool_calls";
     }
   }
+  async execFallback(_prepRes, error) {
+    console.error("[DecideAction.error] ", error);
+    return { role: "assistant", content: "AI is broken try again later", refusal: null };
+  }
 };
 var AskUser = class extends Node {
   async prep(shared) {
     const { app: app2 } = shared;
     const { response, chatId } = shared.context;
     console.log(`[AskUser.prep] chatId: ${chatId}, response: "${response}"`);
-    if (!response) {
-      console.error(`[AskUser.prep] ERROR: response is undefined!`);
-    }
     return { app: app2, output: response, chatId };
   }
   async exec({ app: app2, output, chatId }) {
     console.log(`[AskUser.exec] Sending message to chatId: ${chatId}, output: "${output}"`);
-    await app2.services.telegram.sendMessage(chatId, output);
+    app2.infra.bus.emit("telegram.sendMessage", { chatId, message: output });
     return "sent";
   }
   async post(shared, _prepRes, execRes) {
@@ -875,18 +882,13 @@ var ToolCalls = class extends ParallelBatchNode {
     });
     return toolCalls.map((tc) => ({ tc, app: shared.app, userId, chatId }));
   }
-  async exec({
-    tc,
-    app: app2,
-    userId,
-    chatId
-  }) {
+  async exec({ tc, app: app2, userId, chatId }) {
     const args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
     const { name } = tc.function;
     const handler = createToolHandler(name);
-    const content = await handler(app2, userId, chatId, args);
+    const content = await handler(app2, { userId, chatId }, args);
     console.log(`[ToolCalls.exec] Tool ${name} returned: "${content}"`);
-    return { role: "tool", content, id: tc.id, name };
+    return { role: "tool", content, tool_call_id: tc.id };
   }
   async post(shared, _prepRes, execRes) {
     console.log(`[ToolCalls.post] Adding ${execRes.length} tool result messages to history`);
@@ -968,8 +970,6 @@ var Scheduler = class {
    */
   async start() {
     console.log("[Scheduler.start] Starting Agenda scheduler...");
-    console.log("[Scheduler.start] Process every: 30 seconds");
-    console.log("[Scheduler.start] Max concurrency: 20");
     await this.agenda.start();
     await this.restoreJobs();
     console.log("[Scheduler] Started successfully");
@@ -985,72 +985,36 @@ var Scheduler = class {
    * Schedule a one-time reminder
    */
   async scheduleOnce(params) {
-    console.log(`[Scheduler.scheduleOnce] Starting to schedule job '${params.jobId}'`);
-    console.log(`[Scheduler.scheduleOnce] Input runDate: ${params.runDate}`);
-    console.log(`[Scheduler.scheduleOnce] Callback data:`, JSON.stringify(params.callbackData));
     const parsedDate = dayjs2.utc(params.runDate).toDate();
-    console.log(`[Scheduler.scheduleOnce] Parsed date: ${parsedDate.toISOString()}`);
-    console.log(`[Scheduler.scheduleOnce] Time until execution: ${parsedDate.getTime() - Date.now()}ms`);
-    console.log(`[Scheduler.scheduleOnce] Defining job type '${params.jobId}'`);
     this.agenda.define(params.jobId, params.callback);
-    console.log(`[Scheduler.scheduleOnce] Scheduling job to run at ${parsedDate.toISOString()}`);
-    const job = await this.agenda.schedule(parsedDate, params.jobId, params.callbackData);
-    console.log(`[Scheduler.scheduleOnce] Job scheduled successfully. Job attrs:`, {
-      name: job.attrs.name,
-      nextRunAt: job.attrs.nextRunAt,
-      lastRunAt: job.attrs.lastRunAt,
-      data: job.attrs.data
-    });
+    await this.agenda.schedule(parsedDate, params.jobId, params.callbackData);
     console.log(`[Scheduler] Scheduled one-time job '${params.jobId}' for ${parsedDate.toISOString()} UTC`);
   }
   /**
    * Schedule a recurring reminder using cron expression
    */
   async scheduleCron(params) {
-    console.log(`[Scheduler.scheduleCron] Starting to schedule cron job '${params.jobId}'`);
-    console.log(`[Scheduler.scheduleCron] Cron expression: ${params.cronExpression}`);
-    console.log(`[Scheduler.scheduleCron] Timezone: ${params.timezone || "UTC"}`);
-    console.log(`[Scheduler.scheduleCron] Start date: ${params.startDate || "none"}`);
-    console.log(`[Scheduler.scheduleCron] End date: ${params.endDate || "none"}`);
-    console.log(`[Scheduler.scheduleCron] Callback data:`, JSON.stringify(params.callbackData));
     const cronParts = params.cronExpression.trim().split(/\s+/);
     if (cronParts.length !== 5) {
       throw new Error(`Invalid cron expression: expected 5 fields, got ${cronParts.length}`);
     }
     const agendaCron = `0 ${params.cronExpression}`;
-    console.log(`[Scheduler.scheduleCron] Converted to 6-field cron: ${agendaCron}`);
-    console.log(`[Scheduler.scheduleCron] Defining job type '${params.jobId}'`);
     this.agenda.define(params.jobId, params.callback);
-    console.log(`[Scheduler.scheduleCron] Creating job instance`);
     const job = this.agenda.create(params.jobId, params.callbackData);
     const timezone2 = params.timezone || "UTC";
-    console.log(`[Scheduler.scheduleCron] Setting repeat schedule with timezone: ${timezone2}`);
     job.repeatEvery(agendaCron, {
       timezone: timezone2,
       skipImmediate: true
     });
     if (params.startDate) {
       const parsedStartDate = dayjs2.utc(params.startDate).toDate();
-      console.log(`[Scheduler.scheduleCron] Setting start date: ${parsedStartDate.toISOString()}`);
       job.startDate(parsedStartDate);
     }
     if (params.endDate) {
       const parsedEndDate = dayjs2.utc(params.endDate).toDate();
-      console.log(`[Scheduler.scheduleCron] Setting end date: ${parsedEndDate.toISOString()}`);
       job.endDate(parsedEndDate);
     }
-    console.log(`[Scheduler.scheduleCron] Saving job to database`);
     await job.save();
-    console.log(`[Scheduler.scheduleCron] Job saved successfully. Job attrs:`, {
-      name: job.attrs.name,
-      nextRunAt: job.attrs.nextRunAt,
-      lastRunAt: job.attrs.lastRunAt,
-      repeatInterval: job.attrs.repeatInterval,
-      repeatTimezone: job.attrs.repeatTimezone,
-      startDate: job.attrs.startDate,
-      endDate: job.attrs.endDate,
-      data: job.attrs.data
-    });
     const endInfo = params.endDate ? ` (ends: ${params.endDate})` : "";
     console.log(
       `[Scheduler] Scheduled cron job '${params.jobId}' with expression '${params.cronExpression}' in timezone ${timezone2}${endInfo}`
@@ -1060,47 +1024,21 @@ var Scheduler = class {
    * Callback function that executes when a reminder fires
    */
   async onReminderFire(job) {
-    console.log(`[ReminderFire] ========== JOB FIRING ==========`);
-    console.log(`[ReminderFire] Job name: ${job.attrs.name}`);
-    console.log(`[ReminderFire] Job scheduled at: ${job.attrs.nextRunAt}`);
-    console.log(`[ReminderFire] Current time: ${(/* @__PURE__ */ new Date()).toISOString()}`);
-    console.log(`[ReminderFire] Job data:`, JSON.stringify(job.attrs.data));
     const { chatId, text, reminderId, scheduleType } = job.attrs.data;
-    console.log(
-      `[ReminderFire] Extracted - chatId: ${chatId}, reminderId: ${reminderId}, scheduleType: ${scheduleType}`
-    );
-    console.log(`[ReminderFire] Message text: "${text}"`);
     console.log(`[ReminderFire] Sending reminder ${reminderId} to chat ${chatId}`);
     try {
-      console.log(`[ReminderFire] Calling telegram.sendMessage...`);
       this.app.infra.bus.emit("telegram.sendMessage", { chatId, message: `\u23F0 Reminder: ${text}` });
       if (scheduleType === "once") {
-        console.log(`[ReminderFire] This is a one-time reminder, deleting from storage...`);
         await this.app.data.storage.deleteReminder(reminderId);
-        console.log(`[ReminderFire] Deleted one-time reminder ${reminderId}`);
-      } else {
-        console.log(`[ReminderFire] This is a recurring reminder (${scheduleType}), keeping in storage`);
       }
-      console.log(`[ReminderFire] ========== JOB COMPLETED ==========`);
     } catch (error) {
-      console.error(`[ReminderFire] ========== ERROR OCCURRED ==========`);
       console.error(`[ReminderFire] Error sending reminder ${reminderId}:`, error);
-      console.error(`[ReminderFire] Error stack:`, error instanceof Error ? error.stack : "No stack trace");
-      console.error(`[ReminderFire] ========== END ERROR ==========`);
     }
   }
   /**
    * Schedule a reminder from a Reminder object
    */
   async scheduleReminder(reminder) {
-    console.log(`[Scheduler.scheduleReminder] ---------- SCHEDULING REMINDER ----------`);
-    console.log(`[Scheduler.scheduleReminder] Reminder ID: ${reminder.id}`);
-    console.log(`[Scheduler.scheduleReminder] Chat ID: ${reminder.chatId}`);
-    console.log(`[Scheduler.scheduleReminder] Text: "${reminder.text}"`);
-    console.log(`[Scheduler.scheduleReminder] Schedule Type: ${reminder.scheduleType}`);
-    console.log(`[Scheduler.scheduleReminder] Schedule Value: ${reminder.scheduleValue}`);
-    console.log(`[Scheduler.scheduleReminder] Start Date: ${reminder.startDate?.toISOString() || "none"}`);
-    console.log(`[Scheduler.scheduleReminder] End Date: ${reminder.endDate?.toISOString() || "none"}`);
     const callbackData = {
       chatId: reminder.chatId,
       text: reminder.text,
@@ -1110,7 +1048,6 @@ var Scheduler = class {
     const callback = (job) => this.onReminderFire(job);
     try {
       if (reminder.scheduleType === "once") {
-        console.log(`[Scheduler.scheduleReminder] Scheduling as one-time reminder`);
         await this.scheduleOnce({
           jobId: reminder.id,
           runDate: reminder.scheduleValue,
@@ -1118,7 +1055,6 @@ var Scheduler = class {
           callbackData
         });
       } else if (reminder.scheduleType === "cron") {
-        console.log(`[Scheduler.scheduleReminder] Scheduling as cron reminder`);
         await this.scheduleCron({
           jobId: reminder.id,
           cronExpression: reminder.scheduleValue,
@@ -1132,14 +1068,8 @@ var Scheduler = class {
         console.error(`[Scheduler.scheduleReminder] Unknown schedule type: ${reminder.scheduleType}`);
         throw new Error(`Unknown schedule type: ${reminder.scheduleType}`);
       }
-      console.log(`[Scheduler.scheduleReminder] ---------- SCHEDULING COMPLETE ----------`);
     } catch (error) {
-      console.error(`[Scheduler.scheduleReminder] ---------- SCHEDULING FAILED ----------`);
       console.error(`[Scheduler.scheduleReminder] Error:`, error);
-      console.error(
-        `[Scheduler.scheduleReminder] Error stack:`,
-        error instanceof Error ? error.stack : "No stack trace"
-      );
       throw error;
     }
   }
@@ -1147,46 +1077,35 @@ var Scheduler = class {
    * Restore all active reminders from storage
    */
   async restoreJobs() {
-    console.log(`[Scheduler.restoreJobs] ========================================`);
     console.log(`[Scheduler.restoreJobs] Starting job restoration process...`);
     const reminders = await this.app.data.storage.getAllReminders();
-    console.log(`[Scheduler.restoreJobs] Found ${reminders.length} reminders in storage`);
     if (reminders.length === 0) {
       console.log(`[Scheduler.restoreJobs] No reminders to restore`);
-      console.log(`[Scheduler.restoreJobs] ========================================`);
       return;
     }
-    console.log(`[Scheduler.restoreJobs] Restoring ${reminders.length} reminders...`);
     let successCount = 0;
     let failureCount = 0;
     for (const r of reminders) {
-      console.log(`[Scheduler.restoreJobs] Restoring reminder ${successCount + failureCount + 1}/${reminders.length}`);
       try {
         await this.scheduleReminder(r);
         successCount++;
-        console.log(`[Scheduler.restoreJobs] \u2713 Successfully restored reminder: ${r.id}`);
       } catch (error) {
         failureCount++;
         console.error(`[Scheduler.restoreJobs] \u2717 Failed to restore reminder ${r.id}:`, error);
       }
     }
-    console.log(`[Scheduler.restoreJobs] ========================================`);
     console.log(`[Scheduler.restoreJobs] Restoration complete: ${successCount} succeeded, ${failureCount} failed`);
-    console.log(`[Scheduler.restoreJobs] ========================================`);
   }
   /**
    * Remove a scheduled job by ID
    */
   async removeJob(jobId) {
-    console.log(`[Scheduler.removeJob] Attempting to remove job: '${jobId}'`);
     try {
       const removed = await this.agenda.cancel({ name: jobId });
-      console.log(`[Scheduler.removeJob] Canceled ${removed} job(s) with name '${jobId}'`);
       if (removed > 0) {
         console.log(`[Scheduler] Removed job '${jobId}'`);
         return true;
       } else {
-        console.log(`[Scheduler] Job '${jobId}' not found`);
         return false;
       }
     } catch (error) {
