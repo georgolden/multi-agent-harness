@@ -40,6 +40,7 @@ export class Scheduler {
     console.log('[Scheduler.start] Process every: 30 seconds');
     console.log('[Scheduler.start] Max concurrency: 20');
     await this.agenda.start();
+    await this.restoreJobs();
     console.log('[Scheduler] Started successfully');
   }
 
@@ -180,14 +181,15 @@ export class Scheduler {
       reminderId: string;
       scheduleType: string;
     };
-    console.log(`[ReminderFire] Extracted - chatId: ${chatId}, reminderId: ${reminderId}, scheduleType: ${scheduleType}`);
+    console.log(
+      `[ReminderFire] Extracted - chatId: ${chatId}, reminderId: ${reminderId}, scheduleType: ${scheduleType}`,
+    );
     console.log(`[ReminderFire] Message text: "${text}"`);
     console.log(`[ReminderFire] Sending reminder ${reminderId} to chat ${chatId}`);
 
     try {
       console.log(`[ReminderFire] Calling telegram.sendMessage...`);
-      await this.app.services.telegram.sendMessage(chatId, `⏰ Reminder: ${text}`);
-      console.log(`[ReminderFire] Message sent successfully`);
+      this.app.infra.bus.emit('telegram.sendMessage', { chatId, message: `⏰ Reminder: ${text}` });
 
       // For one-time reminders, mark as inactive after firing
       if (scheduleType === 'once') {
@@ -257,7 +259,10 @@ export class Scheduler {
     } catch (error) {
       console.error(`[Scheduler.scheduleReminder] ---------- SCHEDULING FAILED ----------`);
       console.error(`[Scheduler.scheduleReminder] Error:`, error);
-      console.error(`[Scheduler.scheduleReminder] Error stack:`, error instanceof Error ? error.stack : 'No stack trace');
+      console.error(
+        `[Scheduler.scheduleReminder] Error stack:`,
+        error instanceof Error ? error.stack : 'No stack trace',
+      );
       throw error;
     }
   }

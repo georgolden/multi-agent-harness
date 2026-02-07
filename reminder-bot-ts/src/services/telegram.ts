@@ -23,13 +23,15 @@ export class TelegramService {
   async start(): Promise<void> {
     console.log('[Telegram] Starting bot...');
 
-    // Restore scheduled jobs with the callback bound to this service
-    // We do this here to ensure the scheduler has a valid callback to fire
-    await this.app.services.scheduler.restoreJobs();
-
     // Launch bot
     await this.bot.launch(() => {
       console.log('[Telegram] Bot launched!');
+    });
+
+    this.app.infra.bus.on('telegram.sendMessage', async (data: { chatId: string; message: string }) => {
+      await this.sendMessage(data.chatId, data.message).catch((error) => {
+        console.error(`[Telegram] Failed to send message to chat ${data.chatId}:`, error);
+      });
     });
   }
 
@@ -72,7 +74,6 @@ export class TelegramService {
     const sharedStore = { app: this.app, context };
     try {
       await flow.run(sharedStore);
-      this.app.data.messageHistory.clearConversation(userId);
     } catch (error) {
       console.error('[Bot] Error:', error);
       await ctx.reply(`❌ Error: ${error instanceof Error ? error.message : String(error)}`);

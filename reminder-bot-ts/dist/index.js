@@ -469,6 +469,18 @@ You must determine if the user wants to:
 
 ## Output Format
 
+Use limited markdown subset that is supported by telegram
+
+Markwon that is NOT SUPPORTED:
+| Formatting Type | Standard Syntax |
+| :--- | :--- | :--- | :--- |
+| **Line Break Tag** | \`<br>\` HTML tag 
+| **Horizontal Rule** | \`---\`, \`***\`, \`___\` |
+| **Headers** | \`# H1\`, \`## H2\`, etc. |
+| **Images** | \`![alt](url)\` |
+| **Blockquotes** | \`> quote\` |
+| **Tables** | Markdown pipe \` | \` syntax |
+
 Provide **ONE** of the following:
 
 ### Option 1: Question to User
@@ -959,6 +971,7 @@ var Scheduler = class {
     console.log("[Scheduler.start] Process every: 30 seconds");
     console.log("[Scheduler.start] Max concurrency: 20");
     await this.agenda.start();
+    await this.restoreJobs();
     console.log("[Scheduler] Started successfully");
   }
   /**
@@ -1053,13 +1066,14 @@ var Scheduler = class {
     console.log(`[ReminderFire] Current time: ${(/* @__PURE__ */ new Date()).toISOString()}`);
     console.log(`[ReminderFire] Job data:`, JSON.stringify(job.attrs.data));
     const { chatId, text, reminderId, scheduleType } = job.attrs.data;
-    console.log(`[ReminderFire] Extracted - chatId: ${chatId}, reminderId: ${reminderId}, scheduleType: ${scheduleType}`);
+    console.log(
+      `[ReminderFire] Extracted - chatId: ${chatId}, reminderId: ${reminderId}, scheduleType: ${scheduleType}`
+    );
     console.log(`[ReminderFire] Message text: "${text}"`);
     console.log(`[ReminderFire] Sending reminder ${reminderId} to chat ${chatId}`);
     try {
       console.log(`[ReminderFire] Calling telegram.sendMessage...`);
-      await this.app.services.telegram.sendMessage(chatId, `\u23F0 Reminder: ${text}`);
-      console.log(`[ReminderFire] Message sent successfully`);
+      this.app.infra.bus.emit("telegram.sendMessage", { chatId, message: `\u23F0 Reminder: ${text}` });
       if (scheduleType === "once") {
         console.log(`[ReminderFire] This is a one-time reminder, deleting from storage...`);
         await this.app.data.storage.deleteReminder(reminderId);
@@ -1122,7 +1136,10 @@ var Scheduler = class {
     } catch (error) {
       console.error(`[Scheduler.scheduleReminder] ---------- SCHEDULING FAILED ----------`);
       console.error(`[Scheduler.scheduleReminder] Error:`, error);
-      console.error(`[Scheduler.scheduleReminder] Error stack:`, error instanceof Error ? error.stack : "No stack trace");
+      console.error(
+        `[Scheduler.scheduleReminder] Error stack:`,
+        error instanceof Error ? error.stack : "No stack trace"
+      );
       throw error;
     }
   }
@@ -1203,9 +1220,13 @@ var TelegramService = class {
    */
   async start() {
     console.log("[Telegram] Starting bot...");
-    await this.app.services.scheduler.restoreJobs();
     await this.bot.launch(() => {
       console.log("[Telegram] Bot launched!");
+    });
+    this.app.infra.bus.on("telegram.sendMessage", async (data) => {
+      await this.sendMessage(data.chatId, data.message).catch((error) => {
+        console.error(`[Telegram] Failed to send message to chat ${data.chatId}:`, error);
+      });
     });
   }
   /**
@@ -1244,7 +1265,6 @@ var TelegramService = class {
     const sharedStore = { app: this.app, context };
     try {
       await flow.run(sharedStore);
-      this.app.data.messageHistory.clearConversation(userId);
     } catch (error) {
       console.error("[Bot] Error:", error);
       await ctx.reply(`\u274C Error: ${error instanceof Error ? error.message : String(error)}`);
