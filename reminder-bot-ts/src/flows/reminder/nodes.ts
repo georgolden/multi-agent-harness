@@ -15,7 +15,7 @@ import { createSystemPrompt } from './prompts.js';
 import { createToolHandler, TOOLS } from './tools.js';
 import { ConversationMessage } from '../../data/messageHistory.js';
 import { App } from '../../app.js';
-import { ReminderContext } from './types.js';
+import { ReminderContext, AskUserContext, ToolCallsContext } from './types.js';
 
 // PrepareInput Types
 type PrepareInputPrepResult = { userId: string; message: string };
@@ -131,17 +131,13 @@ type AskUserExecResult = 'sent';
 /**
  * AskUser: Request missing information from user
  */
-export class AskUser extends Node<SharedStore<ReminderContext>> {
-  async prep(shared: SharedStore<ReminderContext>): Promise<AskUserPrepResult> {
+export class AskUser extends Node<SharedStore<AskUserContext>> {
+  async prep(shared: SharedStore<AskUserContext>): Promise<AskUserPrepResult> {
     const { app } = shared;
     const { response, chatId } = shared.context;
     console.log(`[AskUser.prep] chatId: ${chatId}, response: "${response}"`);
 
-    if (!response) {
-      console.error(`[AskUser.prep] ERROR: response is undefined!`);
-    }
-
-    return { app, output: response || '', chatId };
+    return { app, output: response, chatId };
   }
 
   async exec({ app, output, chatId }: AskUserPrepResult): Promise<AskUserExecResult> {
@@ -169,12 +165,9 @@ type ToolCallsExecResult = {
   tool_call_id: string;
 };
 
-export class ToolCalls extends ParallelBatchNode<SharedStore<ReminderContext>> {
-  async prep(shared: SharedStore<ReminderContext>): Promise<ToolCallsPrepResult[]> {
+export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> {
+  async prep(shared: SharedStore<ToolCallsContext>): Promise<ToolCallsPrepResult[]> {
     const { toolCalls, userId, chatId } = shared.context;
-    if (!toolCalls) {
-      throw new Error('[ToolCalls.prep] No tool calls found in context');
-    }
 
     console.log(`[ToolCalls.prep] Processing ${toolCalls.length} tool calls for userId: ${userId}, chatId: ${chatId}`);
     toolCalls.forEach((tc: ChatCompletionMessageFunctionToolCall, idx: number) => {

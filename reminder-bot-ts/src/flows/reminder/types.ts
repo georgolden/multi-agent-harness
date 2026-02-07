@@ -10,3 +10,6 @@ export interface ReminderContext {
   response?: string;
   toolCalls?: ChatCompletionMessageFunctionToolCall[];
 }
+
+export type AskUserContext = ReminderContext & { response: string };
+export type ToolCallsContext = ReminderContext & { toolCalls: ChatCompletionMessageFunctionToolCall[] };
