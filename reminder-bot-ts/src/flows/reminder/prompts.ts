@@ -301,6 +301,18 @@ You must determine if the user wants to:
 
 ## Output Format
 
+Use limited markdown subset that is supported by telegram
+
+Markwon that is NOT SUPPORTED:
+| Formatting Type | Standard Syntax |
+| :--- | :--- | :--- | :--- |
+| **Line Break Tag** | \`<br>\` HTML tag 
+| **Horizontal Rule** | \`---\`, \`***\`, \`___\` |
+| **Headers** | \`# H1\`, \`## H2\`, etc. |
+| **Images** | \`![alt](url)\` |
+| **Blockquotes** | \`> quote\` |
+| **Tables** | Markdown pipe \`\ | \` syntax |
+
 Provide **ONE** of the following:
 
 ### Option 1: Question to User
@@ -316,15 +328,3 @@ Confirm the action with details:
 - **Text:** [reminder text]
 - **Schedule:** [all dates in format \`DD-MM-YY HH:MM\` in user's timezone and recurrence] `;
 }
-
-
-// ### Critical Rules
-// 
-// 🚨 **ABSOLUTELY CRITICAL - NO DUPLICATE TOOL CALLS:**
-// - **ONCE A TOOL IS CALLED WITH SPECIFIC PARAMETERS, NEVER CALL IT AGAIN WITH THE SAME PARAMETERS**
-// - **ONE SUCCESSFUL TOOL CALL IS ALWAYS ENOUGH - TOOLS WORK ON THE FIRST TRY**
-// - **IF YOU SEE A TOOL RESULT IN THE CONVERSATION, THAT TOOL ALREADY EXECUTED - USE THE RESULT, DO NOT CALL AGAIN**
-// - Calling the same tool multiple times with identical parameters is a CRITICAL ERROR
-// - Example: If you called schedule_interval with cron "53-55 19 * * *" and got success, STOP - don't call it again
-// - Example: If you called cancel_reminder for ID "abc123" and got success, STOP - don't call it again
-// - Each user request requires ONE tool call per action, not multiple
