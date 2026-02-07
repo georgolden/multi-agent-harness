@@ -5,10 +5,8 @@
 import { Node, ParallelBatchNode } from 'pocketflow';
 import type {
   SharedStore,
-  Reminder,
   ChatCompletionMessage,
   ChatCompletionMessageParam,
-  ChatCompletion,
   ChatCompletionMessageFunctionToolCall,
 } from '../../types.js';
 
@@ -17,12 +15,17 @@ import { createSystemPrompt } from './prompts.js';
 import { createToolHandler, TOOLS } from './tools.js';
 import { ConversationMessage } from '../../data/messageHistory.js';
 import { App } from '../../app.js';
+import { ReminderContext } from './types.js';
+
+// PrepareInput Types
+type PrepareInputPrepResult = { userId: string; message: string };
+type PrepareInputExecResult = 'done';
 
 /**
  * PrepareInput: Add user's message to conversation history (runs once)
  */
-export class PrepareInput extends Node<SharedStore> {
-  async prep(shared: SharedStore) {
+export class PrepareInput extends Node<SharedStore<ReminderContext>> {
+  async prep(shared: SharedStore<ReminderContext>): Promise<PrepareInputPrepResult> {
     const { userId, message } = shared.context;
     console.log(`[PrepareInput.prep] Adding user message to history: "${message}"`);
 
@@ -35,24 +38,33 @@ export class PrepareInput extends Node<SharedStore> {
     return { userId, message };
   }
 
-  async exec(inputs: any) {
+  async exec(inputs: PrepareInputPrepResult): Promise<PrepareInputExecResult> {
     return 'done';
   }
 
-  async post(shared: SharedStore, _prepRes: unknown, execRes: string) {
+  async post(shared: SharedStore<ReminderContext>, _prepRes: PrepareInputPrepResult, execRes: PrepareInputExecResult) {
     return undefined;
   }
 }
 
+// DecideAction Types
+type DecideActionPrepResult = {
+  timezone: string;
+  currentDate: string;
+  conversation: ConversationMessage[];
+  userReminders: string;
+};
+type DecideActionExecResult = ChatCompletionMessage;
+
 /**
  * DecideAction: LLM decides what action to take
  */
-export class DecideAction extends Node<SharedStore> {
+export class DecideAction extends Node<SharedStore<ReminderContext>> {
   constructor() {
     super(3, 1); // maxRetries: 3, wait: 1s
   }
 
-  async prep(shared: SharedStore) {
+  async prep(shared: SharedStore<ReminderContext>): Promise<DecideActionPrepResult> {
     const { userId } = shared.context;
 
     const { data } = shared.app;
@@ -69,7 +81,7 @@ export class DecideAction extends Node<SharedStore> {
     };
   }
 
-  async exec(inputs: any) {
+  async exec(inputs: DecideActionPrepResult): Promise<DecideActionExecResult> {
     const { timezone, currentDate, conversation, userReminders } = inputs;
 
     const systemPrompt = createSystemPrompt(currentDate, timezone, userReminders);
@@ -89,9 +101,9 @@ export class DecideAction extends Node<SharedStore> {
     return response[0].message;
   }
 
-  async post(shared: SharedStore, _prepRes: unknown, execRes: any) {
+  async post(shared: SharedStore<ReminderContext>, _prepRes: DecideActionPrepResult, execRes: DecideActionExecResult) {
     shared.app.data.messageHistory.addMessage(shared.context.userId, execRes);
-    const toolCalls = execRes.tool_calls;
+    const toolCalls = execRes.tool_calls as ChatCompletionMessageFunctionToolCall[];
 
     if (!toolCalls || toolCalls.length === 0) {
       const { content, refusal } = execRes;
@@ -112,11 +124,15 @@ export class DecideAction extends Node<SharedStore> {
   }
 }
 
+// AskUser Types
+type AskUserPrepResult = { app: App; output: string; chatId: string };
+type AskUserExecResult = 'sent';
+
 /**
  * AskUser: Request missing information from user
  */
-export class AskUser extends Node<SharedStore> {
-  async prep(shared: SharedStore) {
+export class AskUser extends Node<SharedStore<ReminderContext>> {
+  async prep(shared: SharedStore<ReminderContext>): Promise<AskUserPrepResult> {
     const { app } = shared;
     const { response, chatId } = shared.context;
     console.log(`[AskUser.prep] chatId: ${chatId}, response: "${response}"`);
@@ -125,24 +141,41 @@ export class AskUser extends Node<SharedStore> {
       console.error(`[AskUser.prep] ERROR: response is undefined!`);
     }
 
-    return { app, output: response, chatId };
+    return { app, output: response || '', chatId };
   }
 
-  async exec({ app, output, chatId }: { app: App; output: string; chatId: string }) {
+  async exec({ app, output, chatId }: AskUserPrepResult): Promise<AskUserExecResult> {
     console.log(`[AskUser.exec] Sending message to chatId: ${chatId}, output: "${output}"`);
     app.infra.bus.emit('telegram.sendMessage', { chatId, message: output });
     return 'sent';
   }
 
-  async post(shared: SharedStore, _prepRes: unknown, execRes: string) {
+  async post(shared: SharedStore<ReminderContext>, _prepRes: AskUserPrepResult, execRes: AskUserExecResult) {
     console.log(`[AskUser.post] execRes: ${execRes}`);
     return undefined;
   }
 }
 
-export class ToolCalls extends ParallelBatchNode<SharedStore> {
-  async prep(shared: SharedStore) {
+// ToolCalls Types
+type ToolCallsPrepResult = {
+  tc: ChatCompletionMessageFunctionToolCall;
+  app: App;
+  userId: string;
+  chatId: string;
+};
+type ToolCallsExecResult = {
+  role: 'tool';
+  content: string;
+  tool_call_id: string;
+};
+
+export class ToolCalls extends ParallelBatchNode<SharedStore<ReminderContext>> {
+  async prep(shared: SharedStore<ReminderContext>): Promise<ToolCallsPrepResult[]> {
     const { toolCalls, userId, chatId } = shared.context;
+    if (!toolCalls) {
+      throw new Error('[ToolCalls.prep] No tool calls found in context');
+    }
+
     console.log(`[ToolCalls.prep] Processing ${toolCalls.length} tool calls for userId: ${userId}, chatId: ${chatId}`);
     toolCalls.forEach((tc: ChatCompletionMessageFunctionToolCall, idx: number) => {
       console.log(`[ToolCalls.prep] Tool ${idx}: ${tc.function.name}, args: ${tc.function.arguments}`);
@@ -150,17 +183,7 @@ export class ToolCalls extends ParallelBatchNode<SharedStore> {
     return toolCalls.map((tc: ChatCompletionMessageFunctionToolCall) => ({ tc, app: shared.app, userId, chatId }));
   }
 
-  async exec({
-    tc,
-    app,
-    userId,
-    chatId,
-  }: {
-    tc: ChatCompletionMessageFunctionToolCall;
-    app: App;
-    userId: string;
-    chatId: string;
-  }) {
+  async exec({ tc, app, userId, chatId }: ToolCallsPrepResult): Promise<ToolCallsExecResult> {
     const args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
     const { name } = tc.function;
 
@@ -169,14 +192,10 @@ export class ToolCalls extends ParallelBatchNode<SharedStore> {
 
     console.log(`[ToolCalls.exec] Tool ${name} returned: "${content}"`);
 
-    return { role: 'tool', content, id: tc.id, name };
+    return { role: 'tool', content, tool_call_id: tc.id };
   }
 
-  async post(
-    shared: SharedStore,
-    _prepRes: ChatCompletionMessageFunctionToolCall[],
-    execRes: ChatCompletionMessageParam[],
-  ) {
+  async post(shared: SharedStore<ReminderContext>, _prepRes: ToolCallsPrepResult[], execRes: ToolCallsExecResult[]) {
     console.log(`[ToolCalls.post] Adding ${execRes.length} tool result messages to history`);
     shared.app.data.messageHistory.addMessages(shared.context.userId, execRes);
     return undefined;

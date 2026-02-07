@@ -21,7 +21,7 @@ export interface User {
 }
 
 // Shared store for PocketFlow
-export type SharedStore = { app: App; context: Record<string, any> };
+export type SharedStore<Context = Record<string, any>> = { app: App; context: Context };
 
 // Tool call types
 export interface ToolCall {
@@ -35,5 +35,6 @@ export type {
   ChatCompletion,
   ChatCompletionMessage,
   ChatCompletionMessageParam,
+  ChatCompletionMessageToolCall,
   ChatCompletionMessageFunctionToolCall,
 } from 'openai/resources';

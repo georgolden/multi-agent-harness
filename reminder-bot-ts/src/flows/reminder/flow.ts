@@ -5,13 +5,14 @@
 import { Flow } from 'pocketflow';
 import { PrepareInput, DecideAction, AskUser, ToolCalls } from './nodes.js';
 import type { SharedStore } from '../../types.js';
+import { ReminderContext } from './types.js';
 
-export type ReminderFlow = Flow<SharedStore>;
+export type ReminderFlow = Flow<SharedStore<ReminderContext>>;
 
 /**
  * Create and return the reminder agent flow
  */
-export function createReminderFlow(): Flow<SharedStore> {
+export function createReminderFlow(): Flow<SharedStore<ReminderContext>> {
   // Create nodes
   const prepareInput = new PrepareInput();
   const decideAction = new DecideAction();
@@ -31,5 +32,5 @@ export function createReminderFlow(): Flow<SharedStore> {
   toolCalls.next(decideAction);
 
   // Create flow starting with PrepareInput
-  return new Flow<SharedStore>(prepareInput);
+  return new Flow<SharedStore<ReminderContext>>(prepareInput);
 }
