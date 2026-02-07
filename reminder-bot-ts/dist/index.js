@@ -1139,10 +1139,11 @@ var TelegramService = class {
    */
   async start() {
     console.log("[Telegram] Starting bot...");
-    await this.bot.launch(() => {
+    this.bot.launch(() => {
       console.log("[Telegram] Bot launched!");
-    });
+    }).catch((error) => console.error("[Telegram] Error launching bot:", error));
     this.app.infra.bus.on("telegram.sendMessage", async (data) => {
+      console.log(`[Telegram] Sending message to chat ${data.chatId}: ${data.message}`);
       await this.sendMessage(data.chatId, data.message).catch((error) => {
         console.error(`[Telegram] Failed to send message to chat ${data.chatId}:`, error);
       });

@@ -24,11 +24,14 @@ export class TelegramService {
     console.log('[Telegram] Starting bot...');
 
     // Launch bot
-    await this.bot.launch(() => {
-      console.log('[Telegram] Bot launched!');
-    });
+    this.bot
+      .launch(() => {
+        console.log('[Telegram] Bot launched!');
+      })
+      .catch((error) => console.error('[Telegram] Error launching bot:', error));
 
     this.app.infra.bus.on('telegram.sendMessage', async (data: { chatId: string; message: string }) => {
+      console.log(`[Telegram] Sending message to chat ${data.chatId}: ${data.message}`);
       await this.sendMessage(data.chatId, data.message).catch((error) => {
         console.error(`[Telegram] Failed to send message to chat ${data.chatId}:`, error);
       });
