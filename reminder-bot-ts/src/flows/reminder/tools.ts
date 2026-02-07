@@ -178,11 +178,10 @@ const toolHandlers = {
       // Schedule the job
       await app.services.scheduler.scheduleReminder(reminder);
 
-      const formattedTime = dayjs(args.datetime).tz(userTimezone).format('YYYY-MM-DD HH:mm:ss');
-      return `✅ Reminder scheduled for ${formattedTime} ${userTimezone}\nID: ${reminder.id}`;
+      return { status: 'success', reminder };
     } catch (error: any) {
       console.error('[schedule_once] Error:', error);
-      return `❌ Failed to schedule reminder: ${error.message}`;
+      return { status: 'error', error: error?.message };
     }
   },
 
@@ -225,14 +224,10 @@ const toolHandlers = {
       // Schedule the cron job
       await app.services.scheduler.scheduleReminder(reminder);
 
-      let dateInfo = '';
-      if (args.schedule_start_date) dateInfo += `\nStarts: ${args.schedule_start_date}`;
-      if (args.schedule_end_date) dateInfo += `\nEnds: ${args.schedule_end_date}`;
-
-      return `✅ Recurring reminder scheduled with cron: ${args.cron_expression}${dateInfo}\nID: ${reminder.id}`;
+      return { status: 'success', reminder };
     } catch (error: any) {
       console.error('[schedule_recurring] Error:', error);
-      return `❌ Failed to schedule recurring reminder: ${error.message}`;
+      return { status: 'error', error: error?.message };
     }
   },
 
@@ -255,27 +250,10 @@ const toolHandlers = {
   list_reminders: async (app: App, userId: string, _chatId: string, _args: {}) => {
     try {
       const reminders = await app.data.storage.getReminders(userId);
-      const userTimezone = await app.data.storage.getUserTimezone(userId);
-
-      if (reminders.length === 0) {
-        return '📋 You have no active reminders.';
-      }
-
-      const reminderList = reminders
-        .map((r) => {
-          const type = r.scheduleType === 'once' ? '🔔 One-time' : '🔁 Recurring';
-          const schedule =
-            r.scheduleType === 'once'
-              ? dayjs(r.scheduleValue).tz(userTimezone).format('YYYY-MM-DD HH:mm:ss')
-              : `Cron: ${r.scheduleValue}`;
-          return `${type} [ID: ${r.id}]\n  ${r.text}\n  ${schedule} (${userTimezone})`;
-        })
-        .join('\n\n');
-
-      return `📋 Your active reminders (${reminders.length}):\n\n${reminderList}`;
+      return { status: 'success', reminders };
     } catch (error: any) {
       console.error('[list_reminders] Error:', error);
-      return `❌ Failed to list reminders: ${error.message}`;
+      return { status: 'error', error: error?.message };
     }
   },
 
@@ -288,7 +266,7 @@ const toolHandlers = {
       const reminder = await app.data.storage.getReminderForUser(args.reminder_id, userId);
 
       if (!reminder) {
-        return `❌ Reminder ${args.reminder_id} not found or doesn't belong to you.`;
+        return { status: 'success' };
       }
 
       // Remove from scheduler first
@@ -297,10 +275,10 @@ const toolHandlers = {
       // Then delete from storage
       await app.data.storage.deleteReminder(reminder.id);
 
-      return `✅ Reminder ${args.reminder_id} has been cancelled.`;
+      return { status: 'success' };
     } catch (error: any) {
       console.error('[cancel_reminder] Error:', error);
-      return `❌ Failed to cancel reminder: ${error.message}`;
+      return { status: 'error', error: error?.message };
     }
   },
 
@@ -312,10 +290,8 @@ const toolHandlers = {
       const reminders = await app.data.storage.getReminders(userId);
 
       if (reminders.length === 0) {
-        return '📋 You have no active reminders to cancel.';
+        return { status: 'success' };
       }
-
-      let cancelledCount = 0;
 
       for (const reminder of reminders) {
         // Remove from scheduler
@@ -323,14 +299,12 @@ const toolHandlers = {
 
         // Delete from storage
         await app.data.storage.deleteReminder(reminder.id);
-
-        cancelledCount++;
       }
 
-      return `✅ Cancelled ${cancelledCount} reminder(s).`;
+      return { status: 'success' };
     } catch (error: any) {
       console.error('[cancel_all_reminders] Error:', error);
-      return `❌ Failed to cancel all reminders: ${error.message}`;
+      return { status: 'error', error: error?.message };
     }
   },
 
@@ -342,17 +316,16 @@ const toolHandlers = {
       // Validate timezone by trying to use it
       const testDate = dayjs.tz(new Date(), args.timezone);
       if (!testDate.isValid()) {
-        return `❌ Invalid timezone: ${args.timezone}`;
+        return { status: 'error', error: 'Invalid timezone' };
       }
 
       // Set the timezone in storage
       await app.data.storage.setUserTimezone(userId, args.timezone);
 
-      const currentTime = dayjs().tz(args.timezone).format('YYYY-MM-DD HH:mm:ss');
-      return `✅ Timezone set to ${args.timezone}\nCurrent time: ${currentTime}`;
+      return { status: 'success' };
     } catch (error: any) {
       console.error('[set_timezone] Error:', error);
-      return `❌ Failed to set timezone: ${error.message}`;
+      return { status: 'error', error: error?.message };
     }
   },
 };
@@ -362,5 +335,8 @@ export function createToolHandler(name: string) {
   if (!handler) {
     throw new Error(`Unknown tool: ${name}`);
   }
-  return handler;
+  return async (app: App, userId: string, chatId: string, args: any): Promise<string> => {
+    const res = await handler(app, userId, chatId, args);
+    return JSON.stringify(res);
+  };
 }

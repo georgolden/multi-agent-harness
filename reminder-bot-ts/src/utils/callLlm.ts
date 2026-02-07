@@ -50,7 +50,7 @@ export async function callLlmWithTools(
     model: 'moonshotai/kimi-k2.5',
     messages,
     tools,
-    tool_choice: 'required',
+    tool_choice: 'auto',
     temperature: 0.3,
   });
 

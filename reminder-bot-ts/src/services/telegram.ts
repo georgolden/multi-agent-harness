@@ -46,7 +46,9 @@ export class TelegramService {
    */
   async sendMessage(chatId: string, message: string): Promise<void> {
     try {
-      await this.bot.telegram.sendMessage(parseInt(chatId), message);
+      await this.bot.telegram.sendMessage(parseInt(chatId), message, {
+        parse_mode: 'Markdown',
+      });
       console.log(`[Telegram] Sent message to chat ${chatId}`);
     } catch (error) {
       console.error(`[Telegram] Failed to send message to chat ${chatId}:`, error);

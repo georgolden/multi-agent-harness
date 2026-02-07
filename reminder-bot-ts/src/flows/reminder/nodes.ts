@@ -36,12 +36,10 @@ export class PrepareInput extends Node<SharedStore> {
   }
 
   async exec(inputs: any) {
-    console.log(`[PrepareInput.exec] Message added to history`);
     return 'done';
   }
 
   async post(shared: SharedStore, _prepRes: unknown, execRes: string) {
-    console.log(`[PrepareInput.post] Proceeding to DecideAction`);
     return undefined;
   }
 }
@@ -56,7 +54,6 @@ export class DecideAction extends Node<SharedStore> {
 
   async prep(shared: SharedStore) {
     const { userId } = shared.context;
-    console.log(`[DecideAction.prep] Getting conversation for userId: ${userId}`);
 
     const { data } = shared.app;
     const userReminders = await data.storage.getReminders(userId);
@@ -64,8 +61,6 @@ export class DecideAction extends Node<SharedStore> {
     console.log(`[DecideAction.prep] Found ${userReminders.length} reminders, timezone: ${timezone}`);
 
     const conversation = data.messageHistory.getConversation(userId);
-    console.log(`[DecideAction.prep] Conversation has ${conversation.length} messages`);
-
     return {
       timezone: timezone,
       currentDate: new Date().toISOString(),
@@ -84,14 +79,7 @@ export class DecideAction extends Node<SharedStore> {
     console.log(
       `[DecideAction.exec] Calling LLM with ${messages.length} messages (user_tz: ${timezone}, ${userReminders.length} reminders)`,
     );
-
-    // Log the full conversation being sent to LLM
-    console.log('[DecideAction.exec] CONVERSATION MESSAGES:');
-    conversation.forEach((msg: any, idx: number) => {
-      const preview =
-        typeof msg.content === 'string' ? msg.content.substring(0, 100) : JSON.stringify(msg.content).substring(0, 100);
-      console.log(`  [${idx}] role: ${msg.role}, content: "${preview}..."`);
-    });
+    console.log(conversation);
 
     // Call LLM with tools
     const response = await callLlmWithTools(messages, TOOLS);
@@ -104,11 +92,9 @@ export class DecideAction extends Node<SharedStore> {
   async post(shared: SharedStore, _prepRes: unknown, execRes: any) {
     shared.app.data.messageHistory.addMessage(shared.context.userId, execRes);
     const toolCalls = execRes.tool_calls;
-    console.log(`[DecideAction.post] Tool calls present: ${!!toolCalls}, count: ${toolCalls?.length || 0}`);
 
     if (!toolCalls || toolCalls.length === 0) {
       const { content, refusal } = execRes;
-      console.log(`[DecideAction.post] No tool calls. content: "${content}", refusal: "${refusal}"`);
 
       let output = '';
       if (content) output = `${output}${content}`;
@@ -145,7 +131,6 @@ export class AskUser extends Node<SharedStore> {
   async exec({ app, output, chatId }: { app: App; output: string; chatId: string }) {
     console.log(`[AskUser.exec] Sending message to chatId: ${chatId}, output: "${output}"`);
     await app.services.telegram.sendMessage(chatId, output);
-    console.log(`[AskUser.exec] Message sent successfully`);
     return 'sent';
   }
 
@@ -178,16 +163,11 @@ export class ToolCalls extends ParallelBatchNode<SharedStore> {
   }) {
     const args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
     const { name } = tc.function;
-    console.log(`[ToolCalls.exec] Executing tool: ${name}, args:`, args);
 
     const handler = createToolHandler(name);
     const content = await handler(app, userId, chatId, args);
 
     console.log(`[ToolCalls.exec] Tool ${name} returned: "${content}"`);
-
-    if (!content) {
-      console.error(`[ToolCalls.exec] ERROR: Tool ${name} returned undefined or empty content!`);
-    }
 
     return { role: 'tool', content, id: tc.id, name };
   }
@@ -198,9 +178,6 @@ export class ToolCalls extends ParallelBatchNode<SharedStore> {
     execRes: ChatCompletionMessageParam[],
   ) {
     console.log(`[ToolCalls.post] Adding ${execRes.length} tool result messages to history`);
-    execRes.forEach((msg, idx) => {
-      console.log(`[ToolCalls.post] Message ${idx}:`, JSON.stringify(msg, null, 2));
-    });
     shared.app.data.messageHistory.addMessages(shared.context.userId, execRes);
     return undefined;
   }
