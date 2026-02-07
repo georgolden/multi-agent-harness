@@ -38,11 +38,11 @@ export class PrepareInput extends Node<SharedStore<ReminderContext>> {
     return { userId, message };
   }
 
-  async exec(inputs: PrepareInputPrepResult): Promise<PrepareInputExecResult> {
+  async exec(_prepRes: PrepareInputPrepResult): Promise<PrepareInputExecResult> {
     return 'done';
   }
 
-  async post(shared: SharedStore<ReminderContext>, _prepRes: PrepareInputPrepResult, execRes: PrepareInputExecResult) {
+  async post(_shared: SharedStore<ReminderContext>, _prepRes: PrepareInputPrepResult, execRes: PrepareInputExecResult) {
     return undefined;
   }
 }
@@ -81,8 +81,8 @@ export class DecideAction extends Node<SharedStore<ReminderContext>> {
     };
   }
 
-  async exec(inputs: DecideActionPrepResult): Promise<DecideActionExecResult> {
-    const { timezone, currentDate, conversation, userReminders } = inputs;
+  async exec(prepRes: DecideActionPrepResult): Promise<DecideActionExecResult> {
+    const { timezone, currentDate, conversation, userReminders } = prepRes;
 
     const systemPrompt = createSystemPrompt(currentDate, timezone, userReminders);
 
@@ -121,6 +121,11 @@ export class DecideAction extends Node<SharedStore<ReminderContext>> {
       shared.context.toolCalls = toolCalls;
       return 'tool_calls';
     }
+  }
+
+  async execFallback(_prepRes: DecideActionPrepResult, error: Error): Promise<DecideActionExecResult> {
+    console.error('[DecideAction.error] ', error);
+    return { role: 'assistant', content: 'AI is broken try again later', refusal: null };
   }
 }
 
