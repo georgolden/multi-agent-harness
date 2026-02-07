@@ -158,11 +158,11 @@ const toolHandlers = {
    */
   schedule_once: async (
     app: App,
-    userId: string,
-    chatId: string,
+    context: { userId: string; chatId: string },
     args: { reminder_text: string; datetime: string },
   ) => {
     try {
+      const { userId, chatId } = context;
       const userTimezone = await app.data.storage.getUserTimezone(userId);
 
       // Save reminder to storage - datetime is already ISO string
@@ -190,11 +190,11 @@ const toolHandlers = {
    */
   schedule_recurring: async (
     app: App,
-    userId: string,
-    chatId: string,
+    context: { userId: string; chatId: string },
     args: { reminder_text: string; cron_expression: string; schedule_start_date?: string; schedule_end_date?: string },
   ) => {
     try {
+      const { userId, chatId } = context;
       const userTimezone = await app.data.storage.getUserTimezone(userId);
 
       // Dates are already ISO strings, just convert to Date objects if provided
@@ -236,19 +236,19 @@ const toolHandlers = {
    */
   schedule_interval: async (
     app: App,
-    userId: string,
-    chatId: string,
+    context: { userId: string; chatId: string },
     args: { reminder_text: string; cron_expression: string; schedule_start_date?: string; schedule_end_date?: string },
   ) => {
     // Interval is essentially the same as recurring for this implementation
-    return toolHandlers.schedule_recurring(app, userId, chatId, args);
+    return toolHandlers.schedule_recurring(app, context, args);
   },
 
   /**
    * List all active reminders for the user
    */
-  list_reminders: async (app: App, userId: string, _chatId: string, _args: {}) => {
+  list_reminders: async (app: App, context: { userId: string; chatId: string }, _args: {}) => {
     try {
+      const { userId } = context;
       const reminders = await app.data.storage.getReminders(userId);
       return { status: 'success', reminders };
     } catch (error: any) {
@@ -260,8 +260,9 @@ const toolHandlers = {
   /**
    * Cancel a specific reminder by ID
    */
-  cancel_reminder: async (app: App, userId: string, _chatId: string, args: { reminder_id: string }) => {
+  cancel_reminder: async (app: App, context: { userId: string; chatId: string }, args: { reminder_id: string }) => {
     try {
+      const { userId } = context;
       // Verify the reminder belongs to this user
       const reminder = await app.data.storage.getReminderForUser(args.reminder_id, userId);
 
@@ -285,8 +286,9 @@ const toolHandlers = {
   /**
    * Cancel all reminders for the user
    */
-  cancel_all_reminders: async (app: App, userId: string, _chatId: string, _args: {}) => {
+  cancel_all_reminders: async (app: App, context: { userId: string; chatId: string }, _args: {}) => {
     try {
+      const { userId } = context;
       const reminders = await app.data.storage.getReminders(userId);
 
       if (reminders.length === 0) {
@@ -311,8 +313,9 @@ const toolHandlers = {
   /**
    * Set the user's preferred timezone
    */
-  set_timezone: async (app: App, userId: string, _chatId: string, args: { timezone: string }) => {
+  set_timezone: async (app: App, context: { userId: string; chatId: string }, args: { timezone: string }) => {
     try {
+      const { userId } = context;
       // Validate timezone by trying to use it
       const testDate = dayjs.tz(new Date(), args.timezone);
       if (!testDate.isValid()) {
@@ -335,8 +338,8 @@ export function createToolHandler(name: string) {
   if (!handler) {
     throw new Error(`Unknown tool: ${name}`);
   }
-  return async (app: App, userId: string, chatId: string, args: any): Promise<string> => {
-    const res = await handler(app, userId, chatId, args);
+  return async (app: App, context: { userId: string; chatId: string }, args: any): Promise<string> => {
+    const res = await handler(app, context, args);
     return JSON.stringify(res);
   };
 }

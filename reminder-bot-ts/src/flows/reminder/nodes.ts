@@ -130,7 +130,7 @@ export class AskUser extends Node<SharedStore> {
 
   async exec({ app, output, chatId }: { app: App; output: string; chatId: string }) {
     console.log(`[AskUser.exec] Sending message to chatId: ${chatId}, output: "${output}"`);
-    await app.services.telegram.sendMessage(chatId, output);
+    app.infra.bus.emit('telegram.sendMessage', { chatId, message: output });
     return 'sent';
   }
 
@@ -165,7 +165,7 @@ export class ToolCalls extends ParallelBatchNode<SharedStore> {
     const { name } = tc.function;
 
     const handler = createToolHandler(name);
-    const content = await handler(app, userId, chatId, args);
+    const content = await handler(app, { userId, chatId }, args);
 
     console.log(`[ToolCalls.exec] Tool ${name} returned: "${content}"`);
 
