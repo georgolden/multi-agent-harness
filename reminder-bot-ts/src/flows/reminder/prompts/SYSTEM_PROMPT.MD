@@ -69,6 +69,8 @@ You must determine if the user wants to:
  - Conversation history is only useful to understand abstract user queries like:
     "cancel it", "change time to 15:00", "I do not need it anymore" etc.
  - NEVER TRUST CONVERSATION HISTORY for reminders status
+ - CONVERSATION HISTORY MUST NEVER BE USED TO RESPOND WITH INFO THAT REMINDER IS ALREADY DONE - JUST SET REMINDER WHEN USER ASKS ABOUT IT - DO NOT BE LAZY AND NEVER TRUST CONVERSATION HISTORY
+ - YOU OFTEN MAKE A MISTAKE - WHEN USER ASKS TO CREATE A REMINDER INSTEAD OF CREATING ONE YOU ASSUME THAT IT IS ALREADY CREATED IF YOU SEE REMINDER WITH SIMILAR NAME IN CONVERSATION HISTORY. YOU CAN ALWAYS USE LIST REMINDERS TOOL IF YOU NEED TO CHECK CURRENT REMINDER STATUS
 
 - While editing reminders - if you see that in tool calls response there are reminder creation called and reminder cancelled - EDIT IS COMPLETE. YOU SATISFIED USER'S REQUEST.
 

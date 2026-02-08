@@ -27,6 +27,7 @@ export class Scheduler {
      */
     async start() {
         console.log('[Scheduler.start] Starting Agenda scheduler...');
+        await this.restoreJobs();
         await this.agenda.start();
         console.log('[Scheduler] Started successfully');
     }
@@ -141,6 +142,25 @@ export class Scheduler {
             console.error(`[Scheduler.scheduleReminder] Error:`, error);
             throw error;
         }
+    }
+    /**
+     * Restore job definitions for existing reminders.
+     * This is necessary because Agenda requires job definitions to be loaded in memory
+     * to process jobs stored in the database.
+     */
+    async restoreJobs() {
+        console.log('[Scheduler.restoreJobs] Restoring job definitions...');
+        const reminders = await this.app.data.reminderRepository.getAllReminders();
+        if (reminders.length === 0) {
+            console.log('[Scheduler.restoreJobs] No reminders to restore');
+            return;
+        }
+        for (const reminder of reminders) {
+            // We only define the job processor.
+            // We do NOT call schedule() or create() because the job data is already in the Agenda DB.
+            this.agenda.define(reminder.id, (job) => this.onReminderFire(job));
+        }
+        console.log(`[Scheduler.restoreJobs] Restored definitions for ${reminders.length} reminders`);
     }
     /**
      * Remove a scheduled job by ID

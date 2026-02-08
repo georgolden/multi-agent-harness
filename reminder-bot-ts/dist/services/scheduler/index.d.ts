@@ -50,6 +50,12 @@ export declare class Scheduler {
      */
     scheduleReminder(reminder: Reminder): Promise<void>;
     /**
+     * Restore job definitions for existing reminders.
+     * This is necessary because Agenda requires job definitions to be loaded in memory
+     * to process jobs stored in the database.
+     */
+    restoreJobs(): Promise<void>;
+    /**
      * Remove a scheduled job by ID
      */
     removeJob(jobId: string): Promise<boolean>;
