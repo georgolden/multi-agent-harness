@@ -1,0 +1,56 @@
+{
+  "name": "runtime",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "TypeScript template for PocketFlow",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "npm run build && node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts,.js,.jsx,.tsx"
+  },
+  "keywords": [
+    "pocketflow",
+    "template",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^9.23.0",
+    "@stylistic/eslint-plugin": "^5.7.1",
+    "@types/node": "^25.1.0",
+    "@types/prompt-sync": "^4.2.3",
+    "@typescript-eslint/eslint-plugin": "^8.28.0",
+    "@typescript-eslint/parser": "^8.28.0",
+    "eslint": "^9.23.0",
+    "globals": "^17.2.0",
+    "prettier": "^3.8.1",
+    "prompt-sync": "^4.2.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.28.0",
+    "vitest": "^4.0.18"
+  },
+  "dependencies": {
+    "@silvia-odwyer/photon-node": "^0.3.4",
+    "@sinclair/typebox": "^0.34.48",
+    "diff": "^8.0.3",
+    "file-type": "^21.3.0",
+    "glob": "^13.0.1",
+    "yaml": "^2.8.2",
+    "@agendajs/postgres-backend": "^2.0.0",
+    "@types/pg": "^8.16.0",
+    "agenda": "^6.1.0",
+    "dayjs": "^1.11.19",
+    "dotenv": "^17.2.3",
+    "openai": "^6.17.0",
+    "pg": "^8.18.0",
+    "pocketflow": "^1.0.4",
+    "telegraf": "^4.16.3"
+  }
+}
