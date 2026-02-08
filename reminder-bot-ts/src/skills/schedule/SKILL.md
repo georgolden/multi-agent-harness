@@ -1,7 +1,7 @@
-```
+---
 name: schedule-reminder
 description: This skill defines how to interpret and schedule three types of reminders: one-time, recurring, and recurring interval reminders.
-```
+---
 
 ## Reminder Interpreter Skill
 
