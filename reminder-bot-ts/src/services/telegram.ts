@@ -93,3 +93,11 @@ export class TelegramService {
     await ctx.reply(helpText);
   }
 }
+
+if (!process.env.TELEGRAM_BOT_TOKEN) {
+  throw new Error('Env TELEGRAM_BOT_TOKEN is not defined');
+}
+
+export const config = {
+  token: process.env.TELEGRAM_BOT_TOKEN,
+};

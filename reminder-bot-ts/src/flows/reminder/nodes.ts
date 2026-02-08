@@ -11,11 +11,11 @@ import type {
 } from '../../types.js';
 
 import { callLlmWithTools } from '../../utils/callLlm.js';
-import { createSystemPrompt } from './prompts.js';
+import { createSystemPrompt } from './prompts/index.js';
 import { createToolHandler, TOOLS } from './tools.js';
-import { ConversationMessage } from '../../data/messageHistory.js';
-import { App } from '../../app.js';
-import { ReminderContext, AskUserContext, ToolCallsContext } from './types.js';
+import type { ConversationMessage } from '../../data/messageHistory/index.js';
+import type { App } from '../../app.js';
+import type { ReminderContext, AskUserContext, ToolCallsContext } from './types.js';
 
 // PrepareInput Types
 type PrepareInputPrepResult = { userId: string; message: string };
@@ -68,8 +68,8 @@ export class DecideAction extends Node<SharedStore<ReminderContext>> {
     const { userId } = shared.context;
 
     const { data } = shared.app;
-    const userReminders = await data.storage.getReminders(userId);
-    const timezone = await data.storage.getUserTimezone(userId);
+    const userReminders = await data.reminderRepository.getReminders(userId);
+    const timezone = await data.reminderRepository.getUserTimezone(userId);
     console.log(`[DecideAction.prep] Found ${userReminders.length} reminders, timezone: ${timezone}`);
 
     const conversation = data.messageHistory.getConversation(userId);

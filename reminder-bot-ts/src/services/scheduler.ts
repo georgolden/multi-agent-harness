@@ -7,8 +7,8 @@ import type { Job } from 'agenda';
 import { PostgresBackend } from '@agendajs/postgres-backend';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc.js';
-import { Reminder } from '../types.js';
-import { App } from '../app.js';
+import type { Reminder } from '../data/reminderRepository/types.js';
+import type { App } from '../app.js';
 
 dayjs.extend(utc);
 
@@ -141,7 +141,7 @@ export class Scheduler {
 
       // For one-time reminders, mark as inactive after firing
       if (scheduleType === 'once') {
-        await this.app.data.storage.deleteReminder(reminderId);
+        await this.app.data.reminderRepository.deleteReminder(reminderId);
       }
     } catch (error) {
       console.error(`[ReminderFire] Error sending reminder ${reminderId}:`, error);
@@ -190,12 +190,12 @@ export class Scheduler {
   }
 
   /**
-   * Restore all active reminders from storage
+   * Restore all active reminders from reminderRepository
    */
   async restoreJobs(): Promise<void> {
     console.log(`[Scheduler.restoreJobs] Starting job restoration process...`);
 
-    const reminders = await this.app.data.storage.getAllReminders();
+    const reminders = await this.app.data.reminderRepository.getAllReminders();
 
     if (reminders.length === 0) {
       console.log(`[Scheduler.restoreJobs] No reminders to restore`);
@@ -245,3 +245,11 @@ export class Scheduler {
     return this.agenda;
   }
 }
+
+if (!process.env.DATABASE_URL) {
+  throw new Error('Env DATABASE_URL is not defined');
+}
+
+export const config = {
+  connectionString: process.env.DATABASE_URL,
+};

@@ -1,22 +1,21 @@
-import { MessageHistory } from './messageHistory.js';
-import { Storage } from './storage.js';
-import config from '../config/data.js';
+import { MessageHistory, config as messageHistoryConfig } from './messageHistory/index.js';
+import { ReminderRepository, config as storageConfig } from './reminderRepository/index.js';
 import type { App } from '../app.js';
 
 export class Data {
   messageHistory: MessageHistory;
-  storage: Storage;
+  reminderRepository: ReminderRepository;
 
   constructor(app: App) {
-    this.messageHistory = new MessageHistory(app, config.MessageHistory);
-    this.storage = new Storage(app, config.Storage);
+    this.messageHistory = new MessageHistory(app, messageHistoryConfig);
+    this.reminderRepository = new ReminderRepository(app, storageConfig);
   }
 
   async start() {
-    await Promise.all([this.messageHistory.start(), this.storage.start()]);
+    await Promise.all([this.messageHistory.start(), this.reminderRepository.start()]);
   }
 
   async stop() {
-    await Promise.all([this.messageHistory.stop(), this.storage.stop()]);
+    await Promise.all([this.messageHistory.stop(), this.reminderRepository.stop()]);
   }
 }

@@ -5,7 +5,7 @@
 import { Flow } from 'pocketflow';
 import { PrepareInput, DecideAction, AskUser, ToolCalls } from './nodes.js';
 import type { SharedStore } from '../../types.js';
-import { ReminderContext } from './types.js';
+import type { ReminderContext } from './types.js';
 
 export type ReminderFlow = Flow<SharedStore<ReminderContext>>;
 

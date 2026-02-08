@@ -1,16 +1,16 @@
 /**
- * Storage service for reminders and user preferences.
+ * ReminderRepository service for reminders and user preferences.
  * Uses Postgres for persistence.
  */
 import { Pool } from 'pg';
 import { randomBytes } from 'crypto';
-import type { Reminder, User } from '../types.js';
-import { App } from '../app.js';
+import type { Reminder, User } from './types.js';
+import { App } from '../../app.js';
 
 /**
- * Storage for managing reminders and user preferences
+ * ReminderRepository for managing reminders and user preferences
  */
-export class Storage {
+export class ReminderRepository {
   public pool: Pool;
   app: App;
 
@@ -53,7 +53,7 @@ export class Storage {
       ON reminders(user_id, active)
     `);
 
-    console.log('[Storage] Initialized with Postgres');
+    console.log('[ReminderRepository] Initialized with Postgres');
   }
 
   /**
@@ -61,7 +61,7 @@ export class Storage {
    */
   async stop(): Promise<void> {
     await this.pool.end();
-    console.log('[Storage] Connection closed');
+    console.log('[ReminderRepository] Connection closed');
   }
 
   /**
@@ -124,7 +124,7 @@ export class Storage {
     );
 
     const reminder = this.mapDbRowToReminder(result.rows[0]);
-    console.log(`[Storage] Saved reminder '${id}': ${params.text.slice(0, 50)}...`);
+    console.log(`[ReminderRepository] Saved reminder '${id}': ${params.text.slice(0, 50)}...`);
     return reminder;
   }
 
@@ -178,11 +178,11 @@ export class Storage {
     ]);
 
     if (result.rowCount === 0) {
-      console.log(`[Storage] Reminder '${reminderId}' not found`);
+      console.log(`[ReminderRepository] Reminder '${reminderId}' not found`);
       return false;
     }
 
-    console.log(`[Storage] Deleted reminder '${reminderId}'`);
+    console.log(`[ReminderRepository] Deleted reminder '${reminderId}'`);
     return true;
   }
 
@@ -210,6 +210,14 @@ export class Storage {
        ON CONFLICT (id) DO UPDATE SET timezone = $2`,
       [userId, timezone],
     );
-    console.log(`[Storage] Set timezone for user ${userId}: ${timezone}`);
+    console.log(`[ReminderRepository] Set timezone for user ${userId}: ${timezone}`);
   }
 }
+
+if (!process.env.DATABASE_URL) {
+  throw new Error('Env DATABASE_URL is not defined');
+}
+
+export const config = {
+  connectionString: process.env.DATABASE_URL,
+};

@@ -1,6 +1,5 @@
-import { Scheduler } from './scheduler.js';
-import { TelegramService } from './telegram.js';
-import config from '../config/services.js';
+import { Scheduler, config as schedulerConfig } from './scheduler.js';
+import { TelegramService, config as telegramConfig } from './telegram.js';
 import { App } from '../app.js';
 
 export class Services {
@@ -8,8 +7,8 @@ export class Services {
   telegram: TelegramService;
 
   constructor(app: App) {
-    this.scheduler = new Scheduler(app, config.Scheduler);
-    this.telegram = new TelegramService(app, config.Telegram);
+    this.scheduler = new Scheduler(app, schedulerConfig);
+    this.telegram = new TelegramService(app, telegramConfig);
   }
 
   async start() {

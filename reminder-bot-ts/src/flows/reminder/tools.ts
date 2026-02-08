@@ -8,7 +8,7 @@ import utc from 'dayjs/plugin/utc.js';
 import timezone from 'dayjs/plugin/timezone.js';
 dayjs.extend(utc);
 dayjs.extend(timezone);
-import { App } from '../../app.js';
+import type { App } from '../../app.js';
 
 export const TOOLS: OpenAI.ChatCompletionTool[] = [
   {
@@ -163,10 +163,10 @@ const toolHandlers = {
   ) => {
     try {
       const { userId, chatId } = context;
-      const userTimezone = await app.data.storage.getUserTimezone(userId);
+      const userTimezone = await app.data.reminderRepository.getUserTimezone(userId);
 
-      // Save reminder to storage - datetime is already ISO string
-      const reminder = await app.data.storage.saveReminder({
+      // Save reminder to reminderRepository - datetime is already ISO string
+      const reminder = await app.data.reminderRepository.saveReminder({
         userId,
         chatId,
         text: args.reminder_text,
@@ -195,7 +195,7 @@ const toolHandlers = {
   ) => {
     try {
       const { userId, chatId } = context;
-      const userTimezone = await app.data.storage.getUserTimezone(userId);
+      const userTimezone = await app.data.reminderRepository.getUserTimezone(userId);
 
       // Dates are already ISO strings, just convert to Date objects if provided
       let startDate: Date | undefined;
@@ -209,8 +209,8 @@ const toolHandlers = {
         endDate = new Date(args.schedule_end_date);
       }
 
-      // Save reminder to storage
-      const reminder = await app.data.storage.saveReminder({
+      // Save reminder to reminderRepository
+      const reminder = await app.data.reminderRepository.saveReminder({
         userId,
         chatId,
         text: args.reminder_text,
@@ -249,7 +249,7 @@ const toolHandlers = {
   list_reminders: async (app: App, context: { userId: string; chatId: string }, _args: {}) => {
     try {
       const { userId } = context;
-      const reminders = await app.data.storage.getReminders(userId);
+      const reminders = await app.data.reminderRepository.getReminders(userId);
       return { status: 'success', reminders };
     } catch (error: any) {
       console.error('[list_reminders] Error:', error);
@@ -264,7 +264,7 @@ const toolHandlers = {
     try {
       const { userId } = context;
       // Verify the reminder belongs to this user
-      const reminder = await app.data.storage.getReminderForUser(args.reminder_id, userId);
+      const reminder = await app.data.reminderRepository.getReminderForUser(args.reminder_id, userId);
 
       if (!reminder) {
         return { status: 'success' };
@@ -273,8 +273,8 @@ const toolHandlers = {
       // Remove from scheduler first
       await app.services.scheduler.removeJob(reminder.id);
 
-      // Then delete from storage
-      await app.data.storage.deleteReminder(reminder.id);
+      // Then delete from reminderRepository
+      await app.data.reminderRepository.deleteReminder(reminder.id);
 
       return { status: 'success' };
     } catch (error: any) {
@@ -289,7 +289,7 @@ const toolHandlers = {
   cancel_all_reminders: async (app: App, context: { userId: string; chatId: string }, _args: {}) => {
     try {
       const { userId } = context;
-      const reminders = await app.data.storage.getReminders(userId);
+      const reminders = await app.data.reminderRepository.getReminders(userId);
 
       if (reminders.length === 0) {
         return { status: 'success' };
@@ -299,8 +299,8 @@ const toolHandlers = {
         // Remove from scheduler
         await app.services.scheduler.removeJob(reminder.id);
 
-        // Delete from storage
-        await app.data.storage.deleteReminder(reminder.id);
+        // Delete from reminderRepository
+        await app.data.reminderRepository.deleteReminder(reminder.id);
       }
 
       return { status: 'success' };
@@ -322,8 +322,8 @@ const toolHandlers = {
         return { status: 'error', error: 'Invalid timezone' };
       }
 
-      // Set the timezone in storage
-      await app.data.storage.setUserTimezone(userId, args.timezone);
+      // Set the timezone in reminderRepository
+      await app.data.reminderRepository.setUserTimezone(userId, args.timezone);
 
       return { status: 'success' };
     } catch (error: any) {

@@ -1,5 +1,4 @@
 import { Bus } from './bus.js';
-import config from '../config/infra.js';
 import type { App } from '../app.js';
 
 export class Infra {

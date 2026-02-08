@@ -1,8 +1,8 @@
 /**
  * Message history service for managing conversation state per user
  */
-import type { ChatCompletionMessage, ChatCompletionMessageParam } from '../types.js';
-import { App } from '../app.js';
+import type { ChatCompletionMessage, ChatCompletionMessageParam } from '../../types.js';
+import { App } from '../../app.js';
 
 export type ConversationMessage = ChatCompletionMessage | ChatCompletionMessageParam;
 
@@ -74,3 +74,7 @@ export class MessageHistory {
     this.conversations.delete(userId);
   }
 }
+
+export const config = {
+  maxMessages: 20,
+};

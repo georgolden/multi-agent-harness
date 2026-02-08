@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
-    "emitDeclarationOnly": true,
+    "outDir": "dist",
+    "rootDir": "src",
     "declaration": true,
     "target": "ESNext",
     "newLine": "LF",
@@ -11,5 +12,5 @@
     "esModuleInterop": true,
     "skipLibCheck": true
   },
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "vitest.config.mts", "dist"]
 }

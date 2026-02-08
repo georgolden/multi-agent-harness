@@ -1,14 +1,12 @@
-import { fileURLToPath } from 'url';
 import path from 'path';
 import { readFile } from 'fs/promises';
-import { replaceVars } from '../../utils/readReplace.js';
+import { replaceVars } from '../../../utils/readReplace.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const cwd = process.cwd();
 
 // Load the system prompt template and skill file asynchronously.
-const systemPromptTemplatePath = path.join(__dirname, 'SYSTEM_PROMPT.MD');
-const skillPath = path.join(__dirname, '../../skills/schedule/SKILL.md');
+const systemPromptTemplatePath = path.join(cwd, 'src/flows/reminder/prompts/SYSTEM_PROMPT.MD');
+const skillPath = path.join(cwd, 'src/skills/schedule/SKILL.md');
 
 const [systemPromptTemplate, scheduleSkill] = await Promise.all([
   readFile(systemPromptTemplatePath, 'utf-8'),

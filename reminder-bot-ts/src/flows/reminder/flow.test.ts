@@ -4,7 +4,7 @@ import { createReminderFlow } from './flow.js';
 import { App } from '../../app.js';
 import { SharedStore } from '../../types.js';
 import { ReminderContext } from './types.js';
-import { MessageHistory } from '../../data/messageHistory.js';
+import { MessageHistory } from '../../data/messageHistory/index.js';
 
 // Helper to setup isolated app environment for each test
 function setupTestApp() {
@@ -33,7 +33,7 @@ function setupTestApp() {
 
   const app = {
     data: {
-      storage: mockStorage,
+      reminderRepository: mockStorage,
     },
     services: {
       scheduler: mockScheduler,
@@ -160,7 +160,7 @@ describe('Reminder Flow Integration', () => {
 
     await flow.run(shared);
 
-    // Verify storage was queried
+    // Verify reminderRepository was queried
     expect(mockStorage.getReminders).toHaveBeenCalledWith('user-123');
 
     // Verify response mentions the reminder
