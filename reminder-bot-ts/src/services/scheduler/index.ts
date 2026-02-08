@@ -7,8 +7,8 @@ import type { Job } from 'agenda';
 import { PostgresBackend } from '@agendajs/postgres-backend';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc.js';
-import type { Reminder } from '../data/reminderRepository/types.js';
-import type { App } from '../app.js';
+import type { Reminder } from '../../data/reminderRepository/types.js';
+import type { App } from '../../app.js';
 
 dayjs.extend(utc);
 
@@ -38,7 +38,6 @@ export class Scheduler {
   async start(): Promise<void> {
     console.log('[Scheduler.start] Starting Agenda scheduler...');
     await this.agenda.start();
-    await this.restoreJobs();
     console.log('[Scheduler] Started successfully');
   }
 
@@ -187,35 +186,6 @@ export class Scheduler {
       console.error(`[Scheduler.scheduleReminder] Error:`, error);
       throw error;
     }
-  }
-
-  /**
-   * Restore all active reminders from reminderRepository
-   */
-  async restoreJobs(): Promise<void> {
-    console.log(`[Scheduler.restoreJobs] Starting job restoration process...`);
-
-    const reminders = await this.app.data.reminderRepository.getAllReminders();
-
-    if (reminders.length === 0) {
-      console.log(`[Scheduler.restoreJobs] No reminders to restore`);
-      return;
-    }
-
-    let successCount = 0;
-    let failureCount = 0;
-
-    for (const r of reminders) {
-      try {
-        await this.scheduleReminder(r);
-        successCount++;
-      } catch (error) {
-        failureCount++;
-        console.error(`[Scheduler.restoreJobs] ✗ Failed to restore reminder ${r.id}:`, error);
-      }
-    }
-
-    console.log(`[Scheduler.restoreJobs] Restoration complete: ${successCount} succeeded, ${failureCount} failed`);
   }
 
   /**

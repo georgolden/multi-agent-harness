@@ -1,5 +1,5 @@
-import { Scheduler, config as schedulerConfig } from './scheduler.js';
-import { TelegramService, config as telegramConfig } from './telegram.js';
+import { Scheduler, config as schedulerConfig } from './scheduler/index.js';
+import { TelegramService, config as telegramConfig } from './telegram/index.js';
 import { App } from '../app.js';
 
 export class Services {

@@ -1,5 +1,5 @@
-import { Scheduler } from './scheduler.js';
-import { TelegramService } from './telegram.js';
+import { Scheduler } from './scheduler/index.js';
+import { TelegramService } from './telegram/index.js';
 import { App } from '../app.js';
 export declare class Services {
     scheduler: Scheduler;

@@ -1,7 +1,7 @@
 import { Telegraf, Context } from 'telegraf';
 import { message } from 'telegraf/filters';
 import { Update } from 'telegraf/types';
-import type { App } from '../app.js';
+import type { App } from '../../app.js';
 
 export class TelegramService {
   private bot: Telegraf;
