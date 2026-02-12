@@ -1,4 +1,4 @@
-import type { Static, TSchema } from "@sinclair/typebox";
+import type { Static, TSchema } from '@sinclair/typebox';
 
 import { App } from './app.js';
 
@@ -25,12 +25,6 @@ export interface ImageContent {
   mimeType: string;
 }
 
-export interface Tool<TParameters extends TSchema = TSchema> {
-    name: string;
-    description: string;
-    parameters: TParameters;
-}
-
 export interface AgentToolResult<T> {
   // Content blocks supporting text and images
   content: (TextContent | ImageContent)[];
@@ -42,14 +36,20 @@ export interface AgentToolResult<T> {
 export type AgentToolUpdateCallback<T = any> = (partialResult: AgentToolResult<T>) => void;
 
 // AgentTool extends Tool but adds the execute function
-export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> extends Tool<TParameters> {
+export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> {
+  name: string;
+  description: string;
+  parameters: TParameters;
+
   // A human-readable label for the tool to be displayed in UI
   label: string;
   execute: (
-    toolCallId: string,
+    app: App,
     params: Static<TParameters>,
-    signal?: AbortSignal,
-    onUpdate?: AgentToolUpdateCallback<TDetails>,
+    system: {
+      toolCallId: string;
+      signal?: AbortSignal;
+      onUpdate?: AgentToolUpdateCallback<TDetails>;
+    },
   ) => Promise<AgentToolResult<TDetails>>;
 }
-
