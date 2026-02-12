@@ -4,7 +4,5 @@
   "xlsx": "office",
   "pdf": "pdf",
   "webapp-testing": "web-testing",
-  "frontend-design": null,
-  "skill-creator": "generic",
-  "schedule": null
+  "skill-creator": "generic"
 }
