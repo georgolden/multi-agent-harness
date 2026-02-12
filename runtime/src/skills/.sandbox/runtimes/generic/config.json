@@ -1,0 +1,11 @@
+{
+  "name": "generic",
+  "image": "generic-runtime:latest",
+  "pool": {
+    "min": 1,
+    "max": 2,
+    "sessionTimeout": 180000
+  },
+  "network": "none",
+  "parallelSessions": true
+}

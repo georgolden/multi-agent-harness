@@ -1,0 +1,11 @@
+{
+  "name": "web-testing",
+  "image": "web-testing-runtime:latest",
+  "pool": {
+    "min": 0,
+    "max": 2,
+    "sessionTimeout": 600000
+  },
+  "network": "slirp4netns",
+  "parallelSessions": true
+}

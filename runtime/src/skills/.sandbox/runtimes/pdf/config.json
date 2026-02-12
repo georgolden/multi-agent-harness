@@ -1,0 +1,11 @@
+{
+  "name": "pdf",
+  "image": "pdf-runtime:latest",
+  "pool": {
+    "min": 0,
+    "max": 2,
+    "sessionTimeout": 300000
+  },
+  "network": "none",
+  "parallelSessions": true
+}
