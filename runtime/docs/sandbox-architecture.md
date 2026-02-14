@@ -1,24 +1,55 @@
-# Skill Sandbox Architecture
+# Sandbox Runtime Architecture
 
-This document describes the architecture for executing skills in isolated sandbox environments with Python, Node.js, and Bash runtimes.
+This document describes the architecture for executing workloads (skills, flows, agents) in isolated sandbox environments with specialized runtime images.
 
 ## Overview
 
-Skills are executed in containerized sandboxes using Podman with pre-built runtime images. Each skill execution runs in an isolated session with exclusive container access, preventing conflicts and ensuring clean state.
+The sandbox system provides isolated containerized execution environments using Podman with pre-built runtime images. Each execution runs in an isolated session with exclusive or shared container access, preventing conflicts and ensuring clean state.
 
-## Runtime Requirements
+**Current usage:**
+- **Skills**: Use sandbox runtimes for specialized dependencies (PDF processing, Office tools, web testing)
+- **Flows**: Currently run on main process (sandbox support planned for future)
 
-We have 4 runtime profiles plus skills that don't require sandboxing:
+The architecture is designed to be workload-agnostic - any component (skills, flows, agents) can leverage sandboxed runtimes when needed.
 
-| Runtime Profile | Skills | Key Dependencies | Image Size Est. |
+## Runtime Profiles
+
+The system provides 4 specialized runtime profiles, plus host runtime for workloads that don't need sandboxing:
+
+| Runtime Profile | Current Users (Skills) | Key Dependencies | Image Size Est. |
 |---|---|---|---|
 | **Office** | docx, pptx, xlsx | LibreOffice, Poppler, pandoc, pypdf, pdfplumber, reportlab, openpyxl, pandas, Pillow, `docx`/`pptxgenjs` npm | ~1.5-2GB |
 | **PDF** | pdf | Poppler, pandoc, pypdf, pdfplumber, reportlab, pytesseract, pypdfium2, markitdown | ~500MB |
 | **Web Testing** | webapp-testing | Playwright + Chromium | ~800MB |
-| **Generic** | frontend-design, skill-creator | Python + Node.js + Bash only | ~300MB |
-| **No Sandbox** | schedule | Interpreter-only skills (run in host runtime) | N/A |
+| **Generic** | skill-creator, frontend-design | Python + Node.js + Bash only | ~300MB |
+| **Host** | schedule, all flows | No containerization (runs on main process) | N/A |
 
-**Sandbox configurations** are stored in `skills/.sandbox/` directory, separate from skill content.
+**Configuration Structure:**
+```
+src/
+├── sandbox/                      # Sandbox runtime system (general)
+│   ├── runtimes/                 # Runtime definitions
+│   │   ├── office/
+│   │   ├── pdf/
+│   │   ├── web-testing/
+│   │   └── generic/
+│   ├── build.ts                  # Auto-discovery build script
+│   └── types.ts                  # Runtime type definitions
+└── skills/
+    ├── skill-runtimes.json       # Skill → Runtime mapping
+    ├── docx/                     # Needs office runtime
+    ├── pdf/                      # Needs pdf runtime
+    ├── skill-creator/            # Needs generic runtime
+    ├── schedule/                 # Runs on host (not in mapping)
+    └── ...
+```
+
+**Workload → Runtime Mapping:**
+- `skill-runtimes.json` contains **only** skills that require specific runtimes
+- Skills not in the file run on the host process (e.g., `schedule`)
+- Future: `flow-runtimes.json` when flows need sandboxing
+
+**Design principle:** Sandbox configurations are stored separately from workload content (skills, flows). This allows the runtime system to evolve independently.
 
 ## Architecture: Warm Container Pool with Exclusive Lock
 
@@ -27,25 +58,29 @@ We have 4 runtime profiles plus skills that don't require sandboxing:
 ```
 Pre-built Images (built once):
   office-runtime:latest
-  web-runtime:latest
-  base-runtime:latest
+  pdf-runtime:latest
+  web-testing-runtime:latest
+  generic-runtime:latest
 
 Container Pool (warm, ready to use):
   office-runtime-1  (idle or executing session-abc123)
   office-runtime-2  (idle, waiting for next task)
-  web-runtime-1     (idle or executing session-def456)
-  base-runtime-1    (idle)
+  pdf-runtime-1     (idle or executing session-def456)
+  generic-runtime-1 (idle)
 
-Execution Flow:
+Execution Flow (example: skill execution):
   User asks: "Fill this PDF form"
-    1. SandboxService.executeSkill(pdfSkill, inputFiles)
-    2. Acquire container from pdf pool (or queue if full)
-    3. Create session directory: /workspace/{sessionId}/
-    4. Copy skill files + user files into session directory
-    5. Flow receives tools (read, write, bash) scoped to session
-    6. Flow executes without knowing sandbox internals
-    7. Flow triggers cleanup: rm -rf /workspace/{sessionId}/
-    8. Release container back to pool (stays warm)
+    1. Workload (skill) requests execution in sandbox
+    2. SandboxService.execute(runtime: 'pdf', workload, inputFiles)
+    3. Acquire container from pdf pool (or queue if full)
+    4. Create session directory: /workspace/{sessionId}/
+    5. Copy workload files + input files into session directory
+    6. Executor receives tools (read, write, bash) scoped to session
+    7. Executor runs without knowing sandbox internals
+    8. Cleanup: rm -rf /workspace/{sessionId}/
+    9. Release container back to pool (stays warm)
+
+Future: Flows can use the same pattern when they need sandboxed execution
 ```
 
 ### Why This Architecture
@@ -61,20 +96,20 @@ Execution Flow:
 
 ## System Architecture
 
-### Layer Placement (per design.md)
+### Layer Placement
 
 ```
 ┌─────────────────────────────────────────────┐
-│  Flows Layer                                │
-│  - PDF Fill Flow                            │
-│  - DOCX Edit Flow                           │
-│  - Uses: SandboxService, Skills             │
+│  Workload Layer (Flows, Skills, Agents)    │
+│  - Flows: Execute on host (future: sandbox)│
+│  - Skills: Execute in sandbox runtimes     │
+│  - Agents: Execute on host (future: TBD)   │
 └──────────────────┬──────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────┐
 │  Services Layer                             │
-│  - SandboxService (container pool manager) │
-│  - Skills (skill metadata loader)          │
+│  - SandboxService (general runtime manager)│
+│  - Skills (skill metadata & routing)       │
 └──────────────────┬──────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────┐
@@ -84,31 +119,33 @@ Execution Flow:
 └─────────────────────────────────────────────┘
 ```
 
-**SandboxService** is a service because it:
-- Encapsulates a specific feature (sandboxed skill execution)
-- Has its own resources (container pool, queue, session lifecycle)
-- Is used by Flows when they need to execute skills
+**SandboxService** is a general service that:
+- Provides isolated execution environments for any workload
+- Manages container pools, queues, and session lifecycle
+- Is workload-agnostic (skills today, flows/agents tomorrow)
 - Can grow independently (monitoring, metrics, cleanup, etc.)
 
 ### Component Diagram
 
 ```
 ┌─────────────────────────────────────────────┐
-│  Flow (e.g., PDF Fill Flow)                 │
+│  Workload (Skill, Flow, Agent)              │
 │                                             │
-│  1. Gets skill from Skills class            │
-│  2. Calls SandboxService.execute()          │
-│     └─ Provides: skill, input files         │
+│  Current: Skills use sandbox via routing    │
+│  Future: Flows can request sandbox too      │
+│                                             │
+│  Example: PDF skill needs execution         │
+│    └─ Skills.execute() → routes to sandbox  │
 └──────────────────┬──────────────────────────┘
                    │
                    ▼
 ┌─────────────────────────────────────────────┐
-│  SandboxService                             │
+│  SandboxService (General Runtime Manager)   │
 │                                             │
 │  Methods:                                   │
-│  - executeSkill(skill, inputFiles)          │
+│  - execute(runtime, workload, files)        │
 │  - acquireContainer(runtimeType)            │
-│  - createSession(container, skill, files)   │
+│  - createSession(container, workload, files)│
 │  - executeTool(session, tool, params)       │
 │  - releaseContainer(container)              │
 │                                             │
@@ -123,9 +160,10 @@ Execution Flow:
 ┌─────────────────────────────────────────────┐
 │  ContainerPool                              │
 │                                             │
-│  office-runtime:  [container1, container2]  │
-│  web-runtime:     [container3]              │
-│  base-runtime:    [container4]              │
+│  office-runtime:      [container1, c2]      │
+│  pdf-runtime:         [container3]          │
+│  web-testing-runtime: [container4]          │
+│  generic-runtime:     [container5]          │
 │                                             │
 │  Queue: [task1, task2, task3]               │
 │  Locks: [container1: locked, ...]          │
@@ -213,7 +251,11 @@ const poolConfig = {
 };
 ```
 
-**Configuration location**: `skills/.sandbox/runtimes/{runtime-name}/config.json`
+**Configuration location**: `src/sandbox/runtimes/{runtime-name}/config.json`
+
+**Workload-specific mappings:**
+- Skills: `src/skills/skill-runtimes.json` (only skills needing sandbox)
+- Flows: Not yet implemented (will run on host for now)
 
 ### Queueing Behavior
 
@@ -310,24 +352,32 @@ Promise.race([
 
 ### 6. Sandbox Configuration Separation
 
-**Decision:** Store all sandbox configs in `skills/.sandbox/`, separate from skill content.
+**Decision:** Store sandbox system separately from workload content.
 
 **Structure:**
 ```
-skills/.sandbox/
-  runtimes/
-    office/config.json + Dockerfile
-    pdf/config.json + Dockerfile
-    web-testing/config.json + Dockerfile
-    generic/config.json + Dockerfile
-  skill-runtimes.json (skill → runtime mapping)
+src/
+├── sandbox/                    # General sandbox system
+│   ├── runtimes/
+│   │   ├── office/config.json + Dockerfile
+│   │   ├── pdf/config.json + Dockerfile
+│   │   ├── web-testing/config.json + Dockerfile
+│   │   └── generic/config.json + Dockerfile
+│   ├── build.ts               # Auto-discovery build script
+│   └── types.ts               # Runtime type definitions
+├── skills/
+│   └── skill-runtimes.json    # Skill → runtime mapping
+└── flows/
+    └── (runs on host for now, sandbox support future)
 ```
 
 **Rationale:**
-- No pollution of skill directories
-- Easy to version and manage
+- Sandbox system is a general feature, not workload-specific
+- No pollution of workload directories (skills/flows/agents)
+- Easy to version and manage independently
 - Clear separation of concerns
-- Runtime configs can evolve independently
+- Runtime configs evolve without touching workload code
+- Each workload type has its own runtime mapping file
 
 ## Concurrency & LibreOffice
 
@@ -367,11 +417,11 @@ LibreOffice uses a user profile lock (`~/.config/libreoffice/4/user/.lock`). Whe
 
 ## Image Build Strategy
 
-### Four Dockerfiles
+### Four Runtime Dockerfiles
 
-Dockerfiles are stored in `skills/.sandbox/runtimes/{runtime-name}/Dockerfile`
+Dockerfiles are stored in `src/sandbox/runtimes/{runtime-name}/Dockerfile`
 
-**1. office runtime** (`skills/.sandbox/runtimes/office/Dockerfile`)
+**1. office runtime** (`src/sandbox/runtimes/office/Dockerfile`)
 ```dockerfile
 FROM node:20-bookworm
 
@@ -391,7 +441,7 @@ WORKDIR /workspace
 CMD ["/bin/bash"]
 ```
 
-**2. pdf runtime** (`skills/.sandbox/runtimes/pdf/Dockerfile`)
+**2. pdf runtime** (`src/sandbox/runtimes/pdf/Dockerfile`)
 ```dockerfile
 FROM node:20-bookworm
 
@@ -407,7 +457,7 @@ WORKDIR /workspace
 CMD ["/bin/bash"]
 ```
 
-**3. web-testing runtime** (`skills/.sandbox/runtimes/web-testing/Dockerfile`)
+**3. web-testing runtime** (`src/sandbox/runtimes/web-testing/Dockerfile`)
 ```dockerfile
 FROM node:20-bookworm
 
@@ -422,7 +472,7 @@ WORKDIR /workspace
 CMD ["/bin/bash"]
 ```
 
-**4. generic runtime** (`skills/.sandbox/runtimes/generic/Dockerfile`)
+**4. generic runtime** (`src/sandbox/runtimes/generic/Dockerfile`)
 ```dockerfile
 FROM node:20-bookworm-slim
 
@@ -438,10 +488,10 @@ CMD ["/bin/bash"]
 
 #### Automated Build Script (Recommended)
 
-The build script automatically discovers all runtimes in `.sandbox/runtimes/` and builds them:
+The build script automatically discovers all runtimes in `src/sandbox/runtimes/` and builds them:
 
 ```bash
-cd runtime/src/skills/.sandbox
+cd runtime/src/sandbox
 npm run build  # or: node build.ts
 ```
 
@@ -449,22 +499,30 @@ npm run build  # or: node build.ts
 - Scans `runtimes/` directory for subdirectories with Dockerfiles
 - Builds each runtime with tag convention: `{name}-runtime:latest`
 - No hardcoded runtime list — just add a new directory with a Dockerfile
+- Generic design allows adding runtimes for any workload type (skills, flows, agents)
 
 #### Manual Build (if needed)
 
 ```bash
 cd runtime
-podman build -f src/skills/.sandbox/runtimes/office/Dockerfile -t office-runtime:latest .
-podman build -f src/skills/.sandbox/runtimes/pdf/Dockerfile -t pdf-runtime:latest .
-podman build -f src/skills/.sandbox/runtimes/web-testing/Dockerfile -t web-testing-runtime:latest .
-podman build -f src/skills/.sandbox/runtimes/generic/Dockerfile -t generic-runtime:latest .
+podman build -f src/sandbox/runtimes/office/Dockerfile -t office-runtime:latest .
+podman build -f src/sandbox/runtimes/pdf/Dockerfile -t pdf-runtime:latest .
+podman build -f src/sandbox/runtimes/web-testing/Dockerfile -t web-testing-runtime:latest .
+podman build -f src/sandbox/runtimes/generic/Dockerfile -t generic-runtime:latest .
 ```
 
 ## Implementation Summary
 
-**Services Layer:**
-- `SandboxService` — manages container pools, sessions, and execution
-- `Skills` — loads skill metadata (name, description, location)
+**Sandbox System (General):**
+- `SandboxService` — manages container pools, sessions, and execution for any workload
+- Runtime definitions in `src/sandbox/runtimes/`
+- Auto-discovery build system
+- Workload-agnostic design
+
+**Current Usage:**
+- **Skills**: Use sandbox via `skill-runtimes.json` mapping
+- **Flows**: Run on host process (sandbox support planned)
+- **Agents**: Run on host process (sandbox needs TBD)
 
 **Container Pool:**
 - Warm containers (min idle per runtime type)
@@ -472,20 +530,21 @@ podman build -f src/skills/.sandbox/runtimes/generic/Dockerfile -t generic-runti
 - Auto-scaling (spawn up to max)
 - Queue for overflow
 
-**Session Lifecycle:**
-1. Acquire container (or reuse if parallelSessions: true)
-2. Create session directory: `/workspace/{sessionId}/`
-3. Copy skill files to session directory
-4. Copy user input files to session directory
-5. Flow receives tools (read, write, bash) scoped to session
-6. Flow executes without knowing sandbox internals
-7. Flow triggers cleanup: `rm -rf /workspace/{sessionId}/`
-8. Release container (if exclusive) or continue (if parallel)
+**Session Lifecycle (when used):**
+1. Workload requests execution with runtime type
+2. Acquire container (or reuse if parallelSessions: true)
+3. Create session directory: `/workspace/{sessionId}/`
+4. Copy workload files to session directory
+5. Copy input files to session directory
+6. Executor receives tools (read, write, bash) scoped to session
+7. Executor runs without knowing sandbox internals
+8. Cleanup: `rm -rf /workspace/{sessionId}/`
+9. Release container (if exclusive) or continue (if parallel)
 
-**Boundary Compliance:**
-- ✅ Skills layer: only skill files
-- ✅ Services layer: SandboxService manages execution
-- ✅ Flows layer: uses SandboxService to run skills
-- ✅ No abstraction leaks
+**Separation of Concerns:**
+- ✅ Sandbox system: general runtime management
+- ✅ Skills: use sandbox when needed (via mapping)
+- ✅ Flows: currently host-only (future: can use sandbox)
+- ✅ Clear boundaries, no abstraction leaks
 
-This architecture provides secure, isolated, resource-efficient skill execution with excellent user experience (instant warm starts, graceful queueing) and maintainability (3 images, clear boundaries, simple pool management).
+This architecture provides secure, isolated, resource-efficient execution with excellent user experience (instant warm starts, graceful queueing) and maintainability. The design is workload-agnostic, allowing skills, flows, and agents to leverage sandboxed runtimes as needed.
