@@ -17,8 +17,6 @@ export interface PoolConfig {
   min: number;
   /** Maximum number of containers allowed */
   max: number;
-  /** Session timeout in milliseconds */
-  sessionTimeout: number;
 }
 
 /**
@@ -33,8 +31,12 @@ export interface RuntimeConfig {
   pool: PoolConfig;
   /** Network mode for containers */
   network: NetworkMode;
-  /** Allow multiple sessions per container (false for LibreOffice due to locking) */
-  parallelSessions: boolean;
+  /** Timeout in milliseconds for each executeCommands call; kills stuck commands */
+  executionTimeout: number;
+  /** Allow multiple sessions and executeCommands per container (false for LibreOffice due to locking) */
+  parallelExecutions: boolean;
+  /** Maximum parallel executeCommands batches across all sessions for this runtime */
+  maxParallelExecutions: number;
 }
 
 /**

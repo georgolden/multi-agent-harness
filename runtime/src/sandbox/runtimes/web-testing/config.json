@@ -3,9 +3,10 @@
   "image": "web-testing-runtime:latest",
   "pool": {
     "min": 0,
-    "max": 2,
-    "sessionTimeout": 600000
+    "max": 2
   },
   "network": "slirp4netns",
-  "parallelSessions": true
+  "executionTimeout": 600000,
+  "parallelExecutions": true,
+  "maxParallelExecutions": 4
 }

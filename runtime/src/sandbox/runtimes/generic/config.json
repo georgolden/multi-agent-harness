@@ -3,9 +3,10 @@
   "image": "generic-runtime:latest",
   "pool": {
     "min": 1,
-    "max": 2,
-    "sessionTimeout": 180000
+    "max": 2
   },
   "network": "none",
-  "parallelSessions": true
+  "executionTimeout": 180000,
+  "parallelExecutions": true,
+  "maxParallelExecutions": 4
 }

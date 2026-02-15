@@ -3,9 +3,10 @@
   "image": "pdf-runtime:latest",
   "pool": {
     "min": 0,
-    "max": 2,
-    "sessionTimeout": 300000
+    "max": 2
   },
   "network": "none",
-  "parallelSessions": true
+  "executionTimeout": 300000,
+  "parallelExecutions": true,
+  "maxParallelExecutions": 4
 }

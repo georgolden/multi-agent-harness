@@ -71,14 +71,20 @@ Container Pool (warm, ready to use):
 Execution Flow (example: skill execution):
   User asks: "Fill this PDF form"
     1. Workload (skill) requests execution in sandbox
-    2. SandboxService.execute(runtime: 'pdf', workload, inputFiles)
+    2. SandboxService.createSession(runtime: 'pdf', workload, inputFiles) → sessionId
     3. Acquire container from pdf pool (or queue if full)
     4. Create session directory: /workspace/{sessionId}/
     5. Copy workload files + input files into session directory
-    6. Executor receives tools (read, write, bash) scoped to session
-    7. Executor runs without knowing sandbox internals
-    8. Cleanup: rm -rf /workspace/{sessionId}/
-    9. Release container back to pool (stays warm)
+    6. SandboxService.executeCommands(sessionId, commands, inputFiles?)
+       - Acquires execution slot (semaphore, max 4 parallel batches)
+       - Copies additional input files with .old.N conflict renaming
+       - Runs commands with executionTimeout (kills if stuck)
+       - Returns stdout/stderr per command
+       - Releases execution slot
+    7. Repeat step 6 as needed for multiple command batches
+    8. SandboxService.cleanupSession(sessionId)
+       - Cleanup: rm -rf /workspace/{sessionId}/
+       - Release container back to pool (stays warm)
 
 Future: Flows can use the same pattern when they need sandboxed execution
 ```
