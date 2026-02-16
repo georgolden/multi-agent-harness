@@ -19,16 +19,31 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          task_message: {
+          taskName: {
             type: 'string',
-            description: 'What to remind the user about',
+            description: 'The type of task to schedule (e.g., "reminder", "runAgentFlow")',
+          },
+          parameters: {
+            type: 'object',
+            description: 'Task parameters',
+            properties: {
+              message: {
+                type: 'string',
+                description: 'Message for the task (for reminders: what to remind about; for agent flows: the input message)',
+              },
+              flowName: {
+                type: 'string',
+                description: 'Flow name (required only for runAgentFlow task type)',
+              },
+            },
+            required: ['message'],
           },
           datetime: {
             type: 'string',
             description: "ISO 8601 datetime string (e.g., '2026-02-02T15:00:00')",
           },
         },
-        required: ['task_message', 'datetime'],
+        required: ['taskName', 'parameters', 'datetime'],
       },
     },
   },
@@ -40,9 +55,24 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          task_message: {
+          taskName: {
             type: 'string',
-            description: 'What to remind the user about',
+            description: 'The type of task to schedule (e.g., "reminder", "runAgentFlow")',
+          },
+          parameters: {
+            type: 'object',
+            description: 'Task parameters',
+            properties: {
+              message: {
+                type: 'string',
+                description: 'Message for the task (for reminders: what to remind about; for agent flows: the input message)',
+              },
+              flowName: {
+                type: 'string',
+                description: 'Flow name (required only for runAgentFlow task type)',
+              },
+            },
+            required: ['message'],
           },
           cron_expression: {
             type: 'string',
@@ -58,7 +88,7 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
             description: "ISO 8601 end datetime (e.g., '2026-01-30T01:40:00')",
           },
         },
-        required: ['task_message', 'cron_expression'],
+        required: ['taskName', 'parameters', 'cron_expression'],
       },
     },
   },
@@ -70,9 +100,24 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          task_message: {
+          taskName: {
             type: 'string',
-            description: 'What to remind the user about',
+            description: 'The type of task to schedule (e.g., "reminder", "runAgentFlow")',
+          },
+          parameters: {
+            type: 'object',
+            description: 'Task parameters',
+            properties: {
+              message: {
+                type: 'string',
+                description: 'Message for the task (for reminders: what to remind about; for agent flows: the input message)',
+              },
+              flowName: {
+                type: 'string',
+                description: 'Flow name (required only for runAgentFlow task type)',
+              },
+            },
+            required: ['message'],
           },
           cron_expression: {
             type: 'string',
@@ -88,7 +133,7 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
             description: "ISO 8601 end datetime (e.g., '2026-01-30T01:40:00')",
           },
         },
-        required: ['task_message', 'cron_expression'],
+        required: ['taskName', 'parameters', 'cron_expression'],
       },
     },
   },
@@ -156,19 +201,27 @@ const toolHandlers = {
   /**
    * Schedule a one-time task
    */
-  schedule_once: async (app: App, context: { userId: string }, args: { task_message: string; datetime: string }) => {
+  schedule_once: async (
+    app: App,
+    context: { userId: string },
+    args: { taskName: string; parameters: { message: string; flowName?: string }; datetime: string },
+  ) => {
     try {
       const { userId } = context;
       const userTimezone = await app.data.taskRepository.getUserTimezone(userId);
 
+      // Build parameters with userId
+      const taskParameters = {
+        userId,
+        message: args.parameters.message,
+        ...(args.parameters.flowName && { flowName: args.parameters.flowName }),
+      };
+
       // Save task to taskRepository - datetime is already ISO string
       const task = await app.data.taskRepository.saveTask({
         userId,
-        taskName: 'reminder',
-        parameters: {
-          userId,
-          message: args.task_message,
-        },
+        taskName: args.taskName,
+        parameters: taskParameters,
         scheduleType: 'once',
         scheduleValue: args.datetime,
         timezone: userTimezone,
@@ -190,7 +243,13 @@ const toolHandlers = {
   schedule_recurring: async (
     app: App,
     context: { userId: string },
-    args: { task_message: string; cron_expression: string; schedule_start_date?: string; schedule_end_date?: string },
+    args: {
+      taskName: string;
+      parameters: { message: string; flowName?: string };
+      cron_expression: string;
+      schedule_start_date?: string;
+      schedule_end_date?: string;
+    },
   ) => {
     try {
       const { userId } = context;
@@ -208,14 +267,18 @@ const toolHandlers = {
         endDate = new Date(args.schedule_end_date);
       }
 
+      // Build parameters with userId
+      const taskParameters = {
+        userId,
+        message: args.parameters.message,
+        ...(args.parameters.flowName && { flowName: args.parameters.flowName }),
+      };
+
       // Save task to taskRepository
       const task = await app.data.taskRepository.saveTask({
         userId,
-        taskName: 'reminder',
-        parameters: {
-          userId,
-          message: args.task_message,
-        },
+        taskName: args.taskName,
+        parameters: taskParameters,
         scheduleType: 'cron',
         scheduleValue: args.cron_expression,
         startDate,
@@ -239,7 +302,13 @@ const toolHandlers = {
   schedule_interval: async (
     app: App,
     context: { userId: string },
-    args: { task_message: string; cron_expression: string; schedule_start_date?: string; schedule_end_date?: string },
+    args: {
+      taskName: string;
+      parameters: { message: string; flowName?: string };
+      cron_expression: string;
+      schedule_start_date?: string;
+      schedule_end_date?: string;
+    },
   ) => {
     // Interval is essentially the same as recurring for this implementation
     return toolHandlers.schedule_recurring(app, context, args);

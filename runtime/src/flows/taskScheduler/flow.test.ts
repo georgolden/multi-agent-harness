@@ -6,6 +6,7 @@ import { SharedStore } from '../../types.js';
 import { TaskSchedulerContext } from './types.js';
 import { MessageHistory } from '../../data/messageHistory/index.js';
 import { Task } from '../../data/taskRepository/types.js';
+import { Tasks } from '../../tasks/index.js';
 
 // Helper to setup isolated app environment for each test
 function setupTestApp() {
@@ -46,6 +47,10 @@ function setupTestApp() {
 
   const messageHistory = new MessageHistory(app, { maxMessages: 20 });
   app.data.messageHistory = messageHistory;
+
+  // Add real Tasks instance (read-only, no side effects)
+  const tasks = new Tasks(app);
+  (app as any).tasks = tasks;
 
   // Default mock implementations
   mockStorage.getUserTimezone.mockResolvedValue('UTC');
@@ -217,6 +222,135 @@ describe('Task Schedule Flow Integration', () => {
       expect.objectContaining({
         userId: 'user-123',
         message: expect.stringMatching(/cancel/i),
+      }),
+    );
+  }, 90000);
+
+  it('should schedule a one-time agent flow task', async () => {
+    const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
+    const flow = createTaskSchedulerFlow();
+    const context: TaskSchedulerContext = {
+      userId: 'user-123',
+      message: 'Schedule personalAssistantLookup flow in 10 minutes with message: what are my time spending for today',
+    };
+    const shared: SharedStore<TaskSchedulerContext> = { app, context };
+
+    await flow.run(shared);
+
+    // Verify tool call
+    expect(mockStorage.saveTask).toHaveBeenCalled();
+    const savedTask = mockStorage.saveTask.mock.calls[0][0];
+    expect(savedTask.taskName).toBe('runAgentFlow');
+    expect(savedTask.parameters.flowName).toBe('personalAssistantLookup');
+    expect(savedTask.parameters.message).toMatch(/time spending/i);
+    expect(savedTask.scheduleType).toBe('once');
+
+    // Verify scheduler
+    expect(mockScheduler.scheduleTask).toHaveBeenCalled();
+
+    // Verify final response
+    expect(mockBus.emit).toHaveBeenCalledWith(
+      'askUser',
+      expect.objectContaining({
+        userId: 'user-123',
+        message: expect.stringMatching(/personalAssistantLookup|scheduled|agent/i),
+      }),
+    );
+  }, 90000);
+
+  it('should schedule a recurring agent flow task', async () => {
+    const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
+    const flow = createTaskSchedulerFlow();
+    const context: TaskSchedulerContext = {
+      userId: 'user-123',
+      message:
+        'Run personalAssistantLookup flow every day at 9am with the message: what are my time spending for today',
+    };
+    const shared: SharedStore<TaskSchedulerContext> = { app, context };
+
+    await flow.run(shared);
+
+    // Verify tool call
+    expect(mockStorage.saveTask).toHaveBeenCalled();
+    const savedTask = mockStorage.saveTask.mock.calls[0][0];
+    expect(savedTask.taskName).toBe('runAgentFlow');
+    expect(savedTask.parameters.flowName).toBe('personalAssistantLookup');
+    expect(savedTask.parameters.message).toMatch(/time spending/i);
+    expect(savedTask.scheduleType).toBe('cron');
+    // "every day at 9am" is usually "0 9 * * *"
+    expect(savedTask.scheduleValue).toMatch(/(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)/);
+
+    expect(mockScheduler.scheduleTask).toHaveBeenCalled();
+
+    // Verify final response
+    expect(mockBus.emit).toHaveBeenCalledWith(
+      'askUser',
+      expect.objectContaining({
+        userId: 'user-123',
+        message: expect.stringMatching(/personalAssistantLookup|scheduled|agent|daily/i),
+      }),
+    );
+  }, 90000);
+
+  it('should list both reminder and agent flow tasks', async () => {
+    const { app, mockStorage, mockBus } = setupTestApp();
+    // Setup existing tasks of both types
+    const existingTasks: Task[] = [
+      {
+        id: 'r1',
+        userId: 'user-123',
+        taskName: 'reminder',
+        parameters: {
+          message: 'Buy groceries',
+        },
+        scheduleType: 'once',
+        scheduleValue: new Date(Date.now() + 3600000).toISOString(),
+        createdAt: new Date(),
+        timezone: 'UTC',
+        active: true,
+      },
+      {
+        id: 'a1',
+        userId: 'user-123',
+        taskName: 'runAgentFlow',
+        parameters: {
+          flowName: 'personalAssistantLookup',
+          message: 'what are my time spending for today',
+        },
+        scheduleType: 'cron',
+        scheduleValue: '0 9 * * *',
+        createdAt: new Date(),
+        timezone: 'UTC',
+        active: true,
+      },
+    ];
+    mockStorage.getTasks.mockResolvedValue(existingTasks);
+
+    const flow = createTaskSchedulerFlow();
+    const context: TaskSchedulerContext = {
+      userId: 'user-123',
+      message: 'What are my scheduled tasks?',
+    };
+    const shared: SharedStore<TaskSchedulerContext> = { app, context };
+
+    await flow.run(shared);
+
+    // Verify taskRepository was queried
+    expect(mockStorage.getTasks).toHaveBeenCalledWith('user-123');
+
+    // Verify response mentions both tasks
+    expect(mockBus.emit).toHaveBeenCalledWith(
+      'askUser',
+      expect.objectContaining({
+        userId: 'user-123',
+        message: expect.stringMatching(/Buy groceries/i),
+      }),
+    );
+    expect(mockBus.emit).toHaveBeenCalledWith(
+      'askUser',
+      expect.objectContaining({
+        userId: 'user-123',
+        message: expect.stringMatching(/personalAssistantLookup|time spending/i),
       }),
     );
   }, 90000);

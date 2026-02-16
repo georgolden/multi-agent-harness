@@ -27,7 +27,7 @@ ${tasksTypes}
 
 ## Core Responsibilities
 
-You must determine task type
+You must determine task type - just use task types description to determine which type of task user requests
 
 You must determine if the user wants to:
 - **Schedule** a new task

@@ -27,7 +27,9 @@ async function runAgentFlow(
 }
 
 type Task = {
+  name: string;
   parameters: TSchema;
+  description: string;
   run: (app: App, args: any) => Promise<void>;
 };
 
@@ -35,6 +37,8 @@ export class Tasks {
   app: App;
   tasks: Record<string, Task> = {
     reminder: {
+      name: 'reminder',
+      description: 'Used to send a reminder to a user',
       parameters: Type.Object({
         userId: Type.String(),
         message: Type.String(),
@@ -42,6 +46,8 @@ export class Tasks {
       run: reminder,
     },
     runAgentFlow: {
+      name: 'runAgentFlow',
+      description: 'Used to run a specific agentic task. HINT: flowName is specified',
       parameters: Type.Object({
         flowName: Type.String(),
         userId: Type.String(),
