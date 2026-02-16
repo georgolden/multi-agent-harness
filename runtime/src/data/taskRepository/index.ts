@@ -1,17 +1,17 @@
 /**
- * ReminderRepository service for reminders and user preferences.
+ * TaskRepository service for scheduled tasks.
  * Uses Postgres for persistence.
  */
 import type { Pool } from 'pg';
 import { randomBytes } from 'crypto';
-import type { Reminder } from './types.js';
+import type { Task } from './types.js';
 import { App } from '../../app.js';
 import type { User } from '../userRepository/types.js';
 
 /**
- * ReminderRepository for managing reminders and user preferences
+ * TaskRepository for managing scheduled tasks
  */
-export class ReminderRepository {
+export class TaskRepository {
   private pool: Pool;
   app: App;
 
@@ -26,11 +26,12 @@ export class ReminderRepository {
   async start(): Promise<void> {
     // Create tables if they don't exist
     await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS reminders (
+      CREATE TABLE IF NOT EXISTS tasks (
         id VARCHAR(16) PRIMARY KEY,
         user_id VARCHAR(255) NOT NULL,
         chat_id VARCHAR(255) NOT NULL,
-        text TEXT NOT NULL,
+        task_name TEXT NOT NULL,
+        parameters JSONB NOT NULL,
         schedule_type VARCHAR(10) NOT NULL CHECK (schedule_type IN ('once', 'cron')),
         schedule_value TEXT NOT NULL,
         start_date TIMESTAMP,
@@ -43,36 +44,36 @@ export class ReminderRepository {
 
     // Create indexes for common queries
     await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_reminders_user_active
-      ON reminders(user_id, active)
+      CREATE INDEX IF NOT EXISTS idx_tasks_user_active
+      ON tasks(user_id, active)
     `);
 
-    console.log('[ReminderRepository] Initialized with Postgres');
+    console.log('[TaskRepository] Initialized with Postgres');
   }
 
   /**
    * Cleanup (pool is managed by infra layer)
    */
   async stop(): Promise<void> {
-    console.log('[ReminderRepository] Stopped');
+    console.log('[TaskRepository] Stopped');
   }
 
   /**
-   * Generate a unique reminder ID
+   * Generate a unique task ID
    */
-  generateReminderId(): string {
+  generateTaskId(): string {
     return randomBytes(4).toString('hex');
   }
 
   /**
-   * Map database row (snake_case) to Reminder type (camelCase)
+   * Map database row (snake_case) to Task type (camelCase)
    */
-  private mapDbRowToReminder(row: any): Reminder {
+  private mapDbRowToTask(row: any): Task {
     return {
       id: row.id,
       userId: row.user_id,
-      chatId: row.chat_id,
-      text: row.text,
+      taskName: row.task_name,
+      parameters: row.parameters,
       scheduleType: row.schedule_type,
       scheduleValue: row.schedule_value,
       startDate: row.start_date,
@@ -84,30 +85,30 @@ export class ReminderRepository {
   }
 
   /**
-   * Save a new reminder to the database
+   * Save a new task to the database
    */
-  async saveReminder(params: {
+  async saveTask(params: {
     userId: string;
-    chatId: string;
-    text: string;
+    taskName: string;
+    parameters: Record<string, any>;
     scheduleType: 'once' | 'cron';
     scheduleValue: string;
     startDate?: Date;
     endDate?: Date;
     timezone: string;
-    reminderId?: string;
-  }): Promise<Reminder> {
-    const id = params.reminderId || this.generateReminderId();
+    taskId?: string;
+  }): Promise<Task> {
+    const id = params.taskId || this.generateTaskId();
 
     const result = await this.pool.query(
-      `INSERT INTO reminders (id, user_id, chat_id, text, schedule_type, schedule_value, start_date, end_date, timezone)
+      `INSERT INTO tasks (id, user_id, task_name, parameters, schedule_type, schedule_value, start_date, end_date, timezone)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         id,
         params.userId,
-        params.chatId,
-        params.text,
+        params.taskName,
+        JSON.stringify(params.parameters),
         params.scheduleType,
         params.scheduleValue,
         params.startDate,
@@ -116,66 +117,64 @@ export class ReminderRepository {
       ],
     );
 
-    const reminder = this.mapDbRowToReminder(result.rows[0]);
-    console.log(`[ReminderRepository] Saved reminder '${id}': ${params.text.slice(0, 50)}...`);
-    return reminder;
+    const task = this.mapDbRowToTask(result.rows[0]);
+    console.log(`[TaskRepository] Saved task '${id}': ${params.taskName}`);
+    return task;
   }
 
   /**
-   * Get all active reminders for a specific user
+   * Get all active tasks for a specific user
    */
-  async getReminders(userId: string): Promise<Reminder[]> {
+  async getTasks(userId: string): Promise<Task[]> {
     const result = await this.pool.query(
-      `SELECT * FROM reminders
+      `SELECT * FROM tasks
        WHERE user_id = $1 AND active = TRUE
        ORDER BY created_at DESC`,
       [userId],
     );
-    return result.rows.map((row) => this.mapDbRowToReminder(row));
+    return result.rows.map((row) => this.mapDbRowToTask(row));
   }
 
   /**
-   * Get a specific reminder by ID
+   * Get a specific task by ID
    */
-  async getReminder(reminderId: string): Promise<Reminder | null> {
-    const result = await this.pool.query('SELECT * FROM reminders WHERE id = $1', [reminderId]);
-    return result.rows[0] ? this.mapDbRowToReminder(result.rows[0]) : null;
+  async getTask(taskId: string): Promise<Task | null> {
+    const result = await this.pool.query('SELECT * FROM tasks WHERE id = $1', [taskId]);
+    return result.rows[0] ? this.mapDbRowToTask(result.rows[0]) : null;
   }
 
   /**
-   * Get a reminder by ID, scoped to a specific user
+   * Get a task by ID, scoped to a specific user
    */
-  async getReminderForUser(reminderId: string, userId: string): Promise<Reminder | null> {
+  async getTaskForUser(taskId: string, userId: string): Promise<Task | null> {
     const result = await this.pool.query(
-      `SELECT * FROM reminders
+      `SELECT * FROM tasks
        WHERE id = $1 AND user_id = $2 AND active = TRUE`,
-      [reminderId, userId],
+      [taskId, userId],
     );
-    return result.rows[0] ? this.mapDbRowToReminder(result.rows[0]) : null;
+    return result.rows[0] ? this.mapDbRowToTask(result.rows[0]) : null;
   }
 
   /**
-   * Get all active reminders (for scheduler restore on startup)
+   * Get all active tasks (for scheduler restore on startup)
    */
-  async getAllReminders(): Promise<Reminder[]> {
-    const result = await this.pool.query('SELECT * FROM reminders WHERE active = TRUE');
-    return result.rows.map((row) => this.mapDbRowToReminder(row));
+  async getAllTasks(): Promise<Task[]> {
+    const result = await this.pool.query('SELECT * FROM tasks WHERE active = TRUE');
+    return result.rows.map((row) => this.mapDbRowToTask(row));
   }
 
   /**
-   * Soft delete a reminder (mark as inactive)
+   * Soft delete a task (mark as inactive)
    */
-  async deleteReminder(reminderId: string): Promise<boolean> {
-    const result = await this.pool.query('UPDATE reminders SET active = FALSE WHERE id = $1 RETURNING id', [
-      reminderId,
-    ]);
+  async deleteTask(taskId: string): Promise<boolean> {
+    const result = await this.pool.query('UPDATE tasks SET active = FALSE WHERE id = $1 RETURNING id', [taskId]);
 
     if (result.rowCount === 0) {
-      console.log(`[ReminderRepository] Reminder '${reminderId}' not found`);
+      console.log(`[TaskRepository] Task '${taskId}' not found`);
       return false;
     }
 
-    console.log(`[ReminderRepository] Deleted reminder '${reminderId}'`);
+    console.log(`[TaskRepository] Deleted task '${taskId}'`);
     return true;
   }
 
@@ -203,6 +202,6 @@ export class ReminderRepository {
        ON CONFLICT (id) DO UPDATE SET timezone = $2`,
       [userId, timezone],
     );
-    console.log(`[ReminderRepository] Set timezone for user ${userId}: ${timezone}`);
+    console.log(`[TaskRepository] Set timezone for user ${userId}: ${timezone}`);
   }
 }

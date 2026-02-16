@@ -1,18 +1,18 @@
 import { MessageHistory, config as messageHistoryConfig } from './messageHistory/index.js';
-import { ReminderRepository } from './reminderRepository/index.js';
+import { TaskRepository } from './taskRepository/index.js';
 import { UserRepository } from './userRepository/index.js';
 import { FlowSessionRepository } from './flowSessionRepository/index.js';
 import type { App } from '../app.js';
 
 export class Data {
   messageHistory: MessageHistory;
-  reminderRepository: ReminderRepository;
+  taskRepository: TaskRepository;
   userRepository: UserRepository;
   flowSessionRepository: FlowSessionRepository;
 
   constructor(app: App) {
     this.messageHistory = new MessageHistory(app, messageHistoryConfig);
-    this.reminderRepository = new ReminderRepository(app);
+    this.taskRepository = new TaskRepository(app);
     this.userRepository = new UserRepository(app);
     this.flowSessionRepository = new FlowSessionRepository(app);
   }
@@ -20,7 +20,7 @@ export class Data {
   async start() {
     await Promise.all([
       this.messageHistory.start(),
-      this.reminderRepository.start(),
+      this.taskRepository.start(),
       this.userRepository.start(),
       this.flowSessionRepository.start(),
     ]);
@@ -29,7 +29,7 @@ export class Data {
   async stop() {
     await Promise.all([
       this.messageHistory.stop(),
-      this.reminderRepository.stop(),
+      this.taskRepository.stop(),
       this.userRepository.stop(),
       this.flowSessionRepository.stop(),
     ]);

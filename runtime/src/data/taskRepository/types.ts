@@ -1,9 +1,9 @@
 // Core domain types
-export interface Reminder {
+export interface Task {
   id: string;
   userId: string;
-  chatId: string;
-  text: string;
+  taskName: string;
+  parameters: Record<string, any>;
   scheduleType: 'once' | 'cron';
   scheduleValue: string; // ISO datetime or cron expression
   startDate?: Date;

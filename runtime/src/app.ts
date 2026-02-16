@@ -3,6 +3,7 @@ import { Flows } from './flows/index.js';
 import { Infra } from './infra/index.js';
 import { Services } from './services/index.js';
 import { Skills } from './skills/index.js';
+import { Tasks } from './tasks/index.js';
 import { createAllTools } from './tools/index.js';
 
 export class App {
@@ -11,6 +12,7 @@ export class App {
   data: Data;
   flows: Flows;
   skills: Skills;
+  tasks: Tasks;
   tools: ReturnType<typeof createAllTools>;
 
   constructor() {
@@ -20,6 +22,7 @@ export class App {
     this.data = new Data(this);
     this.flows = new Flows(this);
     this.skills = new Skills(cwd);
+    this.tasks = new Tasks(this);
     this.tools = createAllTools(cwd);
   }
 

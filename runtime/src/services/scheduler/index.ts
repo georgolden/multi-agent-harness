@@ -1,13 +1,13 @@
 /**
  * Scheduler service using Agenda with Postgres backend.
- * Handles one-time and recurring reminder jobs.
+ * Handles one-time and recurring task jobs.
  */
 import { Agenda } from 'agenda';
 import type { Job } from 'agenda';
 import { PostgresBackend } from '@agendajs/postgres-backend';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc.js';
-import type { Reminder } from '../../data/reminderRepository/types.js';
+import type { Task } from '../../data/taskRepository/types.js';
 import type { App } from '../../app.js';
 
 dayjs.extend(utc);
@@ -51,7 +51,7 @@ export class Scheduler {
   }
 
   /**
-   * Schedule a one-time reminder
+   * Schedule a one-time task
    */
   async scheduleOnce(params: {
     jobId: string;
@@ -72,7 +72,7 @@ export class Scheduler {
   }
 
   /**
-   * Schedule a recurring reminder using cron expression
+   * Schedule a recurring task using cron expression
    */
   async scheduleCron(params: {
     jobId: string;
@@ -125,66 +125,65 @@ export class Scheduler {
   }
 
   /**
-   * Callback function that executes when a reminder fires
+   * Callback function that executes when a task fires
    */
-  private async onReminderFire(job: Job): Promise<void> {
-    const { chatId, text, reminderId, scheduleType } = job.attrs.data as {
-      chatId: string;
-      text: string;
-      reminderId: string;
+  private async onSchedulerFire(job: Job): Promise<void> {
+    const { taskName, parameters, taskId, scheduleType } = job.attrs.data as {
+      taskName: string;
+      parameters: Record<string, unknown>;
+      taskId: string;
       scheduleType: string;
     };
-    console.log(`[ReminderFire] Sending reminder ${reminderId} to chat ${chatId}`);
+    console.log(`[SchedulerFire] Executing task ${taskId} ${taskName} with ${JSON.stringify(parameters)}`);
 
     try {
-      this.app.infra.bus.emit('telegram.sendMessage', { chatId, message: `⏰ Reminder: ${text}` });
-
+      await this.app.tasks.runTask(taskName, parameters);
       // For one-time reminders, mark as inactive after firing
       if (scheduleType === 'once') {
-        await this.app.data.reminderRepository.deleteReminder(reminderId);
+        await this.app.data.taskRepository.deleteTask(taskId);
       }
     } catch (error) {
-      console.error(`[ReminderFire] Error sending reminder ${reminderId}:`, error);
+      console.error(`[SchedulerFire] Error sending task ${taskId}:`, error);
     }
   }
 
   /**
-   * Schedule a reminder from a Reminder object
+   * Schedule a task from a Task object
    */
-  async scheduleReminder(reminder: Reminder): Promise<void> {
+  async scheduleTask(task: Task): Promise<void> {
     const callbackData = {
-      chatId: reminder.chatId,
-      text: reminder.text,
-      reminderId: reminder.id,
-      scheduleType: reminder.scheduleType,
+      taskId: task.id,
+      scheduleType: task.scheduleType,
+      taskName: task.taskName,
+      parameters: task.parameters,
     };
 
-    const callback = (job: Job) => this.onReminderFire(job);
+    const callback = (job: Job) => this.onSchedulerFire(job);
 
     try {
-      if (reminder.scheduleType === 'once') {
+      if (task.scheduleType === 'once') {
         await this.scheduleOnce({
-          jobId: reminder.id,
-          runDate: reminder.scheduleValue,
+          jobId: task.id,
+          runDate: task.scheduleValue,
           callback,
           callbackData,
         });
-      } else if (reminder.scheduleType === 'cron') {
+      } else if (task.scheduleType === 'cron') {
         await this.scheduleCron({
-          jobId: reminder.id,
-          cronExpression: reminder.scheduleValue,
+          jobId: task.id,
+          cronExpression: task.scheduleValue,
           callback,
-          startDate: reminder.startDate ? reminder.startDate.toISOString() : undefined,
-          endDate: reminder.endDate ? reminder.endDate.toISOString() : undefined,
-          timezone: reminder.timezone,
+          startDate: task.startDate ? task.startDate.toISOString() : undefined,
+          endDate: task.endDate ? task.endDate.toISOString() : undefined,
+          timezone: task.timezone,
           callbackData,
         });
       } else {
-        console.error(`[Scheduler.scheduleReminder] Unknown schedule type: ${reminder.scheduleType}`);
-        throw new Error(`Unknown schedule type: ${reminder.scheduleType}`);
+        console.error(`[Scheduler.scheduleScheduler] Unknown schedule type: ${task.scheduleType}`);
+        throw new Error(`Unknown schedule type: ${task.scheduleType}`);
       }
     } catch (error) {
-      console.error(`[Scheduler.scheduleReminder] Error:`, error);
+      console.error(`[Scheduler.scheduleScheduler] Error:`, error);
       throw error;
     }
   }
@@ -196,17 +195,17 @@ export class Scheduler {
    */
   async restoreJobs(): Promise<void> {
     console.log('[Scheduler.restoreJobs] Restoring job definitions...');
-    const reminders = await this.app.data.reminderRepository.getAllReminders();
+    const reminders = await this.app.data.taskRepository.getAllTasks();
 
     if (reminders.length === 0) {
       console.log('[Scheduler.restoreJobs] No reminders to restore');
       return;
     }
 
-    for (const reminder of reminders) {
+    for (const task of reminders) {
       // We only define the job processor.
       // We do NOT call schedule() or create() because the job data is already in the Agenda DB.
-      this.agenda.define(reminder.id, (job: Job) => this.onReminderFire(job));
+      this.agenda.define(task.id, (job: Job) => this.onSchedulerFire(job));
     }
 
     console.log(`[Scheduler.restoreJobs] Restored definitions for ${reminders.length} reminders`);
