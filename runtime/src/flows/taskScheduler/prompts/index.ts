@@ -13,12 +13,18 @@ const [systemPromptTemplate, scheduleSkill] = await Promise.all([
   readFile(skillPath, 'utf-8'),
 ]);
 
-export function createSystemPrompt(currentISODatetime: string, userTimezone: string, tasks: string): string {
+export function createSystemPrompt(
+  currentISODatetime: string,
+  userTimezone: string,
+  tasks: string,
+  tasksTypes: string,
+): string {
   const variables = {
     currentISODatetime,
     userTimezone,
     tasks,
     SCHEDULE_SKILL: scheduleSkill,
+    tasksTypes,
   };
   return replaceVars(systemPromptTemplate, variables);
 }

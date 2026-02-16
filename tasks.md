@@ -3,8 +3,9 @@
 
 - [x] test sanbox service that will work with sanbox runtimes
 
-- [ ] write task scheduler agent - derive from reminder task will be flow so agent scheduler agent
-  - needs to update prompt and skill and nodes must use flowSession repository
+- [x] write task scheduler agent - derive from reminder task will be flow so agent scheduler agent
+  - [ ] use flow session repository instead of message history
+  - [ ] introduce prompt template and use prompt template here: task type and args and schedule info
 
 - [x] do message history handling properly context management
   - strategies:

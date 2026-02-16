@@ -67,4 +67,11 @@ export class Tasks {
       console.error(`Error running task ${taskName}:`, error);
     }
   }
+
+  /**
+   * Get a formatted string representation of available tasks and their schemas
+   */
+  getTasksSchema(): string {
+    return JSON.stringify(this.tasks, null, 2);
+  }
 }

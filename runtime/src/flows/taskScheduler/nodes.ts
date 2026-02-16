@@ -53,6 +53,7 @@ type DecideActionPrepResult = {
   currentDate: string;
   conversation: ConversationMessage[];
   userTaskSchedulers: string;
+  tasksTypes: string;
 };
 type DecideActionExecResult = ChatCompletionMessage;
 
@@ -73,18 +74,20 @@ export class DecideAction extends Node<SharedStore<TaskSchedulerContext>> {
     console.log(`[DecideAction.prep] Found ${userTaskSchedulers.length} reminders, timezone: ${timezone}`);
 
     const conversation = data.messageHistory.getConversation(userId);
+    const tasksTypes = shared.app.tasks.getTasksSchema();
     return {
       timezone: timezone,
       currentDate: new Date().toISOString(),
       conversation: conversation,
       userTaskSchedulers: JSON.stringify(userTaskSchedulers),
+      tasksTypes,
     };
   }
 
   async exec(prepRes: DecideActionPrepResult): Promise<DecideActionExecResult> {
-    const { timezone, currentDate, conversation, userTaskSchedulers } = prepRes;
+    const { timezone, currentDate, conversation, userTaskSchedulers, tasksTypes } = prepRes;
 
-    const systemPrompt = createSystemPrompt(currentDate, timezone, userTaskSchedulers);
+    const systemPrompt = createSystemPrompt(currentDate, timezone, userTaskSchedulers, tasksTypes);
 
     const messages: ConversationMessage[] = [{ role: 'system', content: systemPrompt }, ...conversation];
 

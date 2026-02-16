@@ -20,7 +20,14 @@ USER OFTEN TALKS ABOUT TASKS IN RECENT CONVERSATION HISTORY CONTEXT
 ${tasks}
 ```
 
+### Task Types
+```
+${tasksTypes}
+```
+
 ## Core Responsibilities
+
+You must determine task type
 
 You must determine if the user wants to:
 - **Schedule** a new task
