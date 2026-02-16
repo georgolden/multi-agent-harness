@@ -4,10 +4,18 @@
 import { OpenAI } from 'openai';
 import type { ChatCompletion, ChatCompletionMessage, ChatCompletionMessageParam } from 'openai/resources';
 
+export type CallLlmOptions = {
+  temperature?: number;
+  thinking?: boolean;
+};
+
 /**
  * Simple LLM call without tools
  */
-export async function callLlm(messages: ChatCompletionMessageParam[]): Promise<string> {
+export async function callLlm(
+  messages: ChatCompletionMessageParam[],
+  { temperature = 0.3, thinking = true }: CallLlmOptions = {},
+): Promise<string> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     throw new Error('OPENROUTER_API_KEY environment variable not set');
@@ -22,7 +30,11 @@ export async function callLlm(messages: ChatCompletionMessageParam[]): Promise<s
   const response = await client.chat.completions.create({
     model: 'moonshotai/kimi-k2.5',
     messages,
-    temperature: 0.3,
+    temperature: temperature,
+    // @ts-expect-error - OpenRouter supports extra_body for provider-specific options
+    extra_body: {
+      thinking: { type: thinking ? 'enabled' : 'disabled' }, // or 'enabled' for thinking mode
+    },
   });
 
   return response.choices[0].message.content || '';
@@ -34,6 +46,7 @@ export async function callLlm(messages: ChatCompletionMessageParam[]): Promise<s
 export async function callLlmWithTools(
   messages: ChatCompletionMessageParam[],
   tools: OpenAI.ChatCompletionTool[],
+  { temperature = 0.3, thinking = true }: CallLlmOptions = {},
 ): Promise<ChatCompletion.Choice[]> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -51,7 +64,11 @@ export async function callLlmWithTools(
     messages,
     tools,
     tool_choice: 'auto',
-    temperature: 0.3,
+    temperature: temperature,
+    // @ts-expect-error - OpenRouter supports extra_body for provider-specific options
+    extra_body: {
+      thinking: { type: thinking ? 'enabled' : 'disabled' }, // or 'enabled' for thinking mode
+    },
   });
 
   return response.choices;
