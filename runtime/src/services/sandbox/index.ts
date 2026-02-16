@@ -11,7 +11,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFile, readdir, stat, access } from 'node:fs/promises';
 import { resolve, basename, extname } from 'node:path';
 import type { RuntimeConfig, RuntimeType } from '../../sandbox/types.js';
 import type { App } from '../../app.js';
@@ -100,8 +100,8 @@ export class SandboxService {
     }
 
     await this.checkPodman();
-    this.loadRuntimeConfigs();
-    this.loadSkillRuntimes();
+    await this.loadRuntimeConfigs();
+    await this.loadSkillRuntimes();
 
     for (const runtimeType of this.runtimeConfigs.keys()) {
       this.activeExecutions.set(runtimeType, 0);
@@ -295,32 +295,44 @@ export class SandboxService {
 
   // ─── Runtime Config Loading ──────────────────────────────────────────────
 
-  private loadRuntimeConfigs(): void {
-    if (!existsSync(this.sandboxDir)) {
+  private async loadRuntimeConfigs(): Promise<void> {
+    try {
+      await access(this.sandboxDir);
+    } catch {
       console.warn(`[SandboxService] Sandbox runtimes directory not found: ${this.sandboxDir}`);
       return;
     }
 
-    const entries = readdirSync(this.sandboxDir);
+    const entries = await readdir(this.sandboxDir);
     for (const entry of entries) {
       const entryPath = resolve(this.sandboxDir, entry);
       const configPath = resolve(entryPath, 'config.json');
 
-      if (statSync(entryPath).isDirectory() && existsSync(configPath)) {
-        const config: RuntimeConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
-        this.runtimeConfigs.set(config.name as RuntimeType, config);
-        this.pools.set(config.name as RuntimeType, []);
+      const stats = await stat(entryPath);
+      if (stats.isDirectory()) {
+        try {
+          await access(configPath);
+          const configContent = await readFile(configPath, 'utf-8');
+          const config: RuntimeConfig = JSON.parse(configContent);
+          this.runtimeConfigs.set(config.name as RuntimeType, config);
+          this.pools.set(config.name as RuntimeType, []);
+        } catch {
+          // Config file doesn't exist or can't be read, skip this entry
+        }
       }
     }
   }
 
-  private loadSkillRuntimes(): void {
-    if (!existsSync(this.skillRuntimesPath)) {
+  private async loadSkillRuntimes(): Promise<void> {
+    try {
+      await access(this.skillRuntimesPath);
+    } catch {
       console.warn(`[SandboxService] skill-runtimes.json not found: ${this.skillRuntimesPath}`);
       return;
     }
 
-    this.skillRuntimes = JSON.parse(readFileSync(this.skillRuntimesPath, 'utf-8'));
+    const content = await readFile(this.skillRuntimesPath, 'utf-8');
+    this.skillRuntimes = JSON.parse(content);
   }
 
   // ─── Container Pool Management ──────────────────────────────────────────
@@ -448,8 +460,8 @@ export class SandboxService {
     try {
       await execFileAsync('podman', ['rm', '-f', container.id]);
       console.log(`[SandboxService] Stopped container: ${container.id.slice(0, 12)}`);
-    } catch (err) {
-      console.error(`[SandboxService] Failed to stop container ${container.id.slice(0, 12)}:`, err);
+    } catch {
+      // Ignore errors on stop
     }
   }
 
