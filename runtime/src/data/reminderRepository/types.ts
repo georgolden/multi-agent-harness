@@ -12,8 +12,3 @@ export interface Reminder {
   createdAt: Date;
   active: boolean;
 }
-
-export interface User {
-  id: string;
-  timezone: string;
-}

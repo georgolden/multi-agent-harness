@@ -2,21 +2,22 @@
  * ReminderRepository service for reminders and user preferences.
  * Uses Postgres for persistence.
  */
-import { Pool } from 'pg';
+import type { Pool } from 'pg';
 import { randomBytes } from 'crypto';
-import type { Reminder, User } from './types.js';
+import type { Reminder } from './types.js';
 import { App } from '../../app.js';
+import type { User } from '../userRepository/types.js';
 
 /**
  * ReminderRepository for managing reminders and user preferences
  */
 export class ReminderRepository {
-  public pool: Pool;
+  private pool: Pool;
   app: App;
 
-  constructor(app: App, { connectionString }: { connectionString: string }) {
+  constructor(app: App) {
     this.app = app;
-    this.pool = new Pool({ connectionString });
+    this.pool = app.infra.pg.pool;
   }
 
   /**
@@ -40,13 +41,6 @@ export class ReminderRepository {
       )
     `);
 
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id VARCHAR(255) PRIMARY KEY,
-        timezone VARCHAR(50) NOT NULL DEFAULT 'UTC'
-      )
-    `);
-
     // Create indexes for common queries
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS idx_reminders_user_active
@@ -57,11 +51,10 @@ export class ReminderRepository {
   }
 
   /**
-   * Close the database connection pool
+   * Cleanup (pool is managed by infra layer)
    */
   async stop(): Promise<void> {
-    await this.pool.end();
-    console.log('[ReminderRepository] Connection closed');
+    console.log('[ReminderRepository] Stopped');
   }
 
   /**
@@ -213,11 +206,3 @@ export class ReminderRepository {
     console.log(`[ReminderRepository] Set timezone for user ${userId}: ${timezone}`);
   }
 }
-
-if (!process.env.DATABASE_URL) {
-  throw new Error('Env DATABASE_URL is not defined');
-}
-
-export const config = {
-  connectionString: process.env.DATABASE_URL,
-};
