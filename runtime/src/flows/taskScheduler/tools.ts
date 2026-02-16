@@ -1,5 +1,5 @@
 /**
- * Tool definitions for the reminder bot.
+ * Tool definitions for the task bot.
  * These define the actions the LLM can take.
  */
 import type { OpenAI } from 'openai';
@@ -15,11 +15,11 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'schedule_once',
-      description: 'Schedule a one-time reminder at a specific date and time',
+      description: 'Schedule a one-time task at a specific date and time',
       parameters: {
         type: 'object',
         properties: {
-          reminder_text: {
+          task_message: {
             type: 'string',
             description: 'What to remind the user about',
           },
@@ -28,7 +28,7 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
             description: "ISO 8601 datetime string (e.g., '2026-02-02T15:00:00')",
           },
         },
-        required: ['reminder_text', 'datetime'],
+        required: ['task_message', 'datetime'],
       },
     },
   },
@@ -36,11 +36,11 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'schedule_recurring',
-      description: 'Schedule a recurring reminder using cron syntax',
+      description: 'Schedule a recurring task using cron syntax',
       parameters: {
         type: 'object',
         properties: {
-          reminder_text: {
+          task_message: {
             type: 'string',
             description: 'What to remind the user about',
           },
@@ -58,7 +58,7 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
             description: "ISO 8601 end datetime (e.g., '2026-01-30T01:40:00')",
           },
         },
-        required: ['reminder_text', 'cron_expression'],
+        required: ['task_message', 'cron_expression'],
       },
     },
   },
@@ -66,11 +66,11 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'schedule_interval',
-      description: 'Schedule a recurring interval reminder using cron syntax',
+      description: 'Schedule a recurring interval task using cron syntax',
       parameters: {
         type: 'object',
         properties: {
-          reminder_text: {
+          task_message: {
             type: 'string',
             description: 'What to remind the user about',
           },
@@ -88,15 +88,15 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
             description: "ISO 8601 end datetime (e.g., '2026-01-30T01:40:00')",
           },
         },
-        required: ['reminder_text', 'cron_expression'],
+        required: ['task_message', 'cron_expression'],
       },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'list_reminders',
-      description: 'List all active reminders for the user',
+      name: 'list_tasks',
+      description: 'List all active tasks for the user',
       parameters: {
         type: 'object',
         properties: {},
@@ -107,25 +107,25 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'cancel_reminder',
-      description: 'Cancel/delete a specific reminder by its ID',
+      name: 'cancel_task',
+      description: 'Cancel/delete a specific task by its ID',
       parameters: {
         type: 'object',
         properties: {
-          reminder_id: {
+          task_id: {
             type: 'string',
-            description: 'The ID of the reminder to cancel',
+            description: 'The ID of the task to cancel',
           },
         },
-        required: ['reminder_id'],
+        required: ['task_id'],
       },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'cancel_all_reminders',
-      description: 'Cancel/delete ALL reminders for the user',
+      name: 'cancel_all_tasks',
+      description: 'Cancel/delete ALL tasks for the user',
       parameters: {
         type: 'object',
         properties: {},
@@ -137,7 +137,7 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'set_timezone',
-      description: "Set the user's preferred timezone for all reminders",
+      description: "Set the user's preferred timezone for all tasks",
       parameters: {
         type: 'object',
         properties: {
@@ -154,31 +154,30 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
 
 const toolHandlers = {
   /**
-   * Schedule a one-time reminder
+   * Schedule a one-time task
    */
-  schedule_once: async (
-    app: App,
-    context: { userId: string; chatId: string },
-    args: { reminder_text: string; datetime: string },
-  ) => {
+  schedule_once: async (app: App, context: { userId: string }, args: { task_message: string; datetime: string }) => {
     try {
-      const { userId, chatId } = context;
-      const userTimezone = await app.data.reminderRepository.getUserTimezone(userId);
+      const { userId } = context;
+      const userTimezone = await app.data.taskRepository.getUserTimezone(userId);
 
-      // Save reminder to reminderRepository - datetime is already ISO string
-      const reminder = await app.data.reminderRepository.saveReminder({
+      // Save task to taskRepository - datetime is already ISO string
+      const task = await app.data.taskRepository.saveTask({
         userId,
-        chatId,
-        text: args.reminder_text,
+        taskName: 'task',
+        parameters: {
+          userId,
+          message: args.task_message,
+        },
         scheduleType: 'once',
         scheduleValue: args.datetime,
         timezone: userTimezone,
       });
 
       // Schedule the job
-      await app.services.scheduler.scheduleReminder(reminder);
+      await app.services.scheduler.scheduleTask(task);
 
-      return { status: 'success', reminder };
+      return { status: 'success', task };
     } catch (error: any) {
       console.error('[schedule_once] Error:', error);
       return { status: 'error', error: error?.message };
@@ -186,16 +185,16 @@ const toolHandlers = {
   },
 
   /**
-   * Schedule a recurring reminder using cron syntax
+   * Schedule a recurring task using cron syntax
    */
   schedule_recurring: async (
     app: App,
-    context: { userId: string; chatId: string },
-    args: { reminder_text: string; cron_expression: string; schedule_start_date?: string; schedule_end_date?: string },
+    context: { userId: string },
+    args: { task_message: string; cron_expression: string; schedule_start_date?: string; schedule_end_date?: string },
   ) => {
     try {
-      const { userId, chatId } = context;
-      const userTimezone = await app.data.reminderRepository.getUserTimezone(userId);
+      const { userId } = context;
+      const userTimezone = await app.data.taskRepository.getUserTimezone(userId);
 
       // Dates are already ISO strings, just convert to Date objects if provided
       let startDate: Date | undefined;
@@ -209,11 +208,14 @@ const toolHandlers = {
         endDate = new Date(args.schedule_end_date);
       }
 
-      // Save reminder to reminderRepository
-      const reminder = await app.data.reminderRepository.saveReminder({
+      // Save task to taskRepository
+      const task = await app.data.taskRepository.saveTask({
         userId,
-        chatId,
-        text: args.reminder_text,
+        taskName: 'reminder',
+        parameters: {
+          userId,
+          message: args.task_message,
+        },
         scheduleType: 'cron',
         scheduleValue: args.cron_expression,
         startDate,
@@ -222,9 +224,9 @@ const toolHandlers = {
       });
 
       // Schedule the cron job
-      await app.services.scheduler.scheduleReminder(reminder);
+      await app.services.scheduler.scheduleTask(task);
 
-      return { status: 'success', reminder };
+      return { status: 'success', task };
     } catch (error: any) {
       console.error('[schedule_recurring] Error:', error);
       return { status: 'error', error: error?.message };
@@ -232,80 +234,80 @@ const toolHandlers = {
   },
 
   /**
-   * Schedule an interval reminder (similar to recurring)
+   * Schedule an interval task (similar to recurring)
    */
   schedule_interval: async (
     app: App,
-    context: { userId: string; chatId: string },
-    args: { reminder_text: string; cron_expression: string; schedule_start_date?: string; schedule_end_date?: string },
+    context: { userId: string },
+    args: { task_message: string; cron_expression: string; schedule_start_date?: string; schedule_end_date?: string },
   ) => {
     // Interval is essentially the same as recurring for this implementation
     return toolHandlers.schedule_recurring(app, context, args);
   },
 
   /**
-   * List all active reminders for the user
+   * List all active tasks for the user
    */
-  list_reminders: async (app: App, context: { userId: string; chatId: string }, _args: {}) => {
+  list_tasks: async (app: App, context: { userId: string }, _args: {}) => {
     try {
       const { userId } = context;
-      const reminders = await app.data.reminderRepository.getReminders(userId);
-      return { status: 'success', reminders };
+      const tasks = await app.data.taskRepository.getTasks(userId);
+      return { status: 'success', tasks };
     } catch (error: any) {
-      console.error('[list_reminders] Error:', error);
+      console.error('[list_tasks] Error:', error);
       return { status: 'error', error: error?.message };
     }
   },
 
   /**
-   * Cancel a specific reminder by ID
+   * Cancel a specific task by ID
    */
-  cancel_reminder: async (app: App, context: { userId: string; chatId: string }, args: { reminder_id: string }) => {
+  cancel_task: async (app: App, context: { userId: string }, args: { task_id: string }) => {
     try {
       const { userId } = context;
-      // Verify the reminder belongs to this user
-      const reminder = await app.data.reminderRepository.getReminderForUser(args.reminder_id, userId);
+      // Verify the task belongs to this user
+      const task = await app.data.taskRepository.getTaskForUser(args.task_id, userId);
 
-      if (!reminder) {
+      if (!task) {
         return { status: 'success' };
       }
 
       // Remove from scheduler first
-      await app.services.scheduler.removeJob(reminder.id);
+      await app.services.scheduler.removeJob(task.id);
 
-      // Then delete from reminderRepository
-      await app.data.reminderRepository.deleteReminder(reminder.id);
+      // Then delete from taskRepository
+      await app.data.taskRepository.deleteTask(task.id);
 
       return { status: 'success' };
     } catch (error: any) {
-      console.error('[cancel_reminder] Error:', error);
+      console.error('[cancel_task] Error:', error);
       return { status: 'error', error: error?.message };
     }
   },
 
   /**
-   * Cancel all reminders for the user
+   * Cancel all tasks for the user
    */
-  cancel_all_reminders: async (app: App, context: { userId: string; chatId: string }, _args: {}) => {
+  cancel_all_tasks: async (app: App, context: { userId: string }, _args: {}) => {
     try {
       const { userId } = context;
-      const reminders = await app.data.reminderRepository.getReminders(userId);
+      const tasks = await app.data.taskRepository.getTasks(userId);
 
-      if (reminders.length === 0) {
+      if (tasks.length === 0) {
         return { status: 'success' };
       }
 
-      for (const reminder of reminders) {
+      for (const task of tasks) {
         // Remove from scheduler
-        await app.services.scheduler.removeJob(reminder.id);
+        await app.services.scheduler.removeJob(task.id);
 
-        // Delete from reminderRepository
-        await app.data.reminderRepository.deleteReminder(reminder.id);
+        // Delete from taskRepository
+        await app.data.taskRepository.deleteTask(task.id);
       }
 
       return { status: 'success' };
     } catch (error: any) {
-      console.error('[cancel_all_reminders] Error:', error);
+      console.error('[cancel_all_tasks] Error:', error);
       return { status: 'error', error: error?.message };
     }
   },
@@ -313,7 +315,7 @@ const toolHandlers = {
   /**
    * Set the user's preferred timezone
    */
-  set_timezone: async (app: App, context: { userId: string; chatId: string }, args: { timezone: string }) => {
+  set_timezone: async (app: App, context: { userId: string }, args: { timezone: string }) => {
     try {
       const { userId } = context;
       // Validate timezone by trying to use it
@@ -322,8 +324,8 @@ const toolHandlers = {
         return { status: 'error', error: 'Invalid timezone' };
       }
 
-      // Set the timezone in reminderRepository
-      await app.data.reminderRepository.setUserTimezone(userId, args.timezone);
+      // Set the timezone in taskRepository
+      await app.data.taskRepository.setUserTimezone(userId, args.timezone);
 
       return { status: 'success' };
     } catch (error: any) {
@@ -338,7 +340,7 @@ export function createToolHandler(name: string) {
   if (!handler) {
     throw new Error(`Unknown tool: ${name}`);
   }
-  return async (app: App, context: { userId: string; chatId: string }, args: any): Promise<string> => {
+  return async (app: App, context: { userId: string }, args: any): Promise<string> => {
     const res = await handler(app, context, args);
     return JSON.stringify(res);
   };

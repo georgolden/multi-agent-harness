@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import 'dotenv/config';
-import { createReminderFlow } from './flow.js';
+import { createTaskSchedulerFlow } from './flow.js';
 import { App } from '../../app.js';
 import { SharedStore } from '../../types.js';
-import { ReminderContext } from './types.js';
+import { TaskSchedulerContext } from './types.js';
 import { MessageHistory } from '../../data/messageHistory/index.js';
+import { Task } from '../../data/taskRepository/types.js';
 
 // Helper to setup isolated app environment for each test
 function setupTestApp() {
@@ -81,13 +82,12 @@ describe('Reminder Flow Integration', () => {
 
   it('should schedule a one-time reminder', async () => {
     const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
-    const flow = createReminderFlow();
-    const context: ReminderContext = {
+    const flow = createTaskSchedulerFlow();
+    const context: TaskSchedulerContext = {
       userId: 'user-123',
-      chatId: 'chat-123',
       message: 'Remind me to check the oven in 5 minutes',
     };
-    const shared: SharedStore<ReminderContext> = { app, context };
+    const shared: SharedStore<TaskSchedulerContext> = { app, context };
 
     await flow.run(shared);
 
@@ -112,13 +112,12 @@ describe('Reminder Flow Integration', () => {
 
   it('should schedule a recurring reminder', async () => {
     const { app, mockStorage, mockScheduler } = setupTestApp();
-    const flow = createReminderFlow();
-    const context: ReminderContext = {
+    const flow = createTaskSchedulerFlow();
+    const context: TaskSchedulerContext = {
       userId: 'user-123',
-      chatId: 'chat-123',
       message: 'Remind me to drink water every hour',
     };
-    const shared: SharedStore<ReminderContext> = { app, context };
+    const shared: SharedStore<TaskSchedulerContext> = { app, context };
 
     await flow.run(shared);
 
@@ -136,27 +135,30 @@ describe('Reminder Flow Integration', () => {
   it('should list reminders', async () => {
     const { app, mockStorage, mockBus } = setupTestApp();
     // Setup existing reminders
-    const existingReminders = [
+    const existingReminders: Task[] = [
       {
         id: 'r1',
         userId: 'user-123',
-        chatId: 'chat-123',
-        text: 'Buy groceries',
+        taskName: 'reminder',
+        parameters: {
+          userId: 'user-123',
+          message: 'Buy groceries',
+        },
         scheduleType: 'once',
         scheduleValue: new Date(Date.now() + 3600000).toISOString(),
+        createdAt: new Date(),
         timezone: 'UTC',
         active: true,
       },
     ];
     mockStorage.getReminders.mockResolvedValue(existingReminders);
 
-    const flow = createReminderFlow();
-    const context: ReminderContext = {
+    const flow = createTaskSchedulerFlow();
+    const context: TaskSchedulerContext = {
       userId: 'user-123',
-      chatId: 'chat-123',
       message: 'What are my reminders?',
     };
-    const shared: SharedStore<ReminderContext> = { app, context };
+    const shared: SharedStore<TaskSchedulerContext> = { app, context };
 
     await flow.run(shared);
 
@@ -176,27 +178,30 @@ describe('Reminder Flow Integration', () => {
   it('should cancel a reminder', async () => {
     const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
     // Setup existing reminders so LLM can see ID
-    const existingReminders = [
+    const existingReminders: Task[] = [
       {
         id: 'rem-to-cancel',
         userId: 'user-123',
-        chatId: 'chat-123',
-        text: 'Old reminder',
+        taskName: 'reminder',
+        parameters: {
+          userId: 'user-123',
+          message: 'Remind me to cancel this reminder',
+        },
         scheduleType: 'once',
         scheduleValue: new Date().toISOString(),
+        createdAt: new Date(),
         timezone: 'UTC',
         active: true,
       },
     ];
     mockStorage.getReminders.mockResolvedValue(existingReminders);
 
-    const flow = createReminderFlow();
-    const context: ReminderContext = {
+    const flow = createTaskSchedulerFlow();
+    const context: TaskSchedulerContext = {
       userId: 'user-123',
-      chatId: 'chat-123',
       message: 'Cancel the reminder with ID rem-to-cancel',
     };
-    const shared: SharedStore<ReminderContext> = { app, context };
+    const shared: SharedStore<TaskSchedulerContext> = { app, context };
 
     await flow.run(shared);
 

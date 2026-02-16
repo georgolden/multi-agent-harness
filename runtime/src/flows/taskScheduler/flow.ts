@@ -5,14 +5,14 @@
 import { Flow } from 'pocketflow';
 import { PrepareInput, DecideAction, AskUser, ToolCalls } from './nodes.js';
 import type { SharedStore } from '../../types.js';
-import type { ReminderContext } from './types.js';
+import { taskSchedulerInputSchema, type TaskSchedulerContext } from './types.js';
 
-export type ReminderFlow = Flow<SharedStore<ReminderContext>>;
+export type TaskSchedulerFlow = Flow<SharedStore<TaskSchedulerContext>>;
 
 /**
  * Create and return the reminder agent flow
  */
-export function createReminderFlow(): Flow<SharedStore<ReminderContext>> {
+export function createTaskSchedulerFlow(): Flow<SharedStore<TaskSchedulerContext>> {
   // Create nodes
   const prepareInput = new PrepareInput();
   const decideAction = new DecideAction();
@@ -32,5 +32,13 @@ export function createReminderFlow(): Flow<SharedStore<ReminderContext>> {
   toolCalls.next(decideAction);
 
   // Create flow starting with PrepareInput
-  return new Flow<SharedStore<ReminderContext>>(prepareInput);
+  return new Flow<SharedStore<TaskSchedulerContext>>(prepareInput);
 }
+
+export const taskSchedulerFlow = {
+  name: 'reminder',
+  description:
+    'TaskScheduler agent flow that allows users to schedule tasks. It helps to:\n• Schedule one-time tasks\n• Set up recurring tasks\n• List your active tasks\n• Cancel tasks',
+  parameters: taskSchedulerInputSchema,
+  create: createTaskSchedulerFlow,
+};

@@ -15,7 +15,7 @@ import { createSystemPrompt } from './prompts/index.js';
 import { createToolHandler, TOOLS } from './tools.js';
 import type { ConversationMessage } from '../../data/messageHistory/index.js';
 import type { App } from '../../app.js';
-import type { ReminderContext, AskUserContext, ToolCallsContext } from './types.js';
+import type { TaskSchedulerContext, AskUserContext, ToolCallsContext } from './types.js';
 
 // PrepareInput Types
 type PrepareInputPrepResult = { userId: string; message: string };
@@ -24,8 +24,8 @@ type PrepareInputExecResult = 'done';
 /**
  * PrepareInput: Add user's message to conversation history (runs once)
  */
-export class PrepareInput extends Node<SharedStore<ReminderContext>> {
-  async prep(shared: SharedStore<ReminderContext>): Promise<PrepareInputPrepResult> {
+export class PrepareInput extends Node<SharedStore<TaskSchedulerContext>> {
+  async prep(shared: SharedStore<TaskSchedulerContext>): Promise<PrepareInputPrepResult> {
     const { userId, message } = shared.context;
     console.log(`[PrepareInput.prep] Adding user message to history: "${message}"`);
 
@@ -42,7 +42,7 @@ export class PrepareInput extends Node<SharedStore<ReminderContext>> {
     return 'done';
   }
 
-  async post(_shared: SharedStore<ReminderContext>, _prepRes: PrepareInputPrepResult, execRes: PrepareInputExecResult) {
+  async post(_shared: SharedStore<TaskSchedulerContext>, _prepRes: PrepareInputPrepResult, execRes: PrepareInputExecResult) {
     return undefined;
   }
 }
@@ -52,44 +52,44 @@ type DecideActionPrepResult = {
   timezone: string;
   currentDate: string;
   conversation: ConversationMessage[];
-  userReminders: string;
+  userTaskSchedulers: string;
 };
 type DecideActionExecResult = ChatCompletionMessage;
 
 /**
  * DecideAction: LLM decides what action to take
  */
-export class DecideAction extends Node<SharedStore<ReminderContext>> {
+export class DecideAction extends Node<SharedStore<TaskSchedulerContext>> {
   constructor() {
     super(3, 1); // maxRetries: 3, wait: 1s
   }
 
-  async prep(shared: SharedStore<ReminderContext>): Promise<DecideActionPrepResult> {
+  async prep(shared: SharedStore<TaskSchedulerContext>): Promise<DecideActionPrepResult> {
     const { userId } = shared.context;
 
     const { data } = shared.app;
-    const userReminders = await data.reminderRepository.getReminders(userId);
-    const timezone = await data.reminderRepository.getUserTimezone(userId);
-    console.log(`[DecideAction.prep] Found ${userReminders.length} reminders, timezone: ${timezone}`);
+    const userTaskSchedulers = await data.taskRepository.getTasks(userId);
+    const timezone = await data.taskRepository.getUserTimezone(userId);
+    console.log(`[DecideAction.prep] Found ${userTaskSchedulers.length} reminders, timezone: ${timezone}`);
 
     const conversation = data.messageHistory.getConversation(userId);
     return {
       timezone: timezone,
       currentDate: new Date().toISOString(),
       conversation: conversation,
-      userReminders: JSON.stringify(userReminders),
+      userTaskSchedulers: JSON.stringify(userTaskSchedulers),
     };
   }
 
   async exec(prepRes: DecideActionPrepResult): Promise<DecideActionExecResult> {
-    const { timezone, currentDate, conversation, userReminders } = prepRes;
+    const { timezone, currentDate, conversation, userTaskSchedulers } = prepRes;
 
-    const systemPrompt = createSystemPrompt(currentDate, timezone, userReminders);
+    const systemPrompt = createSystemPrompt(currentDate, timezone, userTaskSchedulers);
 
     const messages: ConversationMessage[] = [{ role: 'system', content: systemPrompt }, ...conversation];
 
     console.log(
-      `[DecideAction.exec] Calling LLM with ${messages.length} messages (user_tz: ${timezone}, ${userReminders.length} reminders)`,
+      `[DecideAction.exec] Calling LLM with ${messages.length} messages (user_tz: ${timezone}, ${userTaskSchedulers.length} reminders)`,
     );
     console.log(conversation);
 
@@ -101,7 +101,7 @@ export class DecideAction extends Node<SharedStore<ReminderContext>> {
     return response[0].message;
   }
 
-  async post(shared: SharedStore<ReminderContext>, _prepRes: DecideActionPrepResult, execRes: DecideActionExecResult) {
+  async post(shared: SharedStore<TaskSchedulerContext>, _prepRes: DecideActionPrepResult, execRes: DecideActionExecResult) {
     shared.app.data.messageHistory.addMessage(shared.context.userId, execRes);
     const toolCalls = execRes.tool_calls as ChatCompletionMessageFunctionToolCall[];
 
@@ -130,7 +130,7 @@ export class DecideAction extends Node<SharedStore<ReminderContext>> {
 }
 
 // AskUser Types
-type AskUserPrepResult = { app: App; output: string; chatId: string };
+type AskUserPrepResult = { app: App; output: string; userId: string };
 type AskUserExecResult = 'sent';
 
 /**
@@ -139,19 +139,18 @@ type AskUserExecResult = 'sent';
 export class AskUser extends Node<SharedStore<AskUserContext>> {
   async prep(shared: SharedStore<AskUserContext>): Promise<AskUserPrepResult> {
     const { app } = shared;
-    const { response, chatId } = shared.context;
-    console.log(`[AskUser.prep] chatId: ${chatId}, response: "${response}"`);
+    const { response, userId } = shared.context;
 
-    return { app, output: response, chatId };
+    return { app, output: response, userId };
   }
 
-  async exec({ app, output, chatId }: AskUserPrepResult): Promise<AskUserExecResult> {
-    console.log(`[AskUser.exec] Sending message to chatId: ${chatId}, output: "${output}"`);
-    app.infra.bus.emit('telegram.sendMessage', { chatId, message: output });
+  async exec({ app, output, userId }: AskUserPrepResult): Promise<AskUserExecResult> {
+    console.log(`[AskUser.exec] Sending message to userId: ${userId}, output: "${output}"`);
+    app.infra.bus.emit('askUser', { userId, message: output });
     return 'sent';
   }
 
-  async post(shared: SharedStore<ReminderContext>, _prepRes: AskUserPrepResult, execRes: AskUserExecResult) {
+  async post(shared: SharedStore<TaskSchedulerContext>, _prepRes: AskUserPrepResult, execRes: AskUserExecResult) {
     console.log(`[AskUser.post] execRes: ${execRes}`);
     return undefined;
   }
@@ -162,7 +161,6 @@ type ToolCallsPrepResult = {
   tc: ChatCompletionMessageFunctionToolCall;
   app: App;
   userId: string;
-  chatId: string;
 };
 type ToolCallsExecResult = {
   role: 'tool';
@@ -172,28 +170,28 @@ type ToolCallsExecResult = {
 
 export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> {
   async prep(shared: SharedStore<ToolCallsContext>): Promise<ToolCallsPrepResult[]> {
-    const { toolCalls, userId, chatId } = shared.context;
+    const { toolCalls,  userId } = shared.context;
 
-    console.log(`[ToolCalls.prep] Processing ${toolCalls.length} tool calls for userId: ${userId}, chatId: ${chatId}`);
+    console.log(`[ToolCalls.prep] Processing ${toolCalls.length} tool calls for userId: ${userId}, userId: ${userId}`);
     toolCalls.forEach((tc: ChatCompletionMessageFunctionToolCall, idx: number) => {
       console.log(`[ToolCalls.prep] Tool ${idx}: ${tc.function.name}, args: ${tc.function.arguments}`);
     });
-    return toolCalls.map((tc: ChatCompletionMessageFunctionToolCall) => ({ tc, app: shared.app, userId, chatId }));
+    return toolCalls.map((tc: ChatCompletionMessageFunctionToolCall) => ({ tc, app: shared.app, userId }));
   }
 
-  async exec({ tc, app, userId, chatId }: ToolCallsPrepResult): Promise<ToolCallsExecResult> {
+  async exec({ tc, app, userId }: ToolCallsPrepResult): Promise<ToolCallsExecResult> {
     const args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
     const { name } = tc.function;
 
     const handler = createToolHandler(name);
-    const content = await handler(app, { userId, chatId }, args);
+    const content = await handler(app, { userId }, args);
 
     console.log(`[ToolCalls.exec] Tool ${name} returned: "${content}"`);
 
     return { role: 'tool', content, tool_call_id: tc.id };
   }
 
-  async post(shared: SharedStore<ReminderContext>, _prepRes: ToolCallsPrepResult[], execRes: ToolCallsExecResult[]) {
+  async post(shared: SharedStore<TaskSchedulerContext>, _prepRes: ToolCallsPrepResult[], execRes: ToolCallsExecResult[]) {
     console.log(`[ToolCalls.post] Adding ${execRes.length} tool result messages to history`);
     shared.app.data.messageHistory.addMessages(shared.context.userId, execRes);
     return undefined;
