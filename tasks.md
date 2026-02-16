@@ -1,6 +1,12 @@
-- write task scheduler agent - derive from reminder task will be flow so agent scheduler agent
 
-- do message history handling properly context management
+## Tasks
+
+- [x] test sanbox service that will work with sanbox runtimes
+
+- [ ] write task scheduler agent - derive from reminder task will be flow so agent scheduler agent
+  - needs to update prompt and skill and nodes must use flowSession repository
+
+- [x] do message history handling properly context management
   - strategies:
     rolling history window - most common best one,
     important context,
@@ -9,14 +15,14 @@
   - using relevant knowledge samples
   - treat memory not as personalization but as learning
 
-- move all specifics and make a generic flows:
+- [ ] move all specifics and make a generic flows:
   - universal agentic tool call loop - similar as web search or reminder
   - universal map/reduce agent processing flow - for batch processing
   - agentic map reduce - 2 prompts combination of first 2 for unstructured input like user's queries and parallel agent executions
 
-- write reflection agent - this agent must reflect and log success and failure of each flow/workflow run
+- [ ] write reflection agent - this agent must reflect and log success and failure of each flow/workflow run
 
-- create common generic workflows:
+- [ ] create common generic workflows:
   - ralph wiggum loop - iterative improvement until task done
     - preprocessing agent here to ask for writing prompt in a template
     - good context management here - maybe via review agents will be nice
