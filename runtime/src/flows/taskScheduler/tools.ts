@@ -164,7 +164,7 @@ const toolHandlers = {
       // Save task to taskRepository - datetime is already ISO string
       const task = await app.data.taskRepository.saveTask({
         userId,
-        taskName: 'task',
+        taskName: 'reminder',
         parameters: {
           userId,
           message: args.task_message,

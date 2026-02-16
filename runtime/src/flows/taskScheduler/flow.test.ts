@@ -10,18 +10,18 @@ import { Task } from '../../data/taskRepository/types.js';
 // Helper to setup isolated app environment for each test
 function setupTestApp() {
   const mockStorage = {
-    getReminders: vi.fn(),
+    getTasks: vi.fn(),
     getUserTimezone: vi.fn(),
-    saveReminder: vi.fn(),
-    deleteReminder: vi.fn(),
-    getReminderForUser: vi.fn(),
+    saveTask: vi.fn(),
+    deleteTask: vi.fn(),
+    getTaskForUser: vi.fn(),
     setUserTimezone: vi.fn(),
-    getAllReminders: vi.fn(),
-    getReminder: vi.fn(),
+    getAllTasks: vi.fn(),
+    getTask: vi.fn(),
   };
 
   const mockScheduler = {
-    scheduleReminder: vi.fn(),
+    scheduleTask: vi.fn(),
     removeJob: vi.fn(),
     scheduleOnce: vi.fn(),
     scheduleCron: vi.fn(),
@@ -34,7 +34,7 @@ function setupTestApp() {
 
   const app = {
     data: {
-      reminderRepository: mockStorage,
+      taskRepository: mockStorage,
     },
     services: {
       scheduler: mockScheduler,
@@ -49,31 +49,33 @@ function setupTestApp() {
 
   // Default mock implementations
   mockStorage.getUserTimezone.mockResolvedValue('UTC');
-  mockStorage.getReminders.mockResolvedValue([]);
+  mockStorage.getTasks.mockResolvedValue([]);
 
-  // Mock saveReminder to return what was passed with an ID
-  mockStorage.saveReminder.mockImplementation(async (r: any) => ({
+  // Mock saveTask to return what was passed with an ID
+  mockStorage.saveTask.mockImplementation(async (r: any) => ({
     ...r,
-    id: 'test-reminder-id',
-    created_at: new Date(),
+    id: 'test-task-id',
+    createdAt: new Date(),
     active: true,
   }));
 
-  // Mock getReminderForUser for cancellation
-  mockStorage.getReminderForUser.mockImplementation(async (id: string, userId: string) => ({
+  // Mock getTaskForUser for cancellation
+  mockStorage.getTaskForUser.mockImplementation(async (id: string, userId: string) => ({
     id,
     userId,
-    text: 'Test Reminder',
+    taskName: 'reminder',
+    parameters: { message: 'Test Task Schedule' },
     scheduleType: 'once',
     scheduleValue: new Date().toISOString(),
     timezone: 'UTC',
+    createdAt: new Date(),
     active: true,
   }));
 
   return { app, mockStorage, mockScheduler, mockBus, messageHistory };
 }
 
-describe('Reminder Flow Integration', () => {
+describe('Task Schedule Flow Integration', () => {
   beforeAll(() => {
     if (!process.env.OPENROUTER_API_KEY) {
       console.warn('OPENROUTER_API_KEY not found. Tests involving real LLM calls might fail.');
@@ -92,20 +94,21 @@ describe('Reminder Flow Integration', () => {
     await flow.run(shared);
 
     // Verify tool call
-    expect(mockStorage.saveReminder).toHaveBeenCalled();
-    const savedReminder = mockStorage.saveReminder.mock.calls[0][0];
-    expect(savedReminder.text).toContain('check the oven');
-    expect(savedReminder.scheduleType).toBe('once');
+    expect(mockStorage.saveTask).toHaveBeenCalled();
+    const savedTask = mockStorage.saveTask.mock.calls[0][0];
+    expect(savedTask.taskName).toBe('reminder');
+    expect(savedTask.parameters.message).toContain('check the oven');
+    expect(savedTask.scheduleType).toBe('once');
 
     // Verify scheduler
-    expect(mockScheduler.scheduleReminder).toHaveBeenCalled();
+    expect(mockScheduler.scheduleTask).toHaveBeenCalled();
 
     // Verify final response
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'telegram.sendMessage',
+      'askUser',
       expect.objectContaining({
-        chatId: 'chat-123',
-        message: expect.stringContaining('check the oven'), // LLM usually repeats the text
+        userId: 'user-123',
+        message: expect.stringMatching(/check the oven/i), // LLM usually repeats the text
       }),
     );
   }, 90000); // Increase timeout for LLM
@@ -122,26 +125,26 @@ describe('Reminder Flow Integration', () => {
     await flow.run(shared);
 
     // Verify tool call
-    expect(mockStorage.saveReminder).toHaveBeenCalled();
-    const savedReminder = mockStorage.saveReminder.mock.calls[0][0];
-    expect(savedReminder.text).toContain('drink water');
-    expect(savedReminder.scheduleType).toBe('cron');
+    expect(mockStorage.saveTask).toHaveBeenCalled();
+    const savedTask = mockStorage.saveTask.mock.calls[0][0];
+    expect(savedTask.taskName).toBe('reminder');
+    expect(savedTask.parameters.message).toMatch(/drink water/i);
+    expect(savedTask.scheduleType).toBe('cron');
     // "every hour" is usually "0 * * * *" or similar
-    expect(savedReminder.scheduleValue).toMatch(/(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)/);
+    expect(savedTask.scheduleValue).toMatch(/(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)/);
 
-    expect(mockScheduler.scheduleReminder).toHaveBeenCalled();
+    expect(mockScheduler.scheduleTask).toHaveBeenCalled();
   }, 90000);
 
   it('should list reminders', async () => {
     const { app, mockStorage, mockBus } = setupTestApp();
-    // Setup existing reminders
-    const existingReminders: Task[] = [
+    // Setup existing tasks
+    const existingTasks: Task[] = [
       {
         id: 'r1',
         userId: 'user-123',
         taskName: 'reminder',
         parameters: {
-          userId: 'user-123',
           message: 'Buy groceries',
         },
         scheduleType: 'once',
@@ -151,7 +154,7 @@ describe('Reminder Flow Integration', () => {
         active: true,
       },
     ];
-    mockStorage.getReminders.mockResolvedValue(existingReminders);
+    mockStorage.getTasks.mockResolvedValue(existingTasks);
 
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
@@ -162,14 +165,14 @@ describe('Reminder Flow Integration', () => {
 
     await flow.run(shared);
 
-    // Verify reminderRepository was queried
-    expect(mockStorage.getReminders).toHaveBeenCalledWith('user-123');
+    // Verify taskRepository was queried
+    expect(mockStorage.getTasks).toHaveBeenCalledWith('user-123');
 
     // Verify response mentions the reminder
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'telegram.sendMessage',
+      'askUser',
       expect.objectContaining({
-        chatId: 'chat-123',
+        userId: 'user-123',
         message: expect.stringMatching(/Buy groceries/i),
       }),
     );
@@ -177,14 +180,13 @@ describe('Reminder Flow Integration', () => {
 
   it('should cancel a reminder', async () => {
     const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
-    // Setup existing reminders so LLM can see ID
-    const existingReminders: Task[] = [
+    // Setup existing tasks so LLM can see ID
+    const existingTasks: Task[] = [
       {
         id: 'rem-to-cancel',
         userId: 'user-123',
         taskName: 'reminder',
         parameters: {
-          userId: 'user-123',
           message: 'Remind me to cancel this reminder',
         },
         scheduleType: 'once',
@@ -194,7 +196,7 @@ describe('Reminder Flow Integration', () => {
         active: true,
       },
     ];
-    mockStorage.getReminders.mockResolvedValue(existingReminders);
+    mockStorage.getTasks.mockResolvedValue(existingTasks);
 
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
@@ -206,14 +208,14 @@ describe('Reminder Flow Integration', () => {
     await flow.run(shared);
 
     // Verify cancellation
-    expect(mockStorage.deleteReminder).toHaveBeenCalledWith('rem-to-cancel');
+    expect(mockStorage.deleteTask).toHaveBeenCalledWith('rem-to-cancel');
     expect(mockScheduler.removeJob).toHaveBeenCalledWith('rem-to-cancel');
 
     // Verify confirmation
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'telegram.sendMessage',
+      'askUser',
       expect.objectContaining({
-        chatId: 'chat-123',
+        userId: 'user-123',
         message: expect.stringMatching(/cancel/i),
       }),
     );

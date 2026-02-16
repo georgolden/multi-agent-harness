@@ -72,7 +72,7 @@ export class TelegramService {
     const message = ctx.message.text;
 
     console.log(`\n[Bot] Message from ${userId}: ${message}`);
-    const flow = this.app.flows.createReminderFlow();
+    const flow = this.app.flows.flows.reminder.create();
     const context = { userId, message, chatId };
     const sharedStore = { app: this.app, context };
     try {

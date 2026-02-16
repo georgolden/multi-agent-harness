@@ -1,29 +1,29 @@
 ---
-name: schedule-reminder
-description: This skill defines how to interpret and schedule three types of reminders: one-time, recurring, and recurring interval reminders.
+name: schedule
+description: This skill defines how to interpret and schedule one-time, recurring, and recurring interval tasks.
 ---
 
-## Reminder Interpreter Skill
+## Schedule Interpreter Skill
 
 ### Overview
-This skill defines how to interpret and schedule three types of reminders: one-time, recurring, and recurring interval reminders.
+This skill defines how to interpret and schedule one-time, recurring, and recurring interval tasks.
 
 ---
 
-### 1. One-Time Reminder
+### 1. One-Time Schedule
 
 #### Detection Pattern
-- Reminder text contains **only** a time or date reference
+- Input text contains **only** a time or date reference
 - No recurrence indicators present
 
 #### Scheduling Process
-1. **Extract parameters**: reminder text, target datetime
-2. **Convert** reminder time/date to ISO datetime using user's timezone
+1. **Extract parameters**: input text, target datetime
+2. **Convert** time/date to ISO datetime using user's timezone
 3. **Execute** \`schedule_once\` tool
 
 ---
 
-### 2. Recurring Reminder
+### 2. Recurring Schedule
 
 #### Detection Patterns
 Recurrence indicators include:
@@ -58,7 +58,7 @@ Schedule may include start/end boundaries:
 
 ---
 
-### 3. Recurring Interval Reminder
+### 3. Recurring Interval Schedule
 
 #### Detection Patterns
 Contains a **time window** (interval) with optional recurrence:
