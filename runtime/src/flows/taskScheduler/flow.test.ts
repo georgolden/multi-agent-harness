@@ -4,9 +4,9 @@ import { createTaskSchedulerFlow } from './flow.js';
 import { App } from '../../app.js';
 import { SharedStore } from '../../types.js';
 import { TaskSchedulerContext } from './types.js';
-import { MessageHistory } from '../../data/messageHistory/index.js';
 import { Task } from '../../data/taskRepository/types.js';
 import { Tasks } from '../../tasks/index.js';
+import type { FlowSession } from '../../data/flowSessionRepository/types.js';
 
 // Helper to setup isolated app environment for each test
 function setupTestApp() {
@@ -33,9 +33,17 @@ function setupTestApp() {
     on: vi.fn(),
   };
 
+  const mockFlowSessionRepository = {
+    createSession: vi.fn(),
+    getSession: vi.fn(),
+    addMessages: vi.fn(),
+    updateStatus: vi.fn(),
+  };
+
   const app = {
     data: {
       taskRepository: mockStorage,
+      flowSessionRepository: mockFlowSessionRepository,
     },
     services: {
       scheduler: mockScheduler,
@@ -44,9 +52,6 @@ function setupTestApp() {
       bus: mockBus,
     },
   } as unknown as App;
-
-  const messageHistory = new MessageHistory(app, { maxMessages: 20 });
-  app.data.messageHistory = messageHistory;
 
   // Add real Tasks instance (read-only, no side effects)
   const tasks = new Tasks(app);
@@ -77,7 +82,70 @@ function setupTestApp() {
     active: true,
   }));
 
-  return { app, mockStorage, mockScheduler, mockBus, messageHistory };
+  // Mock flow session repository with stateful session tracking
+  let sessionCounter = 0;
+  const sessions = new Map<string, any>();
+
+  mockFlowSessionRepository.createSession.mockImplementation(async (params: any) => {
+    const sessionId = `test-session-${sessionCounter++}`;
+    const session: FlowSession = {
+      id: sessionId,
+      userId: params.userId,
+      flowName: params.flowName,
+      systemPrompt: params.systemPrompt,
+      userPromptTemplate: params.userPromptTemplate,
+      status: 'running',
+      parentSessionId: params.parentSessionId,
+      messages: [],
+      activeMessages: [],
+      messageWindowConfig: params.messageWindowConfig || { keepFirstMessages: 2, slidingWindowSize: 20 },
+      contextFiles: params.contextFiles || [],
+      tools: params.tools || [],
+      skills: params.skills || [],
+      toolLogs: [],
+      skillLogs: [],
+      startedAt: new Date(),
+    };
+    sessions.set(sessionId, session);
+    return session;
+  });
+
+  mockFlowSessionRepository.getSession.mockImplementation(async (sessionId: string) => {
+    return sessions.get(sessionId) || null;
+  });
+
+  mockFlowSessionRepository.addMessages.mockImplementation(async (sessionId: string, messages: Omit<any, 'timestamp'>[]) => {
+    const session = sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session '${sessionId}' not found`);
+    }
+
+    // Create full messages with timestamps (matching real implementation)
+    const fullMessages = messages.map((msg) => ({
+      timestamp: new Date(),
+      message: msg.message,
+    }));
+
+    // Add to messages array
+    session.messages.push(...fullMessages);
+
+    // Simplified: all messages are active (no windowing in tests)
+    session.activeMessages = session.messages;
+
+    return session.activeMessages;
+  });
+
+  mockFlowSessionRepository.updateStatus.mockImplementation(async (sessionId: string, status: string) => {
+    const session = sessions.get(sessionId);
+    if (session) {
+      session.status = status;
+      if (status === 'completed' || status === 'failed') {
+        session.endedAt = new Date();
+      }
+    }
+  });
+
+  return { app, mockStorage, mockScheduler, mockBus, mockFlowSessionRepository };
 }
 
 describe('Task Schedule Flow Integration', () => {

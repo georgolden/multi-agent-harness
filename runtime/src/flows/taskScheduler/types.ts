@@ -1,4 +1,5 @@
 import type { ChatCompletionMessageFunctionToolCall } from '../../types.js';
+import type { FlowSession } from '../../data/flowSessionRepository/types.js';
 import { Type, type Static } from '@sinclair/typebox';
 
 export const taskSchedulerInputSchema = Type.Object({
@@ -9,6 +10,8 @@ export const taskSchedulerInputSchema = Type.Object({
 export type TaskSchedulerInput = Static<typeof taskSchedulerInputSchema>;
 
 export interface TaskSchedulerContext extends TaskSchedulerInput {
+  // Flow session
+  session?: FlowSession;
   // Flow state
   response?: string;
   toolCalls?: ChatCompletionMessageFunctionToolCall[];

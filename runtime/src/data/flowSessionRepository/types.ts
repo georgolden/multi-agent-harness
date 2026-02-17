@@ -106,6 +106,7 @@ export interface FlowSession {
 
 // Create session parameters
 export interface CreateSessionParams {
+  sessionId?: string;
   userId: string;
   flowName: string;
   systemPrompt: string;

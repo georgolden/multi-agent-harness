@@ -143,7 +143,7 @@ export class FlowSessionRepository {
    * Create a new flow session
    */
   async createSession(params: CreateSessionParams): Promise<FlowSession> {
-    const id = this.generateSessionId();
+    const id = params.sessionId || this.generateSessionId();
     const config = params.messageWindowConfig || DEFAULT_MESSAGE_WINDOW_CONFIG;
     const tools = params.tools || [];
     const skills = params.skills || [];
