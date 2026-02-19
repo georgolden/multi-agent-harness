@@ -7,6 +7,7 @@ import type { ChatCompletion, ChatCompletionMessage, ChatCompletionMessageParam 
 export type CallLlmOptions = {
   temperature?: number;
   thinking?: boolean;
+  toolChoice?: 'none' | 'auto' | 'required';
 };
 
 /**
@@ -14,7 +15,7 @@ export type CallLlmOptions = {
  */
 export async function callLlm(
   messages: ChatCompletionMessageParam[],
-  { temperature = 0.3, thinking = true }: CallLlmOptions = {},
+  { temperature = 0.3, thinking = true, toolChoice = 'auto' }: CallLlmOptions = {},
 ): Promise<string> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -31,6 +32,7 @@ export async function callLlm(
     model: 'moonshotai/kimi-k2.5',
     messages,
     temperature: temperature,
+    tool_choice: toolChoice,
     // @ts-expect-error - OpenRouter supports extra_body for provider-specific options
     extra_body: {
       thinking: { type: thinking ? 'enabled' : 'disabled' }, // or 'enabled' for thinking mode
@@ -46,7 +48,7 @@ export async function callLlm(
 export async function callLlmWithTools(
   messages: ChatCompletionMessageParam[],
   tools: OpenAI.ChatCompletionTool[],
-  { temperature = 0.3, thinking = true }: CallLlmOptions = {},
+  { temperature = 0.3, thinking = true, toolChoice = 'auto' }: CallLlmOptions = {},
 ): Promise<ChatCompletion.Choice[]> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -63,7 +65,7 @@ export async function callLlmWithTools(
     model: 'moonshotai/kimi-k2.5',
     messages,
     tools,
-    tool_choice: 'auto',
+    tool_choice: toolChoice,
     temperature: temperature,
     // @ts-expect-error - OpenRouter supports extra_body for provider-specific options
     extra_body: {
