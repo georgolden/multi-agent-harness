@@ -89,7 +89,18 @@ export class Scheduler {
      * Callback function that executes when a reminder fires
      */
     async onReminderFire(job) {
-        const { chatId, text, reminderId, scheduleType } = job.attrs.data;
+        const { chatId, text, reminderId, scheduleType, startDate, endDate } = job.attrs.data;
+        const now = dayjs.utc();
+        if (startDate && now.isBefore(dayjs.utc(startDate))) {
+            console.log(`[ReminderFire] Skipping ${reminderId} — before startDate ${startDate}`);
+            return;
+        }
+        if (endDate && now.isAfter(dayjs.utc(endDate))) {
+            console.log(`[ReminderFire] Cancelling ${reminderId} — past endDate ${endDate}`);
+            await this.removeJob(reminderId);
+            await this.app.data.reminderRepository.deleteReminder(reminderId);
+            return;
+        }
         console.log(`[ReminderFire] Sending reminder ${reminderId} to chat ${chatId}`);
         try {
             this.app.infra.bus.emit('telegram.sendMessage', { chatId, message: `⏰ Reminder: ${text}` });
@@ -111,6 +122,8 @@ export class Scheduler {
             text: reminder.text,
             reminderId: reminder.id,
             scheduleType: reminder.scheduleType,
+            startDate: reminder.startDate ? reminder.startDate.toISOString() : null,
+            endDate: reminder.endDate ? reminder.endDate.toISOString() : null,
         };
         const callback = (job) => this.onReminderFire(job);
         try {

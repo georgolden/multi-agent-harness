@@ -128,12 +128,29 @@ export class Scheduler {
    * Callback function that executes when a task fires
    */
   private async onSchedulerFire(job: Job): Promise<void> {
-    const { taskName, parameters, taskId, scheduleType } = job.attrs.data as {
+    const { taskName, parameters, taskId, scheduleType, startDate, endDate } = job.attrs.data as {
       taskName: string;
       parameters: Record<string, unknown>;
       taskId: string;
       scheduleType: string;
+      startDate: string | null;
+      endDate: string | null;
     };
+
+    const now = dayjs.utc();
+
+    if (startDate && now.isBefore(dayjs.utc(startDate))) {
+      console.log(`[SchedulerFire] Skipping ${taskId} — before startDate ${startDate}`);
+      return;
+    }
+
+    if (endDate && now.isAfter(dayjs.utc(endDate))) {
+      console.log(`[SchedulerFire] Cancelling ${taskId} — past endDate ${endDate}`);
+      await this.removeJob(taskId);
+      await this.app.data.taskRepository.deleteTask(taskId);
+      return;
+    }
+
     console.log(`[SchedulerFire] Executing task ${taskId} ${taskName} with ${JSON.stringify(parameters)}`);
 
     try {
@@ -156,6 +173,8 @@ export class Scheduler {
       scheduleType: task.scheduleType,
       taskName: task.taskName,
       parameters: task.parameters,
+      startDate: task.startDate ? task.startDate.toISOString() : null,
+      endDate: task.endDate ? task.endDate.toISOString() : null,
     };
 
     const callback = (job: Job) => this.onSchedulerFire(job);
