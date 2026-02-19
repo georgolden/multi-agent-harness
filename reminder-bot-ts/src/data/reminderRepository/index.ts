@@ -187,6 +187,14 @@ export class ReminderRepository {
   }
 
   /**
+   * Check if a user exists in the database (without creating one)
+   */
+  async hasUser(userId: string): Promise<boolean> {
+    const result = await this.pool.query('SELECT id FROM users WHERE id = $1', [userId]);
+    return result.rows.length > 0;
+  }
+
+  /**
    * Get user's preferred timezone (creates user if not exists)
    */
   async getUserTimezone(userId: string): Promise<string> {

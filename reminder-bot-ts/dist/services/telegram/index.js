@@ -1,5 +1,6 @@
 import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
+import { markdownToTelegramHtml } from '../../utils/markdownToTelegramHtml.js';
 export class TelegramService {
     bot;
     app;
@@ -41,8 +42,8 @@ export class TelegramService {
      */
     async sendMessage(chatId, message) {
         try {
-            await this.bot.telegram.sendMessage(parseInt(chatId), message, {
-                parse_mode: 'Markdown',
+            await this.bot.telegram.sendMessage(parseInt(chatId), markdownToTelegramHtml(message), {
+                parse_mode: 'HTML',
             });
             console.log(`[Telegram] Sent message to chat ${chatId}`);
         }
@@ -52,7 +53,8 @@ export class TelegramService {
         }
     }
     /**
-     * Handle incoming messages
+     * Handle incoming messages — routes to timezone setup for new users,
+     * reminder flow for registered users.
      */
     async handleMessage(ctx) {
         if (!ctx.message || !('text' in ctx.message))
@@ -61,7 +63,10 @@ export class TelegramService {
         const chatId = ctx.chat.id.toString();
         const message = ctx.message.text;
         console.log(`\n[Bot] Message from ${userId}: ${message}`);
-        const flow = this.app.flows.createReminderFlow();
+        const isRegistered = await this.app.data.reminderRepository.hasUser(userId);
+        const flow = isRegistered
+            ? this.app.flows.createReminderFlow()
+            : this.app.flows.createTimezoneFlow();
         const context = { userId, message, chatId };
         const sharedStore = { app: this.app, context };
         try {
@@ -73,8 +78,26 @@ export class TelegramService {
         }
     }
     async startCommand(ctx) {
-        const welcome = `👋 Hi! I'm your reminder assistant.\n\nI can help you:\n• Schedule one-time reminders\n• Set up recurring reminders\n• List your active reminders\n• Cancel reminders\n\nJust tell me what you want to be reminded about!`;
-        await ctx.reply(welcome);
+        const userId = ctx.from.id.toString();
+        const chatId = ctx.chat.id.toString();
+        const isRegistered = await this.app.data.reminderRepository.hasUser(userId);
+        if (isRegistered) {
+            const welcome = `👋 Hi! I'm your reminder assistant.\n\nI can help you:\n• Schedule one-time reminders\n• Set up recurring reminders\n• List your active reminders\n• Cancel reminders\n\nJust tell me what you want to be reminded about!`;
+            await ctx.reply(welcome);
+            return;
+        }
+        // New user — start timezone setup flow
+        console.log(`\n[Bot] New user ${userId}, starting timezone setup`);
+        const flow = this.app.flows.createTimezoneFlow();
+        const context = { userId, message: 'hello', chatId };
+        const sharedStore = { app: this.app, context };
+        try {
+            await flow.run(sharedStore);
+        }
+        catch (error) {
+            console.error('[Bot] Error during timezone setup:', error);
+            await ctx.reply(`❌ Error: ${error instanceof Error ? error.message : String(error)}`);
+        }
     }
     async helpCommand(ctx) {
         const helpText = `📖 How to use:\n\nOne-time reminders:\n- "Remind me to [task] at [time]"\n\nRecurring reminders:\n- "Remind me to [task] every day at [time]"\n\nManage reminders:\n- "Show my reminders"\n- "Cancel reminder [ID]"`;

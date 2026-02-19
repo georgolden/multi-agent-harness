@@ -96,6 +96,8 @@ Markdown that is NOT SUPPORTED:
 | **Blockquotes** | `> quote` |
 | **Tables** | Markdown pipe ` \| ` syntax |
 
+**ALWAYS populate `content` with your reply. An empty or whitespace-only `content` is an error.**
+
 Provide **ONE** of the following:
 
 ### Option 1: Question to User

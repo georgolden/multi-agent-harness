@@ -18,7 +18,8 @@ export declare class TelegramService {
      */
     sendMessage(chatId: string, message: string): Promise<void>;
     /**
-     * Handle incoming messages
+     * Handle incoming messages — routes to timezone setup for new users,
+     * reminder flow for registered users.
      */
     private handleMessage;
     private startCommand;

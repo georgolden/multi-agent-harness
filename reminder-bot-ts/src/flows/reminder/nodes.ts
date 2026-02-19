@@ -109,9 +109,9 @@ export class DecideAction extends Node<SharedStore<ReminderContext>> {
       const { content, refusal } = execRes;
 
       let output = '';
-      if (content) output = `${output}${content}`;
-      if (refusal) output = `${output}\n${refusal}`;
-      if (!output) output = `AI is broken try again later`;
+      if (content?.trim()) output = content.trim();
+      if (refusal?.trim()) output = `${output}\n${refusal.trim()}`.trim();
+      if (!output) output = (execRes as any).reasoning?.trim() || `AI is broken try again later`;
 
       console.log(`[DecideAction.post] Setting response to: "${output}"`);
       shared.context.response = output;

@@ -65,6 +65,10 @@ export declare class ReminderRepository {
      */
     deleteReminder(reminderId: string): Promise<boolean>;
     /**
+     * Check if a user exists in the database (without creating one)
+     */
+    hasUser(userId: string): Promise<boolean>;
+    /**
      * Get user's preferred timezone (creates user if not exists)
      */
     getUserTimezone(userId: string): Promise<string>;

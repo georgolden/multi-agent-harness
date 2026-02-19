@@ -65,12 +65,12 @@ export class DecideAction extends Node {
         if (!toolCalls || toolCalls.length === 0) {
             const { content, refusal } = execRes;
             let output = '';
-            if (content)
-                output = `${output}${content}`;
-            if (refusal)
-                output = `${output}\n${refusal}`;
+            if (content?.trim())
+                output = content.trim();
+            if (refusal?.trim())
+                output = `${output}\n${refusal.trim()}`.trim();
             if (!output)
-                output = `AI is broken try again later`;
+                output = execRes.reasoning?.trim() || `AI is broken try again later`;
             console.log(`[DecideAction.post] Setting response to: "${output}"`);
             shared.context.response = output;
             return 'ask_user';
