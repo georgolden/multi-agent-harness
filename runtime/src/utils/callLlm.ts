@@ -8,6 +8,7 @@ export type CallLlmOptions = {
   temperature?: number;
   thinking?: boolean;
   toolChoice?: 'none' | 'auto' | 'required';
+  responseFormat?: 'text' | 'json_object';
 };
 
 /**
@@ -15,7 +16,7 @@ export type CallLlmOptions = {
  */
 export async function callLlm(
   messages: ChatCompletionMessageParam[],
-  { temperature = 0.3, thinking = true, toolChoice = 'auto' }: CallLlmOptions = {},
+  { temperature = 0.3, thinking = true, toolChoice = 'auto', responseFormat = 'text' }: CallLlmOptions = {},
 ): Promise<string> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -33,6 +34,7 @@ export async function callLlm(
     messages,
     temperature: temperature,
     tool_choice: toolChoice,
+    response_format: { type: responseFormat },
     // @ts-expect-error - OpenRouter supports extra_body for provider-specific options
     extra_body: {
       thinking: { type: thinking ? 'enabled' : 'disabled' }, // or 'enabled' for thinking mode
@@ -48,7 +50,7 @@ export async function callLlm(
 export async function callLlmWithTools(
   messages: ChatCompletionMessageParam[],
   tools: OpenAI.ChatCompletionTool[],
-  { temperature = 0.3, thinking = true, toolChoice = 'auto' }: CallLlmOptions = {},
+  { temperature = 0.3, thinking = true, toolChoice = 'auto', responseFormat = 'text' }: CallLlmOptions = {},
 ): Promise<ChatCompletion.Choice[]> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -66,6 +68,7 @@ export async function callLlmWithTools(
     messages,
     tools,
     tool_choice: toolChoice,
+    response_format: { type: responseFormat },
     temperature: temperature,
     // @ts-expect-error - OpenRouter supports extra_body for provider-specific options
     extra_body: {
