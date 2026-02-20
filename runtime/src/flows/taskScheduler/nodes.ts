@@ -40,12 +40,7 @@ export class PrepareInput extends Node<SharedStore<TaskSchedulerContext>> {
     console.log(`[PrepareInput.prep] Found ${userTaskSchedulers.length} tasks, timezone: ${timezone}`);
 
     // Create system prompt with all context
-    const systemPrompt = createSystemPrompt(
-      currentDate,
-      timezone,
-      JSON.stringify(userTaskSchedulers),
-      tasksTypes,
-    );
+    const systemPrompt = createSystemPrompt(currentDate, timezone, JSON.stringify(userTaskSchedulers), tasksTypes);
 
     // Create flow session with complete system prompt
     const session = await shared.app.data.flowSessionRepository.createSession({
@@ -70,7 +65,11 @@ export class PrepareInput extends Node<SharedStore<TaskSchedulerContext>> {
     return 'done';
   }
 
-  async post(shared: SharedStore<TaskSchedulerContext>, prepRes: PrepareInputPrepResult, _execRes: PrepareInputExecResult) {
+  async post(
+    shared: SharedStore<TaskSchedulerContext>,
+    prepRes: PrepareInputPrepResult,
+    _execRes: PrepareInputExecResult,
+  ) {
     // Store session in context for subsequent nodes
     shared.context.session = prepRes;
     return undefined;
@@ -126,7 +125,11 @@ export class DecideAction extends Node<SharedStore<TaskSchedulerContext>> {
     return response[0].message;
   }
 
-  async post(shared: SharedStore<TaskSchedulerContext>, prepRes: DecideActionPrepResult, execRes: DecideActionExecResult) {
+  async post(
+    shared: SharedStore<TaskSchedulerContext>,
+    prepRes: DecideActionPrepResult,
+    execRes: DecideActionExecResult,
+  ) {
     const { session } = shared.context;
     if (!session) {
       throw new Error('Session is required');
@@ -210,7 +213,7 @@ type ToolCallsExecResult = {
 
 export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> {
   async prep(shared: SharedStore<ToolCallsContext>): Promise<ToolCallsPrepResult[]> {
-    const { toolCalls,  userId } = shared.context;
+    const { toolCalls, userId } = shared.context;
 
     console.log(`[ToolCalls.prep] Processing ${toolCalls.length} tool calls for userId: ${userId}, userId: ${userId}`);
     toolCalls.forEach((tc: ChatCompletionMessageFunctionToolCall, idx: number) => {
@@ -231,7 +234,11 @@ export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> 
     return { role: 'tool', content, tool_call_id: tc.id };
   }
 
-  async post(shared: SharedStore<TaskSchedulerContext>, _prepRes: ToolCallsPrepResult[], execRes: ToolCallsExecResult[]) {
+  async post(
+    shared: SharedStore<TaskSchedulerContext>,
+    _prepRes: ToolCallsPrepResult[],
+    execRes: ToolCallsExecResult[],
+  ) {
     console.log(`[ToolCalls.post] Adding ${execRes.length} tool result messages to session`);
 
     const { session } = shared.context;

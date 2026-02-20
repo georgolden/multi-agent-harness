@@ -57,8 +57,13 @@ export class FlowSessionRepository {
 
         -- Context and tools (stored as JSONB)
         context_files JSONB NOT NULL DEFAULT '[]',
-        tools JSONB NOT NULL DEFAULT '[]',
-        skills JSONB NOT NULL DEFAULT '[]',
+        context_folders_infos JSONB NOT NULL DEFAULT '[]',
+        tool_schemas JSONB NOT NULL DEFAULT '[]',
+        skill_schemas JSONB NOT NULL DEFAULT '[]',
+
+        -- LLM and agent configuration
+        call_llm_options JSONB NOT NULL DEFAULT '{}',
+        agent_loop_config JSONB NOT NULL DEFAULT '{}',
 
         -- Execution logs (stored as JSONB)
         tool_logs JSONB NOT NULL DEFAULT '[]',
@@ -130,8 +135,11 @@ export class FlowSessionRepository {
       activeMessages: row.active_messages || [],
       messageWindowConfig: row.message_window_config || DEFAULT_MESSAGE_WINDOW_CONFIG,
       contextFiles: row.context_files || [],
-      tools: row.tools || [],
-      skills: row.skills || [],
+      contextFoldersInfos: row.context_folders_infos || [],
+      toolSchemas: row.tool_schemas || [],
+      skillSchemas: row.skill_schemas || [],
+      callLlmOptions: row.call_llm_options || {},
+      agentLoopConfig: row.agent_loop_config || {},
       toolLogs: row.tool_logs || [],
       skillLogs: row.skill_logs || [],
       startedAt: row.started_at,
@@ -145,16 +153,19 @@ export class FlowSessionRepository {
   async createSession(params: CreateSessionParams): Promise<FlowSession> {
     const id = params.sessionId || this.generateSessionId();
     const config = params.messageWindowConfig || DEFAULT_MESSAGE_WINDOW_CONFIG;
-    const tools = params.tools || [];
-    const skills = params.skills || [];
+    const toolSchemas = params.tools || [];
+    const skillSchemas = params.skills || [];
     const contextFiles = params.contextFiles || [];
+    const contextFoldersInfos = params.contextFoldersInfos || [];
 
     const result = await this.pool.query(
       `INSERT INTO flow_sessions (
         id, user_id, flow_name, system_prompt, user_prompt_template,
-        status, parent_session_id, message_window_config, tools, skills, context_files
+        status, parent_session_id, message_window_config,
+        tool_schemas, skill_schemas, context_files, context_folders_infos,
+        call_llm_options, agent_loop_config
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING *`,
       [
         id,
@@ -165,9 +176,12 @@ export class FlowSessionRepository {
         'running',
         params.parentSessionId,
         JSON.stringify(config),
-        JSON.stringify(tools),
-        JSON.stringify(skills),
+        JSON.stringify(toolSchemas),
+        JSON.stringify(skillSchemas),
         JSON.stringify(contextFiles),
+        JSON.stringify(contextFoldersInfos),
+        JSON.stringify(params.callLlmOptions),
+        JSON.stringify(params.agentLoopConfig),
       ],
     );
 
@@ -303,15 +317,17 @@ export class FlowSessionRepository {
       throw new Error(`Session '${sessionId}' not found`);
     }
 
-    const allTools = [...session.tools, ...tools];
+    const allTools = [...session.toolSchemas, ...tools];
 
-    await this.pool.query(`UPDATE flow_sessions SET tools = $2 WHERE id = $1`, [sessionId, JSON.stringify(allTools)]);
+    await this.pool.query(`UPDATE flow_sessions SET tool_schemas = $2 WHERE id = $1`, [
+      sessionId,
+      JSON.stringify(allTools),
+    ]);
 
     // Emit event
     this.app.infra.bus.emit('flowSession:toolsAdded', {
       sessionId,
-      tools,
-      allTools,
+      tools: allTools,
     });
 
     console.log(`[FlowSessionRepository] Added ${tools.length} tools to session '${sessionId}'`);
@@ -327,15 +343,17 @@ export class FlowSessionRepository {
       throw new Error(`Session '${sessionId}' not found`);
     }
 
-    const allSkills = [...session.skills, ...skills];
+    const allSkills = [...session.skillSchemas, ...skills];
 
-    await this.pool.query(`UPDATE flow_sessions SET skills = $2 WHERE id = $1`, [sessionId, JSON.stringify(allSkills)]);
+    await this.pool.query(`UPDATE flow_sessions SET skill_schemas = $2 WHERE id = $1`, [
+      sessionId,
+      JSON.stringify(allSkills),
+    ]);
 
     // Emit event
     this.app.infra.bus.emit('flowSession:skillsAdded', {
       sessionId,
-      skills,
-      allSkills,
+      skills: allSkills,
     });
 
     console.log(`[FlowSessionRepository] Added ${skills.length} skills to session '${sessionId}'`);

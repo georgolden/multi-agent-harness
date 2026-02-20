@@ -2,7 +2,9 @@
  * Flow session types for managing flow execution state and history
  */
 
+import { AgentLoopConfig } from '../../flows/agentictLoop/flow.js';
 import type { ChatCompletionMessageParam, ChatCompletionMessage } from '../../types.js';
+import { CallLlmOptions } from '../../utils/callLlm.js';
 
 // Message without id - index is the id
 export interface FlowMessage {
@@ -14,6 +16,11 @@ export interface FlowMessage {
 export interface ContextFile {
   path: string;
   content: string;
+}
+
+export interface ContextFolderInfo {
+  path: string;
+  tree: string;
 }
 
 // Tool schema - matches real tool format
@@ -67,7 +74,7 @@ export const DEFAULT_MESSAGE_WINDOW_CONFIG: MessageWindowConfig = {
 };
 
 // Flow session state - simplified
-export type FlowSessionStatus = 'running' | 'completed' | 'failed';
+export type FlowSessionStatus = 'created' | 'running' | 'completed' | 'failed' | 'paused';
 
 // Main flow session type
 export interface FlowSession {
@@ -92,8 +99,12 @@ export interface FlowSession {
 
   // Context and tools
   contextFiles: ContextFile[];
-  tools: ToolSchema[];
-  skills: SkillSchema[];
+  contextFoldersInfos: ContextFolderInfo[];
+  toolSchemas: ToolSchema[];
+  skillSchemas: SkillSchema[];
+
+  callLlmOptions: CallLlmOptions;
+  agentLoopConfig: AgentLoopConfig;
 
   // Execution logs
   toolLogs: ToolLog[];
@@ -116,6 +127,9 @@ export interface CreateSessionParams {
   tools?: ToolSchema[];
   skills?: SkillSchema[];
   contextFiles?: ContextFile[];
+  contextFoldersInfos?: ContextFolderInfo[];
+  callLlmOptions?: CallLlmOptions;
+  agentLoopConfig?: AgentLoopConfig;
 }
 
 // Lightweight session info for tree traversal

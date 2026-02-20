@@ -2,6 +2,7 @@ import path from 'path';
 import { readdir, readFile } from 'fs/promises';
 import { glob } from 'glob';
 import { parseFrontmatter } from '../utils/frontmatter.js';
+import type { SkillSchema } from '../data/flowSessionRepository/types.js';
 
 export type SkillFile = {
   path: string;
@@ -218,6 +219,13 @@ export class Skills {
    */
   isRunning(): boolean {
     return this.isStarted;
+  }
+
+  /**
+   * Returns Skill[] for the given skill names, skipping unknown names.
+   */
+  getSlice(names: string[]): Skill[] {
+    return names.filter((name) => this.skillsByNameMap.has(name)).map((name) => this.skillsByNameMap.get(name)!);
   }
 
   /**
