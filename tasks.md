@@ -6,8 +6,6 @@
 - [x] write task scheduler agent - derive from reminder task will be flow so agent scheduler agent
   - [x] use flow session repository instead of message history
 
-- [ ] introduce prompt template and use prompt template here: task type and args and schedule info
-
 - [x] do message history handling properly context management
   - strategies:
     rolling history window - most common best one,
@@ -19,6 +17,11 @@
 
 - [ ] move all specifics and make a generic flows:
   - universal agentic tool call loop - similar as web search or reminder
+    - [x] universal agent loop
+    - [ ] make template fill tempalte flow
+    - [ ] use prompt template with fill tempalte flow
+    - [ ] make context retrieval flow
+    - [ ] use context retrieval flow
   - universal map/reduce agent processing flow - for batch processing
   - agentic map reduce - 2 prompts combination of first 2 for unstructured input like user's queries and parallel agent executions
 

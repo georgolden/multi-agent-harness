@@ -171,3 +171,6 @@ TO-DO:
 - Test and write flows
 
 For tests secretary system is perfect case to try and this one will be used immediately
+
+
+Maybe add scoped tools??? and scoped skills???
