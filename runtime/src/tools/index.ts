@@ -41,6 +41,16 @@ export {
   lsTool,
 } from './ls.js';
 export {
+  createTreeTool,
+  DEFAULT_TREE_IGNORE,
+  runTreeCommand,
+  type RunTreeOptions,
+  type TreeToolDetails,
+  type TreeToolInput,
+  type TreeToolOptions,
+  treeTool,
+} from './tree.js';
+export {
   createReadTool,
   type ReadOperations,
   type ReadToolDetails,
@@ -67,12 +77,14 @@ export {
 } from './write.js';
 
 import type { AgentTool } from '../types.js';
+import type { ToolSchema } from '../data/flowSessionRepository/types.js';
 import { type BashToolOptions, bashTool, createBashTool } from './bash.js';
 import { createEditTool, editTool } from './edit.js';
 import { createFindTool, findTool } from './find.js';
 import { createGrepTool, grepTool } from './grep.js';
 import { createLsTool, lsTool } from './ls.js';
 import { createReadTool, type ReadToolOptions, readTool } from './read.js';
+import { createTreeTool, treeTool } from './tree.js';
 import { createWriteTool, writeTool } from './write.js';
 
 /** Tool type (AgentTool from pi-ai) */
@@ -82,7 +94,7 @@ export type Tool = AgentTool<any>;
 export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool];
 
 // Read-only tools for exploration without modification (using process.cwd())
-export const readOnlyTools: Tool[] = [readTool, grepTool, findTool, lsTool];
+export const readOnlyTools: Tool[] = [readTool, grepTool, findTool, lsTool, treeTool];
 
 // All available tools (using process.cwd())
 export const allTools = {
@@ -93,6 +105,7 @@ export const allTools = {
   grep: grepTool,
   find: findTool,
   ls: lsTool,
+  tree: treeTool,
 };
 
 export type ToolName = keyof typeof allTools;
@@ -120,14 +133,20 @@ export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
  * Create read-only tools configured for a specific working directory.
  */
 export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[] {
-  return [createReadTool(cwd, options?.read), createGrepTool(cwd), createFindTool(cwd), createLsTool(cwd)];
+  return [
+    createReadTool(cwd, options?.read),
+    createGrepTool(cwd),
+    createFindTool(cwd),
+    createLsTool(cwd),
+    createTreeTool(cwd),
+  ];
 }
 
 /**
  * Create all tools configured for a specific working directory.
  */
-export function createAllTools(cwd: string, options?: ToolsOptions): Record<ToolName, Tool> {
-  return {
+export function createAllTools(cwd: string, options?: ToolsOptions): Tools {
+  const toolsMap: Record<ToolName, Tool> = {
     read: createReadTool(cwd, options?.read),
     bash: createBashTool(cwd, options?.bash),
     edit: createEditTool(cwd),
@@ -135,5 +154,25 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
     grep: createGrepTool(cwd),
     find: createFindTool(cwd),
     ls: createLsTool(cwd),
+    tree: createTreeTool(cwd),
   };
+  return new Tools(toolsMap);
+}
+
+/**
+ * Wrapper around a tools record that provides getSlice for agentic loop use.
+ */
+export class Tools {
+  private toolsMap: Record<string, Tool>;
+
+  constructor(toolsMap: Record<string, Tool>) {
+    this.toolsMap = toolsMap;
+  }
+
+  /**
+   * Returns Tool[] for the given tool names, skipping unknown names.
+   */
+  getSlice(names: string[]): Tool[] {
+    return names.filter((name) => name in this.toolsMap).map((name) => this.toolsMap[name]);
+  }
 }
