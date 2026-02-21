@@ -103,8 +103,8 @@ export interface FlowSession {
   toolSchemas: ToolSchema[];
   skillSchemas: SkillSchema[];
 
-  callLlmOptions: CallLlmOptions;
-  agentLoopConfig: AgentLoopConfig;
+  callLlmOptions?: CallLlmOptions;
+  agentLoopConfig?: AgentLoopConfig;
 
   // Execution logs
   toolLogs: ToolLog[];

@@ -1,6 +1,6 @@
 /**
  * Generic agentic loop nodes.
- * Tools are provided externally via the session - no hardcoded tool handlers.
+ * Tools are provided externally via the context - no hardcoded tool handlers.
  */
 import { Node, ParallelBatchNode } from 'pocketflow';
 import type {
@@ -13,13 +13,13 @@ import type { App } from '../../app.js';
 import type { Tool } from '../../tools/index.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import { replaceVars } from '../../utils/readReplace.js';
-import type { AgenticLoopContext, AgenticLoopSession, AskUserContext, ToolCallsContext } from './types.js';
+import type { AgenticLoopContext, AskUserContext, ToolCallsContext } from './types.js';
 import type OpenAI from 'openai';
+import { Session } from '../../services/sessionService/session.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
 type PrepareInputPrepResult = {
-  session: AgenticLoopSession;
   userMessage: ChatCompletionMessageParam;
 };
 type PrepareInputExecResult = 'done';
@@ -38,7 +38,7 @@ export class PrepareInput extends Node<SharedStore<AgenticLoopContext>> {
     const userMessage: ChatCompletionMessageParam = { role: 'user', content };
 
     console.log(`[PrepareInput.prep] Adding user message to session '${session.id}'`);
-    return { session, userMessage };
+    return { userMessage };
   }
 
   async exec(_prepRes: PrepareInputPrepResult): Promise<PrepareInputExecResult> {
@@ -47,13 +47,10 @@ export class PrepareInput extends Node<SharedStore<AgenticLoopContext>> {
 
   async post(
     shared: SharedStore<AgenticLoopContext>,
-    { session, userMessage }: PrepareInputPrepResult,
+    { userMessage }: PrepareInputPrepResult,
     _execRes: PrepareInputExecResult,
   ) {
-    const updatedMessages = await shared.app.data.flowSessionRepository.addMessages(session.id, [
-      { message: userMessage },
-    ]);
-    shared.context.session.activeMessages = updatedMessages;
+    await shared.context.session.addMessages([{ message: userMessage }]);
     shared.context.iteration = 0;
     return undefined;
   }
@@ -125,8 +122,7 @@ export class DecideAction extends Node<SharedStore<AgenticLoopContext>> {
   ) {
     const { session } = shared.context;
 
-    const updatedMessages = await shared.app.data.flowSessionRepository.addMessages(session.id, [{ message: execRes }]);
-    session.activeMessages = updatedMessages;
+    await session.addMessages([{ message: execRes }]);
 
     const toolCalls = execRes.tool_calls as ChatCompletionMessageFunctionToolCall[];
 
@@ -156,7 +152,7 @@ export class DecideAction extends Node<SharedStore<AgenticLoopContext>> {
 
 // ─── AskUser ─────────────────────────────────────────────────────────────────
 
-type AskUserPrepResult = { app: App; output: string; userId: string };
+type AskUserPrepResult = { output: string; userId: string; session: Session };
 type AskUserExecResult = 'sent';
 
 /**
@@ -165,18 +161,18 @@ type AskUserExecResult = 'sent';
 export class AskUser extends Node<SharedStore<AskUserContext>> {
   async prep(shared: SharedStore<AskUserContext>): Promise<AskUserPrepResult> {
     const { response, user } = shared.context;
-    return { app: shared.app, output: response, userId: user.id };
+    return { output: response, userId: user.id, session: shared.context.session };
   }
 
-  async exec({ app, output, userId }: AskUserPrepResult): Promise<AskUserExecResult> {
+  async exec({ output, userId, session }: AskUserPrepResult): Promise<AskUserExecResult> {
     console.log(`[AskUser.exec] Sending message to userId: ${userId}`);
-    app.infra.bus.emit('askUser', { userId, message: output });
+    await session.respond(output);
     return 'sent';
   }
 
   async post(shared: SharedStore<AskUserContext>, _prepRes: AskUserPrepResult, _execRes: AskUserExecResult) {
     const { session } = shared.context;
-    await shared.app.data.flowSessionRepository.updateStatus(session.id, 'completed');
+    await session.complete();
     console.log(`[AskUser.post] Marked session '${session.id}' as completed`);
     return undefined;
   }
@@ -196,14 +192,14 @@ type ToolCallsExecResult = {
 };
 
 /**
- * ToolCalls: Execute tool calls in parallel using the session's Tool instances.
+ * ToolCalls: Execute tool calls in parallel using the context's Tool instances.
  * Finds each tool by name and calls tool.execute() — no hardcoded handlers.
  */
 export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> {
   async prep(shared: SharedStore<ToolCallsContext>): Promise<ToolCallsPrepResult[]> {
-    const { toolCalls, session } = shared.context;
+    const { toolCalls, tools } = shared.context;
     console.log(`[ToolCalls.prep] Processing ${toolCalls.length} tool calls`);
-    return toolCalls.map((tc) => ({ tc, app: shared.app, tools: session.tools }));
+    return toolCalls.map((tc) => ({ tc, app: shared.app, tools }));
   }
 
   async exec({ tc, app, tools }: ToolCallsPrepResult): Promise<ToolCallsExecResult> {
@@ -228,13 +224,7 @@ export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> 
   async post(shared: SharedStore<ToolCallsContext>, _prepRes: ToolCallsPrepResult[], execRes: ToolCallsExecResult[]) {
     const { session } = shared.context;
     console.log(`[ToolCalls.post] Adding ${execRes.length} tool results to session`);
-
-    const updatedMessages = await shared.app.data.flowSessionRepository.addMessages(
-      session.id,
-      execRes.map((result) => ({ message: result })),
-    );
-    session.activeMessages = updatedMessages;
-
+    await session.addMessages(execRes.map((result) => ({ message: result })));
     return undefined;
   }
 }

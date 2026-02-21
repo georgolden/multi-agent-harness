@@ -15,10 +15,10 @@ import { createSystemPrompt } from './prompts/index.js';
 import { createToolHandler, TOOLS } from './tools.js';
 import type { App } from '../../app.js';
 import type { TaskSchedulerContext, AskUserContext, ToolCallsContext } from './types.js';
-import type { FlowSession } from '../../data/flowSessionRepository/types.js';
+import type { Session } from '../../services/sessionService/index.js';
 
 // PrepareInput Types
-type PrepareInputPrepResult = FlowSession;
+type PrepareInputPrepResult = Session;
 type PrepareInputExecResult = 'done';
 
 /**
@@ -29,7 +29,7 @@ export class PrepareInput extends Node<SharedStore<TaskSchedulerContext>> {
     const { userId, message } = shared.context;
     console.log(`[PrepareInput.prep] Preparing context and creating flow session for user message: "${message}"`);
 
-    const { data } = shared.app;
+    const { data, services } = shared.app;
 
     // Fetch all required context
     const userTaskSchedulers = await data.taskRepository.getTasks(userId);
@@ -42,8 +42,8 @@ export class PrepareInput extends Node<SharedStore<TaskSchedulerContext>> {
     // Create system prompt with all context
     const systemPrompt = createSystemPrompt(currentDate, timezone, JSON.stringify(userTaskSchedulers), tasksTypes);
 
-    // Create flow session with complete system prompt
-    const session = await shared.app.data.flowSessionRepository.createSession({
+    // Create flow session
+    const session = await services.sessionService.create({
       userId,
       flowName: 'taskScheduler',
       systemPrompt,
@@ -55,7 +55,7 @@ export class PrepareInput extends Node<SharedStore<TaskSchedulerContext>> {
       content: message,
     };
 
-    await shared.app.data.flowSessionRepository.addMessages(session.id, [{ message: userMessage }]);
+    await session.addMessages([{ message: userMessage }]);
 
     console.log(`[PrepareInput.prep] Created session '${session.id}' with system prompt and user message`);
     return session;
@@ -70,7 +70,6 @@ export class PrepareInput extends Node<SharedStore<TaskSchedulerContext>> {
     prepRes: PrepareInputPrepResult,
     _execRes: PrepareInputExecResult,
   ) {
-    // Store session in context for subsequent nodes
     shared.context.session = prepRes;
     return undefined;
   }
@@ -117,7 +116,6 @@ export class DecideAction extends Node<SharedStore<TaskSchedulerContext>> {
 
     console.log(`[DecideAction.exec] Calling LLM with ${messages.length} messages`);
 
-    // Call LLM with tools
     const response = await callLlmWithTools(messages, TOOLS);
 
     console.log(`[DecideAction.exec] LLM response:`, JSON.stringify(response[0].message, null, 2));
@@ -127,7 +125,7 @@ export class DecideAction extends Node<SharedStore<TaskSchedulerContext>> {
 
   async post(
     shared: SharedStore<TaskSchedulerContext>,
-    prepRes: DecideActionPrepResult,
+    _prepRes: DecideActionPrepResult,
     execRes: DecideActionExecResult,
   ) {
     const { session } = shared.context;
@@ -135,9 +133,7 @@ export class DecideAction extends Node<SharedStore<TaskSchedulerContext>> {
       throw new Error('Session is required');
     }
 
-    // Add assistant message to session (both DB and context)
-    const updatedMessages = await shared.app.data.flowSessionRepository.addMessages(session.id, [{ message: execRes }]);
-    session.activeMessages = updatedMessages.map((msg) => msg);
+    await session.addMessages([{ message: execRes }]);
 
     const toolCalls = execRes.tool_calls as ChatCompletionMessageFunctionToolCall[];
 
@@ -166,7 +162,7 @@ export class DecideAction extends Node<SharedStore<TaskSchedulerContext>> {
 }
 
 // AskUser Types
-type AskUserPrepResult = { app: App; output: string; userId: string };
+type AskUserPrepResult = { output: string; userId: string; session: Session };
 type AskUserExecResult = 'sent';
 
 /**
@@ -174,26 +170,22 @@ type AskUserExecResult = 'sent';
  */
 export class AskUser extends Node<SharedStore<AskUserContext>> {
   async prep(shared: SharedStore<AskUserContext>): Promise<AskUserPrepResult> {
-    const { app } = shared;
-    const { response, userId } = shared.context;
+    const { response, userId, session } = shared.context;
 
-    return { app, output: response, userId };
+    return { output: response, userId, session: session! };
   }
 
-  async exec({ app, output, userId }: AskUserPrepResult): Promise<AskUserExecResult> {
+  async exec({ output, userId, session }: AskUserPrepResult): Promise<AskUserExecResult> {
     console.log(`[AskUser.exec] Sending message to userId: ${userId}, output: "${output}"`);
-    app.infra.bus.emit('askUser', { userId, message: output });
+    await session.respond(output);
     return 'sent';
   }
 
-  async post(shared: SharedStore<TaskSchedulerContext>, _prepRes: AskUserPrepResult, _execRes: AskUserExecResult) {
+  async post(shared: SharedStore<AskUserContext>, _prepRes: AskUserPrepResult, _execRes: AskUserExecResult) {
     const { session } = shared.context;
 
-    // Mark session as completed
-    if (session) {
-      await shared.app.data.flowSessionRepository.updateStatus(session.id, 'completed');
-      console.log(`[AskUser.post] Marked session ${session.id} as completed`);
-    }
+    await session.complete();
+    console.log(`[AskUser.post] Marked session ${session!.id} as completed`);
 
     return undefined;
   }
@@ -234,24 +226,12 @@ export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> 
     return { role: 'tool', content, tool_call_id: tc.id };
   }
 
-  async post(
-    shared: SharedStore<TaskSchedulerContext>,
-    _prepRes: ToolCallsPrepResult[],
-    execRes: ToolCallsExecResult[],
-  ) {
+  async post(shared: SharedStore<ToolCallsContext>, _prepRes: ToolCallsPrepResult[], execRes: ToolCallsExecResult[]) {
     console.log(`[ToolCalls.post] Adding ${execRes.length} tool result messages to session`);
 
     const { session } = shared.context;
-    if (!session) {
-      throw new Error('Session is required');
-    }
 
-    // Add tool results to session (both DB and context)
-    const updatedMessages = await shared.app.data.flowSessionRepository.addMessages(
-      session.id,
-      execRes.map((result) => ({ message: result })),
-    );
-    session.activeMessages = updatedMessages.map((msg) => msg);
+    await session.addMessages(execRes.map((result) => ({ message: result })));
 
     return undefined;
   }

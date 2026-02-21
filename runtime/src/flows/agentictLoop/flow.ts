@@ -73,7 +73,7 @@ export async function prepareAgenticLoop(flow: Flow, app: App, schema: AgenticLo
   const contextFiles = await readFilesWithLimit(contextPaths.files);
   const contextFoldersInfos = await readFoldersInfos(contextPaths.folders);
 
-  const sessionData = await app.data.flowSessionRepository.createSession({
+  const session = await app.services.sessionService.create({
     flowName,
     systemPrompt: filledSystemPrompt,
     userPromptTemplate: userPromptTemplate,
@@ -87,7 +87,5 @@ export async function prepareAgenticLoop(flow: Flow, app: App, schema: AgenticLo
     agentLoopConfig,
   });
 
-  const session = { ...sessionData, tools, skills };
-
-  return (message: string) => flow.run({ app, context: { session, user, message } });
+  return (message: string) => flow.run({ app, context: { session, user, message, tools, skills } });
 }
