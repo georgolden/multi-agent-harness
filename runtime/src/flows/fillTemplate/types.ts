@@ -1,0 +1,23 @@
+import type { ChatCompletionMessageFunctionToolCall } from '../../types.js';
+import type { Session } from '../../services/sessionService/index.js';
+import { Type, type Static } from '@sinclair/typebox';
+
+export const fillTemplateInputSchema = Type.Object({
+  userId: Type.String({ description: 'User ID' }),
+  message: Type.String({ description: "User's message" }),
+  template: Type.Optional(Type.String({ description: 'Template to fill (required when starting a new session)' })),
+  sessionId: Type.Optional(Type.String({ description: 'Existing session ID to resume' })),
+});
+
+export type FillTemplateInput = Static<typeof fillTemplateInputSchema>;
+
+export interface FillTemplateContext extends FillTemplateInput {
+  // Flow session
+  session?: Session;
+  // Flow state
+  response?: string;
+  toolCalls?: ChatCompletionMessageFunctionToolCall[];
+}
+
+export type AskUserContext = FillTemplateContext & { response: string };
+export type SubmitTemplateContext = FillTemplateContext & { toolCalls: ChatCompletionMessageFunctionToolCall[] };
