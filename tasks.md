@@ -18,10 +18,12 @@
 - [ ] move all specifics and make a generic flows:
   - universal agentic tool call loop - similar as web search or reminder
     - [x] universal agent loop
-    - [ ] make template fill tempalte flow
+    - [x] make fill tempalte flow
     - [ ] use prompt template with fill tempalte flow
-    - [ ] make context retrieval flow
+    - [x] make context retrieval flow (explore)
     - [ ] use context retrieval flow
+  - IMPORTANT: add llm message models and update session repo and usage everywhere to handle messages via message model
+  - IMPORTANT: make own version of a pocketflow that works nice with stack trace, respects options and that works with not shared store but with result state as well
   - universal map/reduce agent processing flow - for batch processing
   - agentic map reduce - 2 prompts combination of first 2 for unstructured input like user's queries and parallel agent executions
 

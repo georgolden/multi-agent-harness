@@ -242,6 +242,7 @@ export class SubmitTemplate extends Node<SharedStore<SubmitTemplateContext>> {
 
     // Emit filled template result
     await session.respond(filledTemplate);
+    shared.context.result = filledTemplate;
 
     // Mark session completed
     await session.complete();

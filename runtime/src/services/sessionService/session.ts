@@ -4,12 +4,14 @@ import type {
   FlowMessage,
   FlowSessionStatus,
   ContextFile,
+  ContextFolderInfo,
   ToolSchema,
   SkillSchema,
   ToolLog,
   SkillLog,
   FlowSessionTreeNode,
 } from '../../data/flowSessionRepository/types.js';
+import { AgentTool } from '../../types.js';
 import type { SessionHooks } from './types.js';
 
 /**
@@ -33,6 +35,7 @@ export class Session {
   sessionData: FlowSession;
   app: App;
   hooks: SessionHooks;
+  tools: AgentTool[] = [];
 
   constructor(sessionData: FlowSession, app: App, hooks: SessionHooks = {}) {
     this.sessionData = sessionData;
@@ -108,6 +111,14 @@ export class Session {
     return this.sessionData.activeMessages[this.sessionData.activeMessages.length - 1];
   }
 
+  addAgentTools(tools: AgentTool[]) {
+    this.tools = [...this.tools, ...tools];
+  }
+
+  getAgentTool(name: string): AgentTool | undefined {
+    return this.tools.find((t) => t.name === name);
+  }
+
   // ─── Message mutations ────────────────────────────────────────────────────
 
   /** Add messages; refreshes the active window and fires onMessage hook. */
@@ -123,6 +134,12 @@ export class Session {
   async addContextFiles(files: ContextFile[]): Promise<this> {
     const contextFiles = await this.app.data.flowSessionRepository.addContextFiles(this.sessionData.id, files);
     this.sessionData.contextFiles = contextFiles;
+    return this;
+  }
+
+  async addContextFoldersInfos(folders: ContextFolderInfo[]): Promise<this> {
+    const contextFoldersInfos = await this.app.data.flowSessionRepository.addContextFoldersInfos(this.sessionData.id, folders);
+    this.sessionData.contextFoldersInfos = contextFoldersInfos;
     return this;
   }
 

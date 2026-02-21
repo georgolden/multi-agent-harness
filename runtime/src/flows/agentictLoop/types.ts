@@ -7,6 +7,7 @@ import type { User } from '../../data/userRepository/types.js';
 export interface AgenticLoopContext {
   user: User;
   message: string;
+  parent?: Session;
   session: Session;
   tools: Tool[];
   skills: Skill[];

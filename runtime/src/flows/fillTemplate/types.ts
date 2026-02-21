@@ -17,6 +17,7 @@ export interface FillTemplateContext extends FillTemplateInput {
   // Flow state
   response?: string;
   toolCalls?: ChatCompletionMessageFunctionToolCall[];
+  result?: string;
 }
 
 export type AskUserContext = FillTemplateContext & { response: string };

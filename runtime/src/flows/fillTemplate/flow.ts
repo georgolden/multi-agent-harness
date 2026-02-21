@@ -16,6 +16,8 @@ import { Flow } from 'pocketflow';
 import { PrepareInput, DecideAction, AskUser, SubmitTemplate } from './nodes.js';
 import type { SharedStore } from '../../types.js';
 import { fillTemplateInputSchema, type FillTemplateContext } from './types.js';
+import { App } from '../../app.js';
+import { User } from '../../data/userRepository/types.js';
 
 export type FillTemplateFlow = Flow<SharedStore<FillTemplateContext>>;
 
@@ -44,4 +46,16 @@ export const fillTemplateFlow = {
     'FillTemplate agent flow that guides users through filling a template conversationally. It helps to:\n• Collect information step by step\n• Fill all template sections and variables\n• Submit the completed template',
   parameters: fillTemplateInputSchema,
   create: createFillTemplateFlow,
+  run: async (
+    app: App,
+    { user, message, template, sessionId }: { user: User; message: string; template?: string; sessionId?: string },
+  ) => {
+    const flow = createFillTemplateFlow();
+    const shared: SharedStore<FillTemplateContext> = {
+      app,
+      context: { userId: user.id, message, template, sessionId },
+    };
+    await flow.run(shared);
+    return shared.context.result;
+  },
 };

@@ -77,7 +77,6 @@ export {
 } from './write.js';
 
 import type { AgentTool } from '../types.js';
-import type { ToolSchema } from '../data/flowSessionRepository/types.js';
 import { type BashToolOptions, bashTool, createBashTool } from './bash.js';
 import { createEditTool, editTool } from './edit.js';
 import { createFindTool, findTool } from './find.js';
@@ -142,31 +141,43 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
   ];
 }
 
-/**
- * Create all tools configured for a specific working directory.
- */
-export function createAllTools(cwd: string, options?: ToolsOptions): Tools {
-  const toolsMap: Record<ToolName, Tool> = {
-    read: createReadTool(cwd, options?.read),
-    bash: createBashTool(cwd, options?.bash),
-    edit: createEditTool(cwd),
-    write: createWriteTool(cwd),
-    grep: createGrepTool(cwd),
-    find: createFindTool(cwd),
-    ls: createLsTool(cwd),
-    tree: createTreeTool(cwd),
-  };
-  return new Tools(toolsMap);
-}
-
-/**
- * Wrapper around a tools record that provides getSlice for agentic loop use.
- */
 export class Tools {
-  private toolsMap: Record<string, Tool>;
+  toolsMap: Record<string, Tool>;
+  readonlyToolsMap: Record<string, Tool>;
+  codingToolsMap: Record<string, Tool>;
 
-  constructor(toolsMap: Record<string, Tool>) {
-    this.toolsMap = toolsMap;
+  constructor(cwd: string, options?: ToolsOptions) {
+    this.readonlyToolsMap = {
+      read: createReadTool(cwd, options?.read),
+      grep: createGrepTool(cwd),
+      ls: createLsTool(cwd),
+      find: createFindTool(cwd),
+      tree: createTreeTool(cwd),
+    };
+
+    this.codingToolsMap = {
+      read: createReadTool(cwd, options?.read),
+      bash: createBashTool(cwd, options?.bash),
+      edit: createEditTool(cwd),
+      write: createWriteTool(cwd),
+    };
+
+    this.toolsMap = {
+      ...this.readonlyToolsMap,
+      ...this.codingToolsMap,
+    };
+  }
+
+  getReadOnlyTools(): Tool[] {
+    return Object.values(this.readonlyToolsMap);
+  }
+
+  getCodingTools(): Tool[] {
+    return Object.values(this.codingToolsMap);
+  }
+
+  getAllTools(): Tool[] {
+    return Object.values(this.toolsMap);
   }
 
   /**

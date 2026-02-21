@@ -10,6 +10,7 @@ import type {
   FlowSessionTreeNode,
   FlowMessage,
   ContextFile,
+  ContextFolderInfo,
   ToolSchema,
   SkillSchema,
   ToolLog,
@@ -306,6 +307,31 @@ export class FlowSessionRepository {
 
     console.log(`[FlowSessionRepository] Added ${files.length} context files to session '${sessionId}'`);
     return contextFiles;
+  }
+
+  /**
+   * Add context folder infos to the session
+   */
+  async addContextFoldersInfos(sessionId: string, folders: ContextFolderInfo[]): Promise<ContextFolderInfo[]> {
+    const session = await this.getSession(sessionId);
+    if (!session) {
+      throw new Error(`Session '${sessionId}' not found`);
+    }
+
+    const contextFoldersInfos = [...session.contextFoldersInfos, ...folders];
+
+    await this.pool.query(`UPDATE flow_sessions SET context_folders_infos = $2 WHERE id = $1`, [
+      sessionId,
+      JSON.stringify(contextFoldersInfos),
+    ]);
+
+    this.app.infra.bus.emit('flowSession:contextFoldersInfosAdded', {
+      sessionId,
+      contextFoldersInfos,
+    });
+
+    console.log(`[FlowSessionRepository] Added ${folders.length} context folder infos to session '${sessionId}'`);
+    return contextFoldersInfos;
   }
 
   /**

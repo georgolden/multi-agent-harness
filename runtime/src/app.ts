@@ -4,7 +4,7 @@ import { Infra } from './infra/index.js';
 import { Services } from './services/index.js';
 import { Skills } from './skills/index.js';
 import { Tasks } from './tasks/index.js';
-import { createAllTools } from './tools/index.js';
+import { Tools } from './tools/index.js';
 
 export class App {
   services: Services;
@@ -13,7 +13,7 @@ export class App {
   flows: Flows;
   skills: Skills;
   tasks: Tasks;
-  tools: ReturnType<typeof createAllTools>;
+  tools: Tools;
 
   constructor() {
     const cwd = process.cwd();
@@ -23,7 +23,7 @@ export class App {
     this.flows = new Flows(this);
     this.skills = new Skills(cwd);
     this.tasks = new Tasks(this);
-    this.tools = createAllTools(cwd);
+    this.tools = new Tools(cwd);
   }
 
   async start() {
