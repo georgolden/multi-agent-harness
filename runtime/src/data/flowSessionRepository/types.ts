@@ -5,22 +5,13 @@
 import { AgentLoopConfig } from '../../flows/agentictLoop/flow.js';
 import type { ChatCompletionMessageParam, ChatCompletionMessage } from '../../types.js';
 import { CallLlmOptions } from '../../utils/callLlm.js';
+import { FileInfo } from '../../utils/file.js';
+import { FolderInfo } from '../../utils/folder.js';
 
 // Message without id - index is the id
 export interface FlowMessage {
   message: ChatCompletionMessageParam | ChatCompletionMessage;
   timestamp: Date;
-}
-
-// Context file reference
-export interface ContextFile {
-  path: string;
-  content: string;
-}
-
-export interface ContextFolderInfo {
-  path: string;
-  tree: string;
 }
 
 // Tool schema - matches real tool format
@@ -98,8 +89,8 @@ export interface FlowSession {
   messageWindowConfig: MessageWindowConfig;
 
   // Context and tools
-  contextFiles: ContextFile[];
-  contextFoldersInfos: ContextFolderInfo[];
+  contextFiles: FileInfo[];
+  contextFoldersInfos: FolderInfo[];
   toolSchemas: ToolSchema[];
   skillSchemas: SkillSchema[];
 
@@ -126,8 +117,8 @@ export interface CreateSessionParams {
   messageWindowConfig?: MessageWindowConfig;
   tools?: ToolSchema[];
   skills?: SkillSchema[];
-  contextFiles?: ContextFile[];
-  contextFoldersInfos?: ContextFolderInfo[];
+  contextFiles?: FileInfo[];
+  contextFoldersInfos?: FolderInfo[];
   callLlmOptions?: CallLlmOptions;
   agentLoopConfig?: AgentLoopConfig;
 }

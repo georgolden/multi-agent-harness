@@ -3,14 +3,14 @@ import type {
   FlowSession,
   FlowMessage,
   FlowSessionStatus,
-  ContextFile,
-  ContextFolderInfo,
   ToolSchema,
   SkillSchema,
   ToolLog,
   SkillLog,
   FlowSessionTreeNode,
 } from '../../data/flowSessionRepository/types.js';
+import type { FileInfo } from '../../utils/file.js';
+import type { FolderInfo } from '../../utils/folder.js';
 import { AgentTool } from '../../types.js';
 import type { SessionHooks } from './types.js';
 
@@ -75,7 +75,7 @@ export class Session {
   get messageWindowConfig(): FlowSession['messageWindowConfig'] {
     return this.sessionData.messageWindowConfig;
   }
-  get contextFiles(): ContextFile[] {
+  get contextFiles(): FileInfo[] {
     return this.sessionData.contextFiles;
   }
   get contextFoldersInfos(): FlowSession['contextFoldersInfos'] {
@@ -131,13 +131,13 @@ export class Session {
 
   // ─── Context / schema mutations ───────────────────────────────────────────
 
-  async addContextFiles(files: ContextFile[]): Promise<this> {
+  async addContextFiles(files: FileInfo[]): Promise<this> {
     const contextFiles = await this.app.data.flowSessionRepository.addContextFiles(this.sessionData.id, files);
     this.sessionData.contextFiles = contextFiles;
     return this;
   }
 
-  async addContextFoldersInfos(folders: ContextFolderInfo[]): Promise<this> {
+  async addContextFoldersInfos(folders: FolderInfo[]): Promise<this> {
     const contextFoldersInfos = await this.app.data.flowSessionRepository.addContextFoldersInfos(this.sessionData.id, folders);
     this.sessionData.contextFoldersInfos = contextFoldersInfos;
     return this;

@@ -9,8 +9,6 @@ import type {
   FlowSession,
   FlowSessionTreeNode,
   FlowMessage,
-  ContextFile,
-  ContextFolderInfo,
   ToolSchema,
   SkillSchema,
   ToolLog,
@@ -18,6 +16,8 @@ import type {
   FlowSessionStatus,
   CreateSessionParams,
 } from './types.js';
+import type { FileInfo } from '../../utils/file.js';
+import type { FolderInfo } from '../../utils/folder.js';
 import { DEFAULT_MESSAGE_WINDOW_CONFIG } from './types.js';
 import { App } from '../../app.js';
 import { computeActiveWindow } from './messageWindow.js';
@@ -286,7 +286,7 @@ export class FlowSessionRepository {
   /**
    * Add context files to the session
    */
-  async addContextFiles(sessionId: string, files: ContextFile[]): Promise<ContextFile[]> {
+  async addContextFiles(sessionId: string, files: FileInfo[]): Promise<FileInfo[]> {
     const session = await this.getSession(sessionId);
     if (!session) {
       throw new Error(`Session '${sessionId}' not found`);
@@ -312,7 +312,7 @@ export class FlowSessionRepository {
   /**
    * Add context folder infos to the session
    */
-  async addContextFoldersInfos(sessionId: string, folders: ContextFolderInfo[]): Promise<ContextFolderInfo[]> {
+  async addContextFoldersInfos(sessionId: string, folders: FolderInfo[]): Promise<FolderInfo[]> {
     const session = await this.getSession(sessionId);
     if (!session) {
       throw new Error(`Session '${sessionId}' not found`);

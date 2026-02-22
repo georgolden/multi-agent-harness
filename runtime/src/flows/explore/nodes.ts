@@ -22,7 +22,8 @@ import type { ExploreContext, DecideActionContext, ToolCallsContext } from './ty
 import type { Session } from '../../services/sessionService/index.js';
 import { toLLMTools } from '../../utils/llm.js';
 import { User } from '../../data/userRepository/types.js';
-import type { ContextFile, ContextFolderInfo } from '../../data/flowSessionRepository/types.js';
+import { FolderInfo } from '../../utils/folder.js';
+import { FileInfo } from '../../utils/file.js';
 
 const MAX_ITERATIONS = 5;
 
@@ -223,7 +224,9 @@ export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> 
 
       // Persist file/folder content into session context
       if (result.name === 'read') {
-        await session.addContextFiles([{ path: result.args.path, content: result.output }]);
+        await session.addContextFiles([
+          { path: result.args.path, category: 'text', content: { encoding: 'utf-8', data: result.output } },
+        ]);
       } else if (result.name === 'tree' || result.name === 'ls') {
         const folderPath: string = result.args.path || '.';
         await session.addContextFoldersInfos([{ path: folderPath, tree: result.output }]);
@@ -239,8 +242,8 @@ export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> 
       const args = submitResultExec.args as SubmitResult;
 
       // Collect files and folders referenced in the result context
-      const contextFiles: ContextFile[] = [];
-      const contextFoldersInfos: ContextFolderInfo[] = [];
+      const contextFiles: FileInfo[] = [];
+      const contextFoldersInfos: FolderInfo[] = [];
 
       for (const entry of args.context) {
         if (entry.type === 'file') {
