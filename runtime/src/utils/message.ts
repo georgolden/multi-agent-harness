@@ -61,6 +61,71 @@ export type LLMToolCall = {
   args: Record<string, unknown>;
 };
 
+// ─── Message Data Types (serialized / API-compatible plain objects) ───────────
+
+/** Serialized form of SystemMessage — OpenAI-compatible. */
+export type SystemMessageData = {
+  role: 'system';
+  content: string;
+};
+
+/** Serialized form of UserMessage — OpenAI-compatible. */
+export type UserMessageData = {
+  role: 'user';
+  content: LLMContext;
+};
+
+/** Serialized form of AssistantTextMessage — OpenAI-compatible. */
+export type AssistantTextMessageData = {
+  role: 'assistant';
+  content: string;
+  reasoning?: string | null;
+};
+
+/** Individual tool call in API wire format. */
+export type AssistantToolCallData = {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+};
+
+/** Serialized form of AssistantToolCallMessage — OpenAI-compatible. */
+export type AssistantToolCallMessageData = {
+  role: 'assistant';
+  content: string | null;
+  tool_calls: AssistantToolCallData[];
+};
+
+/** Serialized form of AssistantErrorMessage — OpenAI-compatible. */
+export type AssistantErrorMessageData = {
+  role: 'assistant';
+  content: null;
+  refusal: string | null;
+};
+
+/** Union of all serialized assistant message shapes. Discriminate via `tool_calls` presence, then `content` nullability. */
+export type AssistantMessageData =
+  | AssistantToolCallMessageData
+  | AssistantTextMessageData
+  | AssistantErrorMessageData;
+
+/** Serialized form of ToolResultMessage — OpenAI-compatible. */
+export type ToolResultMessageData = {
+  role: 'tool';
+  tool_call_id: string;
+  content: string | LLMText[];
+};
+
+/**
+ * Union of all serialized LLM message shapes — API-compatible plain objects.
+ * Use `LLMMessage.fromData()` to reconstruct typed class instances.
+ */
+export type LLMMessageData =
+  | SystemMessageData
+  | UserMessageData
+  | AssistantMessageData
+  | ToolResultMessageData;
+
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 function formatSize(bytes: number): string {
@@ -196,7 +261,35 @@ function toContentParts(item: string | File | Folder | FolderInfo | FileInfo): L
 
 export abstract class LLMMessage {
   abstract readonly role: 'system' | 'assistant' | 'user' | 'tool';
-  abstract toJSON(): object;
+  abstract toJSON(): LLMMessageData;
+
+  /** Reconstruct the correct typed class instance from a stored plain-object message. */
+  static fromData(data: LLMMessageData): LLMMessage {
+    switch (data.role) {
+      case 'system':
+        return new SystemMessage(data.content);
+      case 'user':
+        return new UserMessage(data.content);
+      case 'tool':
+        return new ToolResultMessage({ toolCallId: data.tool_call_id, content: data.content });
+      case 'assistant': {
+        if ('tool_calls' in data) {
+          return new AssistantToolCallMessage({
+            text: data.content,
+            toolCalls: data.tool_calls.map((tc) => ({
+              id: tc.id,
+              name: tc.function.name,
+              args: JSON.parse(tc.function.arguments) as Record<string, unknown>,
+            })),
+          });
+        }
+        if (data.content !== null) {
+          return new AssistantTextMessage({ text: data.content, reasoning: data.reasoning });
+        }
+        return new AssistantErrorMessage({ refusal: data.refusal });
+      }
+    }
+  }
 }
 
 // ─── SystemMessage ────────────────────────────────────────────────────────────
@@ -210,7 +303,7 @@ export class SystemMessage extends LLMMessage {
     this.content = content;
   }
 
-  toJSON() {
+  toJSON(): SystemMessageData {
     return { role: this.role, content: this.content };
   }
 }
@@ -269,7 +362,7 @@ export class UserMessage extends LLMMessage {
     return this;
   }
 
-  toJSON() {
+  toJSON(): UserMessageData {
     return { role: this.role, content: this.content };
   }
 }
@@ -331,13 +424,13 @@ export class AssistantToolCallMessage extends AssistantMessage {
     });
   }
 
-  toJSON() {
+  toJSON(): AssistantToolCallMessageData {
     return {
       role: this.role,
       content: this.text,
       tool_calls: this.toolCalls.map((tc) => ({
         id: tc.id,
-        type: 'function',
+        type: 'function' as const,
         function: { name: tc.name, arguments: JSON.stringify(tc.args) },
       })),
     };
@@ -358,7 +451,7 @@ export class AssistantTextMessage extends AssistantMessage {
     this.text = trimmed || (this.reasoning ? `No assistant response but got reasoning: ${this.reasoning}` : '');
   }
 
-  toJSON() {
+  toJSON(): AssistantTextMessageData {
     return { role: this.role, content: this.text, reasoning: this.reasoning };
   }
 }
@@ -378,7 +471,7 @@ export class AssistantErrorMessage extends AssistantMessage {
     this.error = this.refusal ? `Refused. Reason: ${this.refusal}` : 'No response';
   }
 
-  toJSON() {
+  toJSON(): AssistantErrorMessageData {
     return { role: this.role, content: null, refusal: this.refusal };
   }
 }
@@ -397,7 +490,7 @@ export class ToolResultMessage extends LLMMessage {
     this.content = content;
   }
 
-  toJSON() {
+  toJSON(): ToolResultMessageData {
     return { role: this.role, tool_call_id: this.toolCallId, content: this.content };
   }
 }
