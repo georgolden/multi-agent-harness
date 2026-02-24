@@ -1,31 +1,31 @@
 /**
- * FlowSessionRepository for managing flow execution sessions with tree structure.
+ * SessionDataRepository for managing flow execution sessions with tree structure.
  * Uses Postgres for persistence with JSONB for complex data types.
  * Emits events for observability.
  */
 import type { Pool } from 'pg';
 import { randomBytes } from 'crypto';
 import type {
-  FlowSession,
-  FlowSessionTreeNode,
-  FlowMessage,
+  SessionData,
+  SessionDataTreeNode,
+  SessionMessage,
   ToolSchema,
   SkillSchema,
   ToolLog,
   SkillLog,
-  FlowSessionStatus,
+  SessionStatus,
   CreateSessionParams,
-} from './types.js';
+} from '../../services/sessionService/types.js';
 import type { FileInfo } from '../../utils/file.js';
 import type { FolderInfo } from '../../utils/folder.js';
-import { DEFAULT_MESSAGE_WINDOW_CONFIG } from './types.js';
+import { DEFAULT_MESSAGE_WINDOW_CONFIG } from '../../services/sessionService/types.js';
 import { App } from '../../app.js';
 import { computeActiveWindow } from './messageWindow.js';
 
 /**
- * FlowSessionRepository for managing flow sessions with tree structure and smart message windowing
+ * SessionDataRepository for managing flow sessions with tree structure and smart message windowing
  */
-export class FlowSessionRepository {
+export class SessionDataRepository {
   private pool: Pool;
   app: App;
 
@@ -103,14 +103,14 @@ export class FlowSessionRepository {
       ON flow_sessions(parent_session_id, started_at)
     `);
 
-    console.log('[FlowSessionRepository] Initialized with Postgres');
+    console.log('[SessionDataRepository] Initialized with Postgres');
   }
 
   /**
    * Cleanup (pool is managed by infra layer)
    */
   async stop(): Promise<void> {
-    console.log('[FlowSessionRepository] Stopped');
+    console.log('[SessionDataRepository] Stopped');
   }
 
   /**
@@ -121,9 +121,9 @@ export class FlowSessionRepository {
   }
 
   /**
-   * Map database row to FlowSession type
+   * Map database row to SessionData type
    */
-  private mapDbRowToSession(row: any): FlowSession {
+  private mapDbRowToSession(row: any): SessionData {
     return {
       id: row.id,
       userId: row.user_id,
@@ -151,7 +151,7 @@ export class FlowSessionRepository {
   /**
    * Create a new flow session
    */
-  async createSession(params: CreateSessionParams): Promise<FlowSession> {
+  async createSession(params: CreateSessionParams): Promise<SessionData> {
     const id = params.sessionId || this.generateSessionId();
     const config = params.messageWindowConfig || DEFAULT_MESSAGE_WINDOW_CONFIG;
     const toolSchemas = params.tools || [];
@@ -191,14 +191,14 @@ export class FlowSessionRepository {
     // Emit event
     this.app.infra.bus.emit('flowSession:created', session);
 
-    console.log(`[FlowSessionRepository] Created session '${id}' for flow '${params.flowName}'`);
+    console.log(`[SessionDataRepository] Created session '${id}' for flow '${params.flowName}'`);
     return session;
   }
 
   /**
    * Get a flow session by ID
    */
-  async getSession(sessionId: string): Promise<FlowSession | null> {
+  async getSession(sessionId: string): Promise<SessionData | null> {
     const result = await this.pool.query('SELECT * FROM flow_sessions WHERE id = $1', [sessionId]);
     return result.rows[0] ? this.mapDbRowToSession(result.rows[0]) : null;
   }
@@ -206,7 +206,7 @@ export class FlowSessionRepository {
   /**
    * Get all sessions for a user
    */
-  async getUserSessions(userId: string, status?: FlowSessionStatus): Promise<FlowSession[]> {
+  async getUserSessions(userId: string, status?: SessionStatus): Promise<SessionData[]> {
     let query = 'SELECT * FROM flow_sessions WHERE user_id = $1';
     const params: any[] = [userId];
 
@@ -224,7 +224,7 @@ export class FlowSessionRepository {
   /**
    * Update session status
    */
-  async updateStatus(sessionId: string, status: FlowSessionStatus): Promise<void> {
+  async updateStatus(sessionId: string, status: SessionStatus): Promise<void> {
     const setClauses = ['status = $2'];
     const params: any[] = [sessionId, status];
 
@@ -240,21 +240,21 @@ export class FlowSessionRepository {
       status,
     });
 
-    console.log(`[FlowSessionRepository] Updated session '${sessionId}' status to '${status}'`);
+    console.log(`[SessionDataRepository] Updated session '${sessionId}' status to '${status}'`);
   }
 
   /**
    * Add messages to the session and automatically manage the active window.
    * Returns the updated active messages.
    */
-  async addMessages(sessionId: string, messages: Omit<FlowMessage, 'timestamp'>[]): Promise<FlowMessage[]> {
+  async addMessages(sessionId: string, messages: Omit<SessionMessage, 'timestamp'>[]): Promise<SessionMessage[]> {
     const session = await this.getSession(sessionId);
     if (!session) {
       throw new Error(`Session '${sessionId}' not found`);
     }
 
     // Create full messages with timestamps
-    const fullMessages: FlowMessage[] = messages.map((msg) => ({
+    const fullMessages: SessionMessage[] = messages.map((msg) => ({
       timestamp: new Date(),
       ...msg,
     }));
@@ -279,7 +279,7 @@ export class FlowSessionRepository {
       allMessages,
     });
 
-    console.log(`[FlowSessionRepository] Added ${messages.length} messages to session '${sessionId}'`);
+    console.log(`[SessionDataRepository] Added ${messages.length} messages to session '${sessionId}'`);
     return activeMessages;
   }
 
@@ -305,7 +305,7 @@ export class FlowSessionRepository {
       contextFiles,
     });
 
-    console.log(`[FlowSessionRepository] Added ${files.length} context files to session '${sessionId}'`);
+    console.log(`[SessionDataRepository] Added ${files.length} context files to session '${sessionId}'`);
     return contextFiles;
   }
 
@@ -330,7 +330,7 @@ export class FlowSessionRepository {
       contextFoldersInfos,
     });
 
-    console.log(`[FlowSessionRepository] Added ${folders.length} context folder infos to session '${sessionId}'`);
+    console.log(`[SessionDataRepository] Added ${folders.length} context folder infos to session '${sessionId}'`);
     return contextFoldersInfos;
   }
 
@@ -356,7 +356,7 @@ export class FlowSessionRepository {
       tools: allTools,
     });
 
-    console.log(`[FlowSessionRepository] Added ${tools.length} tools to session '${sessionId}'`);
+    console.log(`[SessionDataRepository] Added ${tools.length} tools to session '${sessionId}'`);
     return allTools;
   }
 
@@ -382,7 +382,7 @@ export class FlowSessionRepository {
       skills: allSkills,
     });
 
-    console.log(`[FlowSessionRepository] Added ${skills.length} skills to session '${sessionId}'`);
+    console.log(`[SessionDataRepository] Added ${skills.length} skills to session '${sessionId}'`);
     return allSkills;
   }
 
@@ -411,7 +411,7 @@ export class FlowSessionRepository {
       allLogs: toolLogs,
     });
 
-    console.log(`[FlowSessionRepository] Logged tool '${log.name}' execution for session '${sessionId}'`);
+    console.log(`[SessionDataRepository] Logged tool '${log.name}' execution for session '${sessionId}'`);
   }
 
   /**
@@ -439,7 +439,7 @@ export class FlowSessionRepository {
       allLogs: skillLogs,
     });
 
-    console.log(`[FlowSessionRepository] Logged skill '${log.name}' execution for session '${sessionId}'`);
+    console.log(`[SessionDataRepository] Logged skill '${log.name}' execution for session '${sessionId}'`);
   }
 
   // ==================== Tree Operations ====================
@@ -447,7 +447,7 @@ export class FlowSessionRepository {
   /**
    * Get all child sessions of a parent session
    */
-  async getChildren(parentSessionId: string): Promise<FlowSession[]> {
+  async getChildren(parentSessionId: string): Promise<SessionData[]> {
     const result = await this.pool.query(
       'SELECT * FROM flow_sessions WHERE parent_session_id = $1 ORDER BY started_at ASC',
       [parentSessionId],
@@ -459,7 +459,7 @@ export class FlowSessionRepository {
   /**
    * Get child session tree nodes (lightweight)
    */
-  async getChildrenTreeNodes(parentSessionId: string): Promise<FlowSessionTreeNode[]> {
+  async getChildrenTreeNodes(parentSessionId: string): Promise<SessionDataTreeNode[]> {
     const result = await this.pool.query(
       `SELECT
         fs.id, fs.user_id, fs.flow_name, fs.status, fs.parent_session_id, fs.started_at,
@@ -484,7 +484,7 @@ export class FlowSessionRepository {
   /**
    * Get the parent session
    */
-  async getParent(sessionId: string): Promise<FlowSession | null> {
+  async getParent(sessionId: string): Promise<SessionData | null> {
     const session = await this.getSession(sessionId);
     if (!session || !session.parentSessionId) {
       return null;
@@ -496,7 +496,7 @@ export class FlowSessionRepository {
   /**
    * Get all root sessions (sessions without parents) for a user
    */
-  async getRootSessions(userId: string): Promise<FlowSession[]> {
+  async getRootSessions(userId: string): Promise<SessionData[]> {
     const result = await this.pool.query(
       `SELECT * FROM flow_sessions
        WHERE user_id = $1 AND parent_session_id IS NULL
@@ -510,8 +510,8 @@ export class FlowSessionRepository {
   /**
    * Get the full path from root to the given session (ancestors)
    */
-  async getSessionPath(sessionId: string): Promise<FlowSession[]> {
-    const path: FlowSession[] = [];
+  async getSessionPath(sessionId: string): Promise<SessionData[]> {
+    const path: SessionData[] = [];
     let currentId: string | undefined = sessionId;
 
     while (currentId) {
@@ -528,8 +528,8 @@ export class FlowSessionRepository {
   /**
    * Get the entire subtree (all descendants) of a session
    */
-  async getSubtree(sessionId: string): Promise<FlowSession[]> {
-    const subtree: FlowSession[] = [];
+  async getSubtree(sessionId: string): Promise<SessionData[]> {
+    const subtree: SessionData[] = [];
     const queue: string[] = [sessionId];
 
     while (queue.length > 0) {
@@ -585,14 +585,14 @@ export class FlowSessionRepository {
           withDescendants: true,
         });
 
-        console.log(`[FlowSessionRepository] Deleted session '${sessionId}' and ${ids.length - 1} descendants`);
+        console.log(`[SessionDataRepository] Deleted session '${sessionId}' and ${ids.length - 1} descendants`);
       }
     } else {
       // Just delete this session, children will have parent_session_id set to NULL due to ON DELETE SET NULL
       const result = await this.pool.query('DELETE FROM flow_sessions WHERE id = $1 RETURNING id', [sessionId]);
 
       if (result.rowCount === 0) {
-        console.log(`[FlowSessionRepository] Session '${sessionId}' not found`);
+        console.log(`[SessionDataRepository] Session '${sessionId}' not found`);
         return false;
       }
 
@@ -603,7 +603,7 @@ export class FlowSessionRepository {
         withDescendants: false,
       });
 
-      console.log(`[FlowSessionRepository] Deleted session '${sessionId}'`);
+      console.log(`[SessionDataRepository] Deleted session '${sessionId}'`);
     }
 
     return true;

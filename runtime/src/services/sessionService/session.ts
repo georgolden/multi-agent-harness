@@ -1,27 +1,28 @@
 import type { App } from '../../app.js';
-import type {
-  FlowSession,
-  FlowMessage,
-  FlowSessionStatus,
-  ToolSchema,
-  SkillSchema,
-  ToolLog,
-  SkillLog,
-  FlowSessionTreeNode,
-} from '../../data/flowSessionRepository/types.js';
+
 import type { FileInfo } from '../../utils/file.js';
 import type { FolderInfo } from '../../utils/folder.js';
 import { AgentTool } from '../../types.js';
-import type { SessionHooks } from './types.js';
+import type {
+  SessionData,
+  SessionDataTreeNode,
+  SessionHooks,
+  SessionMessage,
+  SessionStatus,
+  SkillLog,
+  SkillSchema,
+  ToolLog,
+  ToolSchema,
+} from './types.js';
 
 /**
- * Session — a live, self-updating object backed by the FlowSessionRepository.
+ * Session — a live, self-updating object backed by the SessionDataRepository.
  *
  * All mutating methods update the repository immediately and keep the in-memory
  * data in sync.  Every mutating method returns `Promise<this>` to allow chaining.
  * Lifecycle hooks fire after each repository update.
  *
- * Tree-query methods return raw FlowSession data (not Session objects) because
+ * Tree-query methods return raw SessionData data (not Session objects) because
  * related sessions are read-only in that context.
  *
  * Usage:
@@ -32,12 +33,12 @@ import type { SessionHooks } from './types.js';
  *   await session.respond(filledTemplate).then(s => s.complete());
  */
 export class Session {
-  sessionData: FlowSession;
+  sessionData: SessionData;
   app: App;
   hooks: SessionHooks;
   tools: AgentTool[] = [];
 
-  constructor(sessionData: FlowSession, app: App, hooks: SessionHooks = {}) {
+  constructor(sessionData: SessionData, app: App, hooks: SessionHooks = {}) {
     this.sessionData = sessionData;
     this.app = app;
     this.hooks = hooks;
@@ -60,25 +61,25 @@ export class Session {
   get userPromptTemplate(): string | undefined {
     return this.sessionData.userPromptTemplate;
   }
-  get status(): FlowSessionStatus {
+  get status(): SessionStatus {
     return this.sessionData.status;
   }
   get parentSessionId(): string | undefined {
     return this.sessionData.parentSessionId;
   }
-  get messages(): FlowMessage[] {
+  get messages(): SessionMessage[] {
     return this.sessionData.messages;
   }
-  get activeMessages(): FlowMessage[] {
+  get activeMessages(): SessionMessage[] {
     return this.sessionData.activeMessages;
   }
-  get messageWindowConfig(): FlowSession['messageWindowConfig'] {
+  get messageWindowConfig(): SessionData['messageWindowConfig'] {
     return this.sessionData.messageWindowConfig;
   }
   get contextFiles(): FileInfo[] {
     return this.sessionData.contextFiles;
   }
-  get contextFoldersInfos(): FlowSession['contextFoldersInfos'] {
+  get contextFoldersInfos(): SessionData['contextFoldersInfos'] {
     return this.sessionData.contextFoldersInfos;
   }
   get toolSchemas(): ToolSchema[] {
@@ -87,10 +88,10 @@ export class Session {
   get skillSchemas(): SkillSchema[] {
     return this.sessionData.skillSchemas;
   }
-  get callLlmOptions(): FlowSession['callLlmOptions'] {
+  get callLlmOptions(): SessionData['callLlmOptions'] {
     return this.sessionData.callLlmOptions;
   }
-  get agentLoopConfig(): FlowSession['agentLoopConfig'] {
+  get agentLoopConfig(): SessionData['agentLoopConfig'] {
     return this.sessionData.agentLoopConfig;
   }
   get toolLogs(): ToolLog[] {
@@ -107,7 +108,7 @@ export class Session {
   }
 
   /** The most recent message in the active window, or undefined. */
-  lastMessage(): FlowMessage | undefined {
+  lastMessage(): SessionMessage | undefined {
     return this.sessionData.activeMessages[this.sessionData.activeMessages.length - 1];
   }
 
@@ -122,7 +123,7 @@ export class Session {
   // ─── Message mutations ────────────────────────────────────────────────────
 
   /** Add messages; refreshes the active window and fires onMessage hook. */
-  async addMessages(messages: Omit<FlowMessage, 'timestamp'>[]): Promise<this> {
+  async addMessages(messages: Omit<SessionMessage, 'timestamp'>[]): Promise<this> {
     const activeMessages = await this.app.data.flowSessionRepository.addMessages(this.sessionData.id, messages);
     this.sessionData.activeMessages = activeMessages;
     await this.hooks.onMessage?.(this);
@@ -138,7 +139,10 @@ export class Session {
   }
 
   async addContextFoldersInfos(folders: FolderInfo[]): Promise<this> {
-    const contextFoldersInfos = await this.app.data.flowSessionRepository.addContextFoldersInfos(this.sessionData.id, folders);
+    const contextFoldersInfos = await this.app.data.flowSessionRepository.addContextFoldersInfos(
+      this.sessionData.id,
+      folders,
+    );
     this.sessionData.contextFoldersInfos = contextFoldersInfos;
     return this;
   }
@@ -197,27 +201,27 @@ export class Session {
     return this;
   }
 
-  // ─── Tree queries (return raw FlowSession data) ───────────────────────────
+  // ─── Tree queries (return raw SessionData data) ───────────────────────────
 
-  async parent(): Promise<FlowSession | null> {
+  async parent(): Promise<SessionData | null> {
     return this.app.data.flowSessionRepository.getParent(this.sessionData.id);
   }
 
-  async children(): Promise<FlowSession[]> {
+  async children(): Promise<SessionData[]> {
     return this.app.data.flowSessionRepository.getChildren(this.sessionData.id);
   }
 
-  async childrenTreeNodes(): Promise<FlowSessionTreeNode[]> {
+  async childrenTreeNodes(): Promise<SessionDataTreeNode[]> {
     return this.app.data.flowSessionRepository.getChildrenTreeNodes(this.sessionData.id);
   }
 
   /** Full ancestor chain from root to this session. */
-  async path(): Promise<FlowSession[]> {
+  async path(): Promise<SessionData[]> {
     return this.app.data.flowSessionRepository.getSessionPath(this.sessionData.id);
   }
 
   /** All descendants (this session + children recursively). */
-  async subtree(): Promise<FlowSession[]> {
+  async subtree(): Promise<SessionData[]> {
     return this.app.data.flowSessionRepository.getSubtree(this.sessionData.id);
   }
 
@@ -238,7 +242,7 @@ export class Session {
 
   // ─── Internal ─────────────────────────────────────────────────────────────
 
-  private async _updateStatus(to: FlowSessionStatus): Promise<this> {
+  private async _updateStatus(to: SessionStatus): Promise<this> {
     const from = this.sessionData.status;
     await this.app.data.flowSessionRepository.updateStatus(this.sessionData.id, to);
     this.sessionData.status = to;

@@ -1,7 +1,7 @@
 /**
  * Log utility functions for tool and skill execution logging
  */
-import type { ToolLog, SkillLog } from './types.js';
+import type { ToolLog, SkillLog } from '../../services/sessionService/types.js';
 
 /**
  * Filter tool logs by tool name
