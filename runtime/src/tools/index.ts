@@ -89,6 +89,24 @@ import { createWriteTool, writeTool } from './write.js';
 /** Tool type (AgentTool from pi-ai) */
 export type Tool = AgentTool<any>;
 
+// Tool schema - matches real tool format
+export interface ToolSchema {
+  name: string;
+  description: string;
+  parameters: Record<string, any>; // JSON schema for parameters
+}
+
+// Tool execution log
+export interface ToolLog {
+  callId: string;
+  name: string;
+  input: string;
+  output: string;
+  startedAt: Date;
+  endedAt: Date;
+  status: 'success' | 'error';
+}
+
 // Default tools for full access mode (using process.cwd())
 export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool];
 

@@ -2,7 +2,24 @@ import path from 'path';
 import { readdir, readFile } from 'fs/promises';
 import { glob } from 'glob';
 import { parseFrontmatter } from '../utils/frontmatter.js';
-import type { SkillSchema } from '../data/flowSessionRepository/types.js';
+
+// Skill schema - matches Skill type
+export interface SkillSchema {
+  name: string;
+  description: string;
+  location: string;
+}
+
+// Skill execution log
+export interface SkillLog {
+  callId: string;
+  name: string;
+  input: string;
+  output: string;
+  startedAt: Date;
+  endedAt: Date;
+  status: 'success' | 'error';
+}
 
 export type SkillFile = {
   path: string;
