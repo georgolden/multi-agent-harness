@@ -2,7 +2,8 @@
  * LLM integration using OpenAI-compatible API (DeepSeek)
  */
 import { OpenAI } from 'openai';
-import type { ChatCompletion, ChatCompletionMessage, ChatCompletionMessageParam } from 'openai/resources';
+import type { ChatCompletion, ChatCompletionMessageParam } from 'openai/resources';
+import type { LLMMessageData } from './message.js';
 
 export type CallLlmOptions = {
   temperature?: number;
@@ -15,7 +16,7 @@ export type CallLlmOptions = {
  * Simple LLM call without tools
  */
 export async function callLlm(
-  messages: ChatCompletionMessageParam[],
+  messages: LLMMessageData[],
   { temperature = 0.3, thinking = true, toolChoice = 'auto', responseFormat = 'text' }: CallLlmOptions = {},
 ): Promise<string> {
   const apiKey = process.env.OPENROUTER_API_KEY;
@@ -31,13 +32,13 @@ export async function callLlm(
 
   const response = await client.chat.completions.create({
     model: 'moonshotai/kimi-k2.5',
-    messages,
+    messages: messages as ChatCompletionMessageParam[],
     temperature: temperature,
     tool_choice: toolChoice,
     response_format: { type: responseFormat },
     // @ts-expect-error - OpenRouter supports extra_body for provider-specific options
     extra_body: {
-      thinking: { type: thinking ? 'enabled' : 'disabled' }, // or 'enabled' for thinking mode
+      thinking: { type: thinking ? 'enabled' : 'disabled' },
     },
   });
 
@@ -48,7 +49,7 @@ export async function callLlm(
  * LLM call with tool use support
  */
 export async function callLlmWithTools(
-  messages: ChatCompletionMessageParam[],
+  messages: LLMMessageData[],
   tools: OpenAI.ChatCompletionTool[],
   { temperature = 0.3, thinking = true, toolChoice = 'auto', responseFormat = 'text' }: CallLlmOptions = {},
 ): Promise<ChatCompletion.Choice[]> {
@@ -65,14 +66,14 @@ export async function callLlmWithTools(
 
   const response = await client.chat.completions.create({
     model: 'moonshotai/kimi-k2.5',
-    messages,
+    messages: messages as ChatCompletionMessageParam[],
     tools,
     tool_choice: toolChoice,
     response_format: { type: responseFormat },
     temperature: temperature,
     // @ts-expect-error - OpenRouter supports extra_body for provider-specific options
     extra_body: {
-      thinking: { type: thinking ? 'enabled' : 'disabled' }, // or 'enabled' for thinking mode
+      thinking: { type: thinking ? 'enabled' : 'disabled' },
     },
   });
 

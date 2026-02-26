@@ -1,7 +1,6 @@
 import type { App } from '../../app.js';
-import type { CreateSessionParams, FlowSession, FlowSessionStatus } from '../../data/flowSessionRepository/types.js';
 import { Session } from './session.js';
-import type { SessionHooks } from './types.js';
+import type { CreateSessionParams, SessionData, SessionHooks, SessionStatus } from './types.js';
 
 export { Session } from './session.js';
 export type { SessionHooks } from './types.js';
@@ -33,11 +32,11 @@ export class SessionService {
 
   // ─── Cross-session queries (return raw FlowSession data) ──────────────────
 
-  async getUserSessions(userId: string, status?: FlowSessionStatus): Promise<FlowSession[]> {
+  async getUserSessions(userId: string, status?: SessionStatus): Promise<SessionData[]> {
     return this.app.data.flowSessionRepository.getUserSessions(userId, status);
   }
 
-  async getRootSessions(userId: string): Promise<FlowSession[]> {
+  async getRootSessions(userId: string): Promise<SessionData[]> {
     return this.app.data.flowSessionRepository.getRootSessions(userId);
   }
 }

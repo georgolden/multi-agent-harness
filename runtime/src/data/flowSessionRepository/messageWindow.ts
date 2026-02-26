@@ -2,7 +2,7 @@
  * Message window functions - handles active message window computation
  * Implements smart windowing: keeps first N messages + sliding window of recent messages
  */
-import type { FlowMessage, MessageWindowConfig } from './types.js';
+import type { SessionMessage as FlowMessage, MessageWindowConfig } from '../../services/sessionService/types.js';
 
 /**
  * Compute the active message window based on configuration

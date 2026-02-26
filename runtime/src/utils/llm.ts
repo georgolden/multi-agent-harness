@@ -1,5 +1,5 @@
 import type { OpenAI } from 'openai';
-import { ToolSchema } from '../data/flowSessionRepository/types.js';
+import type { ToolSchema } from '../services/sessionService/types.js';
 
 export function toLLMTools(tools: ToolSchema[]): OpenAI.ChatCompletionTool[] {
   return tools.map((tool) => ({

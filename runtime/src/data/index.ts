@@ -1,17 +1,17 @@
 import { TaskRepository } from './taskRepository/index.js';
 import { UserRepository } from './userRepository/index.js';
-import { FlowSessionRepository } from './flowSessionRepository/index.js';
+import { SessionDataRepository } from './flowSessionRepository/index.js';
 import type { App } from '../app.js';
 
 export class Data {
   taskRepository: TaskRepository;
   userRepository: UserRepository;
-  flowSessionRepository: FlowSessionRepository;
+  flowSessionRepository: SessionDataRepository;
 
   constructor(app: App) {
     this.taskRepository = new TaskRepository(app);
     this.userRepository = new UserRepository(app);
-    this.flowSessionRepository = new FlowSessionRepository(app);
+    this.flowSessionRepository = new SessionDataRepository(app);
   }
 
   async start() {
