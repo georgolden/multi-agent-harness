@@ -1,18 +1,17 @@
 /**
- * PocketFlow flow for the reminder agent.
+ * Flow for the taskScheduler agent.
  * Connects all nodes in a clear, directed graph.
  */
-import { Flow } from 'pocketflow';
+import { Flow } from '../../utils/agent/flow.js';
 import { PrepareInput, DecideAction, AskUser, ToolCalls } from './nodes.js';
-import type { SharedStore } from '../../types.js';
 import { taskSchedulerInputSchema, type TaskSchedulerContext } from './types.js';
 
-export type TaskSchedulerFlow = Flow<SharedStore<TaskSchedulerContext>>;
+export type TaskSchedulerFlow = Flow<any, TaskSchedulerContext>;
 
 /**
- * Create and return the reminder agent flow
+ * Create and return the taskScheduler agent flow
  */
-export function createTaskSchedulerFlow(): Flow<SharedStore<TaskSchedulerContext>> {
+export function createTaskSchedulerFlow(): TaskSchedulerFlow {
   // Create nodes
   const prepareInput = new PrepareInput();
   const decideAction = new DecideAction();
@@ -23,8 +22,8 @@ export function createTaskSchedulerFlow(): Flow<SharedStore<TaskSchedulerContext
   prepareInput.next(decideAction);
 
   // DecideAction routes to different actions
-  decideAction.on('ask_user', askUser);
-  decideAction.on('tool_calls', toolCalls);
+  decideAction.branch('ask_user', askUser);
+  decideAction.branch('tool_calls', toolCalls);
 
   // AskUser ends the flow (response is the question)
 
@@ -32,7 +31,7 @@ export function createTaskSchedulerFlow(): Flow<SharedStore<TaskSchedulerContext
   toolCalls.next(decideAction);
 
   // Create flow starting with PrepareInput
-  return new Flow<SharedStore<TaskSchedulerContext>>(prepareInput);
+  return new Flow(prepareInput);
 }
 
 export const taskSchedulerFlow = {

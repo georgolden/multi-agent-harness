@@ -12,16 +12,15 @@
  * When the user replies, the flow is re-entered with the sessionId so
  * PrepareInput resumes the existing session and DecideAction runs again.
  */
-import { Flow } from 'pocketflow';
+import { Flow, packet } from '../../utils/agent/flow.js';
 import { PrepareInput, DecideAction, AskUser, SubmitTemplate } from './nodes.js';
-import type { SharedStore } from '../../types.js';
 import { fillTemplateInputSchema, type FillTemplateContext } from './types.js';
 import { App } from '../../app.js';
 import { User } from '../../data/userRepository/types.js';
 
-export type FillTemplateFlow = Flow<SharedStore<FillTemplateContext>>;
+export type FillTemplateFlow = Flow<any, FillTemplateContext>;
 
-export function createFillTemplateFlow(): Flow<SharedStore<FillTemplateContext>> {
+export function createFillTemplateFlow(): FillTemplateFlow {
   const prepareInput = new PrepareInput();
   const decideAction = new DecideAction();
   const askUser = new AskUser();
@@ -31,13 +30,13 @@ export function createFillTemplateFlow(): Flow<SharedStore<FillTemplateContext>>
   prepareInput.next(decideAction);
 
   // DecideAction routes based on LLM response
-  decideAction.on('ask_user', askUser);
-  decideAction.on('submit_template', submitTemplate);
+  decideAction.branch('ask_user', askUser);
+  decideAction.branch('submit_template', submitTemplate);
 
   // AskUser ends the flow run (no successor); session stays 'running'
   // SubmitTemplate ends the flow run (no successor); session marked 'completed'
 
-  return new Flow<SharedStore<FillTemplateContext>>(prepareInput);
+  return new Flow(prepareInput);
 }
 
 export const fillTemplateFlow = {
@@ -51,11 +50,8 @@ export const fillTemplateFlow = {
     { user, message, template, sessionId }: { user: User; message: string; template?: string; sessionId?: string },
   ) => {
     const flow = createFillTemplateFlow();
-    const shared: SharedStore<FillTemplateContext> = {
-      app,
-      context: { userId: user.id, message, template, sessionId },
-    };
-    await flow.run(shared);
-    return shared.context.result;
+    const context: FillTemplateContext = { userId: user.id, message, template, sessionId };
+    const result = await flow.run(packet({ context, deps: { app } }));
+    return result.data;
   },
 };

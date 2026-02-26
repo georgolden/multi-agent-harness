@@ -1,46 +1,38 @@
 /**
- * PocketFlow nodes for the reminder bot.
+ * Nodes for the taskScheduler flow using the new flow framework.
  * Each node has a clear, single responsibility.
  */
-import { Node, ParallelBatchNode } from 'pocketflow';
-import type {
-  SharedStore,
-  ChatCompletionMessage,
-  ChatCompletionMessageParam,
-  ChatCompletionMessageFunctionToolCall,
-} from '../../types.js';
-
+import { Node, packet, batch, BatchPacket } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import { createSystemPrompt } from './prompts/index.js';
 import { createToolHandler, TOOLS } from './tools.js';
 import type { App } from '../../app.js';
-import type { TaskSchedulerContext, AskUserContext, ToolCallsContext } from './types.js';
-import type { Session } from '../../services/sessionService/index.js';
+import type { TaskSchedulerContext, AskUserContext } from './types.js';
+import { AssistantMessage, UserMessage, ToolResultMessage, type LLMToolCall } from '../../utils/message.js';
 
-// PrepareInput Types
-type PrepareInputPrepResult = Session;
-type PrepareInputExecResult = 'done';
+// ─── PrepareInput ────────────────────────────────────────────────────────────
 
 /**
  * PrepareInput: Prepare all context and create flow session with user's message (runs once)
  */
-export class PrepareInput extends Node<SharedStore<TaskSchedulerContext>> {
-  async prep(shared: SharedStore<TaskSchedulerContext>): Promise<PrepareInputPrepResult> {
-    const { userId, message } = shared.context;
-    console.log(`[PrepareInput.prep] Preparing context and creating flow session for user message: "${message}"`);
+export class PrepareInput extends Node<{ app: App }, TaskSchedulerContext, any, { default: void }> {
+  async run(p: this['In']): Promise<this['Out']> {
+    const { userId, message } = p.context!;
+    const { app } = p.deps!;
+    console.log(`[PrepareInput.run] Preparing context and creating flow session for user message: "${message}"`);
 
-    const { data, services } = shared.app;
+    const { data, services } = app;
 
     // Fetch all required context
-    const userTaskSchedulers = await data.taskRepository.getTasks(userId);
+    const userTasks = await data.taskRepository.getTasks(userId);
     const timezone = await data.taskRepository.getUserTimezone(userId);
     const currentDate = new Date().toISOString();
-    const tasksTypes = shared.app.tasks.getTasksSchema();
+    const tasksSchema = app.tasks.getTasksSchema();
 
-    console.log(`[PrepareInput.prep] Found ${userTaskSchedulers.length} tasks, timezone: ${timezone}`);
+    console.log(`[PrepareInput.run] Found ${userTasks.length} tasks, timezone: ${timezone}`);
 
     // Create system prompt with all context
-    const systemPrompt = createSystemPrompt(currentDate, timezone, JSON.stringify(userTaskSchedulers), tasksTypes);
+    const systemPrompt = createSystemPrompt(currentDate, timezone, JSON.stringify(userTasks), tasksSchema);
 
     // Create flow session
     const session = await services.sessionService.create({
@@ -50,189 +42,141 @@ export class PrepareInput extends Node<SharedStore<TaskSchedulerContext>> {
     });
 
     // Add user message to session
-    const userMessage: ChatCompletionMessageParam = {
-      role: 'user',
-      content: message,
-    };
+    await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
 
-    await session.addMessages([{ message: userMessage }]);
-
-    console.log(`[PrepareInput.prep] Created session '${session.id}' with system prompt and user message`);
-    return session;
-  }
-
-  async exec(_prepRes: PrepareInputPrepResult): Promise<PrepareInputExecResult> {
-    return 'done';
-  }
-
-  async post(
-    shared: SharedStore<TaskSchedulerContext>,
-    prepRes: PrepareInputPrepResult,
-    _execRes: PrepareInputExecResult,
-  ) {
-    shared.context.session = prepRes;
-    return undefined;
+    console.log(`[PrepareInput.run] Created session '${session.id}' with system prompt and user message`);
+    return packet({ context: { ...p.context!, session }, deps: p.deps });
   }
 }
 
-// DecideAction Types
-type DecideActionPrepResult = {
-  sessionId: string;
-  systemPrompt: string;
-  conversation: ChatCompletionMessageParam[];
-};
-type DecideActionExecResult = ChatCompletionMessage;
+// ─── DecideAction ────────────────────────────────────────────────────────────
 
 /**
  * DecideAction: LLM decides what action to take using session from context
  */
-export class DecideAction extends Node<SharedStore<TaskSchedulerContext>> {
+export class DecideAction extends Node<{ app: App }, TaskSchedulerContext, any, { ask_user: void; tool_calls: void }> {
   constructor() {
-    super(3, 1); // maxRetries: 3, wait: 1s
+    super({ maxRunTries: 3, wait: 1000 });
   }
 
-  async prep(shared: SharedStore<TaskSchedulerContext>): Promise<DecideActionPrepResult> {
-    const { session } = shared.context;
+  async run(p: this['In']): Promise<this['Out']> {
+    const { session } = p.context!;
 
     if (!session) {
       throw new Error('Session is required');
     }
 
-    const conversation = session.activeMessages.map((msg) => msg.message);
+    const conversation = session.activeMessages.map((msg) => msg.message) as any[];
 
-    console.log(`[DecideAction.prep] Using session '${session.id}' from context with ${conversation.length} messages`);
+    console.log(`[DecideAction.run] Using session '${session.id}' from context with ${conversation.length} messages`);
 
-    return {
-      sessionId: session.id,
-      systemPrompt: session.systemPrompt,
-      conversation,
-    };
-  }
+    const messages = [{ role: 'system', content: session.systemPrompt }, ...conversation] as any[];
 
-  async exec(prepRes: DecideActionPrepResult): Promise<DecideActionExecResult> {
-    const { systemPrompt, conversation } = prepRes;
-
-    const messages: ChatCompletionMessageParam[] = [{ role: 'system', content: systemPrompt }, ...conversation];
-
-    console.log(`[DecideAction.exec] Calling LLM with ${messages.length} messages`);
+    console.log(`[DecideAction.run] Calling LLM with ${messages.length} messages`);
 
     const response = await callLlmWithTools(messages, TOOLS);
 
-    console.log(`[DecideAction.exec] LLM response:`, JSON.stringify(response[0].message, null, 2));
+    const assistantMsg = AssistantMessage.from(response[0].message);
+    await session.addMessages([{ message: assistantMsg.toJSON() }]);
 
-    return response[0].message;
-  }
+    console.log(`[DecideAction.run] LLM response:`, JSON.stringify(assistantMsg.toJSON(), null, 2));
 
-  async post(
-    shared: SharedStore<TaskSchedulerContext>,
-    _prepRes: DecideActionPrepResult,
-    execRes: DecideActionExecResult,
-  ) {
-    const { session } = shared.context;
-    if (!session) {
-      throw new Error('Session is required');
+    if ('toolCalls' in assistantMsg && assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0) {
+      console.log(`[DecideAction.run] Processing ${assistantMsg.toolCalls.length} tool calls`);
+      return packet({
+        context: { ...p.context!, toolCalls: assistantMsg.toolCalls },
+        branch: 'tool_calls',
+        deps: p.deps,
+      });
     }
 
-    await session.addMessages([{ message: execRes }]);
-
-    const toolCalls = execRes.tool_calls as ChatCompletionMessageFunctionToolCall[];
-
-    if (!toolCalls || toolCalls.length === 0) {
-      const { content, refusal } = execRes;
-
-      let output = '';
-      if (content) output = `${output}${content}`;
-      if (refusal) output = `${output}\n${refusal}`;
-      if (!output) output = `AI is broken try again later`;
-
-      console.log(`[DecideAction.post] Setting response to: "${output}"`);
-      shared.context.response = output;
-      return 'ask_user';
-    } else {
-      console.log(`[DecideAction.post] Processing ${toolCalls.length} tool calls`);
-      shared.context.toolCalls = toolCalls;
-      return 'tool_calls';
-    }
-  }
-
-  async execFallback(_prepRes: DecideActionPrepResult, error: Error): Promise<DecideActionExecResult> {
-    console.error('[DecideAction.error] ', error);
-    return { role: 'assistant', content: 'AI is broken try again later', refusal: null };
+    // Text response — ask user
+    const text = (assistantMsg as any).text || '';
+    console.log(`[DecideAction.run] Setting response to: "${text}"`);
+    return packet({
+      context: { ...p.context!, response: text },
+      branch: 'ask_user',
+      deps: p.deps,
+    });
   }
 }
 
-// AskUser Types
-type AskUserPrepResult = { output: string; userId: string; session: Session };
-type AskUserExecResult = 'sent';
+// ─── AskUser ──────────────────────────────────────────────────────────────────
 
 /**
  * AskUser: Send response to user and mark session as completed
  */
-export class AskUser extends Node<SharedStore<AskUserContext>> {
-  async prep(shared: SharedStore<AskUserContext>): Promise<AskUserPrepResult> {
-    const { response, userId, session } = shared.context;
+export class AskUser extends Node<{ app: App }, AskUserContext, any, { default: void }> {
+  async run(p: this['In']): Promise<this['Out']> {
+    const { response, userId, session } = p.context!;
 
-    return { output: response, userId, session: session! };
-  }
-
-  async exec({ output, userId, session }: AskUserPrepResult): Promise<AskUserExecResult> {
-    console.log(`[AskUser.exec] Sending message to userId: ${userId}, output: "${output}"`);
-    await session.respond(output);
-    return 'sent';
-  }
-
-  async post(shared: SharedStore<AskUserContext>, _prepRes: AskUserPrepResult, _execRes: AskUserExecResult) {
-    const { session } = shared.context;
-
+    console.log(`[AskUser.run] Sending message to userId: ${userId}, output: "${response}"`);
+    await session.respond(response);
     await session.complete();
-    console.log(`[AskUser.post] Marked session ${session!.id} as completed`);
+    console.log(`[AskUser.run] Marked session ${session.id} as completed`);
 
-    return undefined;
+    return packet({ context: p.context, deps: p.deps });
   }
 }
 
-// ToolCalls Types
-type ToolCallsPrepResult = {
-  tc: ChatCompletionMessageFunctionToolCall;
-  app: App;
-  userId: string;
-};
-type ToolCallsExecResult = {
-  role: 'tool';
+// ─── ToolCalls ────────────────────────────────────────────────────────────────
+
+type ToolCallResult = {
+  toolCallId: string;
+  name: string;
   content: string;
-  tool_call_id: string;
 };
 
-export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> {
-  async prep(shared: SharedStore<ToolCallsContext>): Promise<ToolCallsPrepResult[]> {
-    const { toolCalls, userId } = shared.context;
-
-    console.log(`[ToolCalls.prep] Processing ${toolCalls.length} tool calls for userId: ${userId}, userId: ${userId}`);
-    toolCalls.forEach((tc: ChatCompletionMessageFunctionToolCall, idx: number) => {
-      console.log(`[ToolCalls.prep] Tool ${idx}: ${tc.function.name}, args: ${tc.function.arguments}`);
+/**
+ * ToolCalls: Execute tool calls in parallel and process results
+ */
+export class ToolCalls extends Node<{ app: App }, TaskSchedulerContext, LLMToolCall, { default: void }> {
+  async preprocess(p: this['In']): Promise<any> {
+    const { toolCalls } = p.context as any;
+    console.log(`[ToolCalls.preprocess] Processing ${toolCalls.length} tool calls`);
+    return batch({
+      data: toolCalls,
+      context: p.context,
+      deps: p.deps,
     });
-    return toolCalls.map((tc: ChatCompletionMessageFunctionToolCall) => ({ tc, app: shared.app, userId }));
   }
 
-  async exec({ tc, app, userId }: ToolCallsPrepResult): Promise<ToolCallsExecResult> {
-    const args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
-    const { name } = tc.function;
+  async run(p: this['In']): Promise<any> {
+    const toolCall = p.data as LLMToolCall;
+    const { name, id } = toolCall;
 
+    const tool = TOOLS.find((t: any) => t.function?.name === name);
+    if (!tool) {
+      console.warn(`[ToolCalls.run] Tool '${name}' not found`);
+      return packet({
+        data: { toolCallId: id, name, content: `Tool '${name}' not found` } as ToolCallResult,
+        context: p.context,
+        deps: p.deps,
+      });
+    }
+
+    console.log(`[ToolCalls.run] Executing tool '${name}'`);
     const handler = createToolHandler(name);
-    const content = await handler(app, { userId }, args);
-
-    console.log(`[ToolCalls.exec] Tool ${name} returned: "${content}"`);
-
-    return { role: 'tool', content, tool_call_id: tc.id };
+    const res = await handler(p.deps!.app, p.context!, toolCall.args);
+    return packet({
+      data: { toolCallId: id, name, content: res } as ToolCallResult,
+      context: p.context,
+      deps: p.deps,
+    });
   }
 
-  async post(shared: SharedStore<ToolCallsContext>, _prepRes: ToolCallsPrepResult[], execRes: ToolCallsExecResult[]) {
-    console.log(`[ToolCalls.post] Adding ${execRes.length} tool result messages to session`);
+  async postprocess(p: BatchPacket<ToolCallResult, { app: App }, TaskSchedulerContext>): Promise<this['Out']> {
+    const results = p.data;
+    const { session } = p.context!;
 
-    const { session } = shared.context;
+    console.log(`[ToolCalls.postprocess] Adding ${results.length} tool results to session`);
 
-    await session.addMessages(execRes.map((result) => ({ message: result })));
+    const toolMessages = results.map((result) => ({
+      message: new ToolResultMessage({ toolCallId: result.toolCallId, content: result.content }).toJSON(),
+    }));
 
-    return undefined;
+    await session!.addMessages(toolMessages);
+
+    return packet({ context: p.context, deps: p.deps });
   }
 }

@@ -1,10 +1,11 @@
-import { Flow } from 'pocketflow';
+import { Flow, packet } from '../../utils/agent/flow.js';
 import { App } from '../../app.js';
-import { MessageWindowConfig } from '../../data/flowSessionRepository/types.js';
+import { MessageWindowConfig } from '../../services/sessionService/types.js';
 import { User } from '../../data/userRepository/types.js';
 import { CallLlmOptions } from '../../utils/callLlm.js';
 import { fillSystemPrompt, readFilesWithLimit, readFoldersInfos } from './utils.js';
 import { PrepareInput, DecideAction, AskUser, ToolCalls } from './nodes.js';
+import type { AgenticLoopContext } from './types.js';
 
 export interface AgenticLoopSchema {
   flowName: string;
@@ -30,7 +31,7 @@ export type AgentLoopConfig = {
   useKnowledgeBase: boolean;
 };
 
-export async function createAgetnicLoopFlow() {
+export function createAgenticLoopFlow() {
   const prepareInput = new PrepareInput();
   const decideAction = new DecideAction();
   const askUser = new AskUser();
@@ -40,8 +41,8 @@ export async function createAgetnicLoopFlow() {
   prepareInput.next(decideAction);
 
   // DecideAction routes to different actions
-  decideAction.on('ask_user', askUser);
-  decideAction.on('tool_calls', toolCalls);
+  decideAction.branch('ask_user', askUser);
+  decideAction.branch('tool_calls', toolCalls);
 
   // AskUser ends the flow (response is the question)
 
@@ -52,7 +53,7 @@ export async function createAgetnicLoopFlow() {
   return new Flow(prepareInput);
 }
 
-export async function prepareAgenticLoop(flow: Flow, app: App, schema: AgenticLoopSchema, user: User) {
+export async function prepareAgenticLoop(flow: Flow<any, AgenticLoopContext>, app: App, schema: AgenticLoopSchema, user: User) {
   const {
     flowName,
     systemPrompt,
@@ -87,5 +88,11 @@ export async function prepareAgenticLoop(flow: Flow, app: App, schema: AgenticLo
     agentLoopConfig,
   });
 
-  return (message: string) => flow.run({ app, context: { session, user, message, tools, skills } });
+  return (message: string) =>
+    flow.run(
+      packet({
+        context: { session, user, message, tools, skills, iterations: 0 },
+        deps: { app },
+      }),
+    );
 }

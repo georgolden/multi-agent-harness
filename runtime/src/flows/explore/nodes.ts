@@ -1,29 +1,24 @@
 /**
- * PocketFlow nodes for the reminder bot.
+ * Nodes for the explore agent flow.
  * Each node has a clear, single responsibility.
  */
-import { Node, ParallelBatchNode } from 'pocketflow';
-import type {
-  SharedStore,
-  ChatCompletionMessage,
-  ChatCompletionMessageParam,
-  ChatCompletionMessageFunctionToolCall,
-  AgentTool,
-  TextContent,
-  ImageContent,
-} from '../../types.js';
-
+import { Node, packet, batch, exit, type SinglePacket, type BatchPacket } from '../../utils/agent/flow.js';
+import type { AgentTool } from '../../types.js';
 import { CallLlmOptions, callLlmWithTools } from '../../utils/callLlm.js';
 import { createSystemPrompt, wrapUserPrompt } from './prompts/index.js';
 import { TOOLS } from './tools.js';
 import type { SubmitResult } from './tools.js';
-import type { App } from '../../app.js';
-import type { ExploreContext, DecideActionContext, ToolCallsContext } from './types.js';
-import type { Session } from '../../services/sessionService/index.js';
 import { toLLMTools } from '../../utils/llm.js';
-import { User } from '../../data/userRepository/types.js';
 import { FolderInfo } from '../../utils/folder.js';
 import { FileInfo } from '../../utils/file.js';
+import {
+  SystemMessage,
+  UserMessage,
+  AssistantMessage,
+  AssistantToolCallMessage,
+  ToolResultMessage,
+} from '../../utils/message.js';
+import type { ExploreDeps, ExploreContext, ExploreInput, ExploreResult, ToolCallItem, ToolResult } from './types.js';
 
 const MAX_ITERATIONS = 5;
 
@@ -31,29 +26,23 @@ const CALL_LLM_OPTIONS: CallLlmOptions = {
   toolChoice: 'required',
 };
 
-// PrepareInput Types
-type PrepareInputPrepResult = Session;
-type PrepareInputExecResult = 'done';
-
 /**
  * PrepareInput: Prepare all context and create flow session with user's message (runs once)
  */
-export class PrepareInput extends Node<SharedStore<ExploreContext>> {
-  async prep(shared: SharedStore<ExploreContext>): Promise<PrepareInputPrepResult> {
-    const { app } = shared;
-    const { message, user, parent } = shared.context;
-    console.log(`[PrepareInput.prep] Preparing context and creating flow session for user message: "${message}"`);
+export class PrepareInput extends Node<ExploreDeps, ExploreContext, ExploreInput, { default: void }> {
+  async run(p: this['In']): Promise<this['Out']> {
+    const { app } = p.deps!;
+    const { message } = p.data!;
+    const { user, parent } = p.context!;
+    console.log(`[PrepareInput.run] Preparing context and creating flow session for user message: "${message}"`);
 
-    const { services } = shared.app;
+    const { services } = app;
 
-    // Create system prompt with all context
     const systemPrompt = createSystemPrompt();
     const userPrompt = wrapUserPrompt(message);
 
-    const readTools = app.tools.getReadOnlyTools();
-    const tools: AgentTool<any>[] = { ...readTools, ...TOOLS };
+    const tools = [...app.tools.getReadOnlyTools(), ...TOOLS];
 
-    // Create flow session
     const session = await services.sessionService.create({
       parentSessionId: parent?.id,
       userId: user.id,
@@ -62,173 +51,119 @@ export class PrepareInput extends Node<SharedStore<ExploreContext>> {
       tools,
     });
 
-    session.addAgentTools(tools);
+    session.addAgentTools(tools as AgentTool[]);
 
-    // Add user message to session
-    const userMessage: ChatCompletionMessageParam = {
-      role: 'user',
-      content: userPrompt,
-    };
+    await session.addMessages([
+      { message: new SystemMessage(systemPrompt).toJSON() },
+      { message: new UserMessage(userPrompt).toJSON() },
+    ]);
 
-    await session.addMessages([{ message: { role: 'system', content: systemPrompt } }, { message: userMessage }]);
+    console.log(`[PrepareInput.run] Created session '${session.id}' with system prompt and user message`);
 
-    console.log(`[PrepareInput.prep] Created session '${session.id}' with system prompt and user message`);
-    return session;
-  }
-
-  async exec(_prepRes: PrepareInputPrepResult): Promise<PrepareInputExecResult> {
-    return 'done';
-  }
-
-  async post(
-    shared: SharedStore<DecideActionContext>,
-    prepRes: PrepareInputPrepResult,
-    _execRes: PrepareInputExecResult,
-  ) {
-    shared.context.session = prepRes;
-    return undefined;
+    return packet({ context: { ...p.context!, session }, deps: p.deps });
   }
 }
 
-// DecideAction Types
-type DecideActionPrepResult = {
-  session: Session;
-  iterations: number;
-};
-type DecideActionExecResult = ChatCompletionMessage;
-
 /**
- * DecideAction: LLM decides what action to take using session from context
+ * DecideAction: LLM decides what action to take using session from context.
+ * Returns a batch of tool calls if any, or loops back.
  */
-export class DecideAction extends Node<SharedStore<DecideActionContext>> {
+export class DecideAction extends Node<ExploreDeps, ExploreContext, void, { tool_calls: ToolCallItem; loop: void }> {
   constructor() {
-    super(3, 1); // maxRetries: 3, wait: 1s
+    super({ maxRunTries: 3, wait: 1000 });
   }
 
-  async prep(shared: SharedStore<DecideActionContext>): Promise<DecideActionPrepResult> {
-    const { session, iterations } = shared.context;
-
-    return {
-      session,
-      iterations,
-    };
-  }
-
-  async exec(prepRes: DecideActionPrepResult): Promise<DecideActionExecResult> {
-    const { session, iterations } = prepRes;
+  async run(p: this['In']): Promise<this['Out']> {
+    const { session, iterations } = p.context!;
+    if (!session) throw new Error('Session not initialized');
 
     const messages = session.activeMessages.map((msg) => msg.message);
 
     if (iterations >= MAX_ITERATIONS) {
-      messages.push({
-        role: 'user',
-        content: 'MAX RETRIES NUMBER EXCEED - CALL submit_result tool immediately with best you can provide',
-      });
+      messages.push(
+        new UserMessage(
+          'MAX RETRIES NUMBER EXCEED - CALL submit_result tool immediately with best you can provide',
+        ).toJSON(),
+      );
     }
 
-    console.log(`[DecideAction.exec] Calling LLM with ${messages.length} messages`);
+    console.log(`[DecideAction.run] Calling LLM with ${messages.length} messages`);
 
     const response = await callLlmWithTools(messages, toLLMTools(session.toolSchemas), CALL_LLM_OPTIONS);
 
-    console.log(`[DecideAction.exec] LLM response:`, JSON.stringify(response[0].message, null, 2));
+    const assistantMsg = AssistantMessage.from(response[0].message);
+    console.log(`[DecideAction.run] LLM response:`, JSON.stringify(assistantMsg.toJSON(), null, 2));
 
-    return response[0].message;
-  }
+    await session.addMessages([{ message: assistantMsg.toJSON() }]);
 
-  async post(shared: SharedStore<ToolCallsContext>, _prepRes: DecideActionPrepResult, execRes: DecideActionExecResult) {
-    const { session } = shared.context;
-
-    await session.addMessages([{ message: execRes }]);
-
-    const toolCalls = execRes.tool_calls as ChatCompletionMessageFunctionToolCall[];
-
-    if (!toolCalls || toolCalls.length === 0) {
-      const { content, refusal } = execRes;
-
-      let output = '';
-      if (content) output = `${output}${content}`;
-      if (refusal) output = `${output}\n${refusal}`;
-      output = output + '\n retry if failure or call submit_result if it makes no sense to re-try';
-      await session.addMessages([{ message: { role: 'user', content: output } }]);
-      shared.context.iterations++;
-      return 'loop';
-    } else {
-      console.log(`[DecideAction.post] Processing ${toolCalls.length} tool calls`);
-      shared.context.toolCalls = toolCalls;
-      return 'tool_calls';
+    if (assistantMsg instanceof AssistantToolCallMessage) {
+      console.log(`[DecideAction.run] Branching to tool_calls with ${assistantMsg.toolCalls.length} calls`);
+      const items: ToolCallItem[] = assistantMsg.toolCalls.map((toolCall) => ({ toolCall }));
+      return batch({ data: items, context: p.context, branch: 'tool_calls', deps: p.deps });
     }
-  }
 
-  async execFallback(_prepRes: DecideActionPrepResult, error: Error): Promise<DecideActionExecResult> {
-    console.error('[DecideAction.error] ', error);
-    return { role: 'assistant', content: 'AI is broken try again later', refusal: null };
+    // No tool calls — prompt to retry or submit
+    const errorText = 'error' in assistantMsg ? (assistantMsg as any).error : (assistantMsg as any).text;
+    const retryMsg = `${errorText}\n retry if failure or call submit_result if it makes no sense to re-try`;
+    await session.addMessages([{ message: new UserMessage(retryMsg).toJSON() }]);
+
+    return packet({
+      context: { ...p.context!, iterations: p.context!.iterations + 1 },
+      branch: 'loop',
+      deps: p.deps,
+    });
   }
 }
 
-// ToolCalls Types
-type ToolCallsPrepResult = {
-  tc: ChatCompletionMessageFunctionToolCall;
-  app: App;
-  session: Session;
-  user: User;
-};
-type ToolCallsExecResult = {
-  output: string;
-  toolCallId: string;
-  name: string;
-  args: any;
-};
+/**
+ * ToolCalls: Execute tools and process results.
+ * run() handles a single tool call; postprocess() assembles all results.
+ */
+export class ToolCalls extends Node<ExploreDeps, ExploreContext, ToolCallItem, { loop: void; exit: ExploreResult }> {
+  async run(p: this['In']): Promise<SinglePacket<ToolResult, this['Deps'], this['Ctx']>> {
+    const { toolCall } = p.data!;
+    const { app } = p.deps!;
+    const { session } = p.context!;
+    if (!session) throw new Error('Session not initialized');
 
-export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> {
-  async prep(shared: SharedStore<ToolCallsContext>): Promise<ToolCallsPrepResult[]> {
-    const { toolCalls, session, user } = shared.context;
+    const tool = session.getAgentTool(toolCall.name);
+    if (!tool) throw new Error(`Tool ${toolCall.name} not found`);
 
-    toolCalls.forEach((tc: ChatCompletionMessageFunctionToolCall, idx: number) => {
-      console.log(`[ToolCalls.prep] Tool ${idx}: ${tc.function.name}, args: ${tc.function.arguments}`);
+    const { content } = await tool.execute(app, toolCall.args, { toolCallId: toolCall.id });
+    const output = (content as { text: string }[])[0].text;
+
+    console.log(`[ToolCalls.run] Tool ${toolCall.name} returned: "${JSON.stringify(content)}"`);
+
+    return packet({
+      data: { output, toolCallId: toolCall.id, name: toolCall.name, args: toolCall.args } as ToolResult,
+      context: p.context,
+      deps: p.deps,
     });
-    return toolCalls.map((tc: ChatCompletionMessageFunctionToolCall) => ({ tc, app: shared.app, session, user }));
   }
 
-  async exec({ tc, app, session }: ToolCallsPrepResult): Promise<ToolCallsExecResult> {
-    const args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
-    const { name } = tc.function;
+  async postprocess(p: BatchPacket<ToolResult, this['Deps'], this['Ctx']>): Promise<this['Out']> {
+    const results = p.data;
+    console.log(`[ToolCalls.postprocess] Processing ${results.length} tool results`);
 
-    const tool = session.getAgentTool(name);
-    if (!tool) throw new Error(`Tool ${name} not found`);
+    const { session } = p.context!;
+    if (!session) throw new Error('Session not initialized');
 
-    const { content } = await tool.execute(app, args, { toolCallId: tc.id });
-    const output = (content as TextContent[])[0].text;
+    const submitResultExec = results.find((r) => r.name === 'submit_result');
+    const otherResults = results.filter((r) => r.name !== 'submit_result');
 
-    console.log(`[ToolCalls.exec] Tool ${name} returned: "${JSON.stringify(content)}"`);
-
-    return { output, toolCallId: tc.id, name, args };
-  }
-
-  async post(shared: SharedStore<ToolCallsContext>, _prepRes: ToolCallsPrepResult[], execRes: ToolCallsExecResult[]) {
-    console.log(`[ToolCalls.post] Processing ${execRes.length} tool results`);
-
-    const { session } = shared.context;
-
-    // Separate submit_result from other tools
-    const submitResultExec = execRes.find((r) => r.name === 'submit_result');
-    const otherResults = execRes.filter((r) => r.name !== 'submit_result');
-
-    // Process all non-submit_result tools
-    const toolMessages: { message: { role: 'tool'; content: string; tool_call_id: string } }[] = [];
+    const toolMessages: { message: ReturnType<ToolResultMessage['toJSON']> }[] = [];
 
     for (const result of otherResults) {
-      // Add tool role message for every tool
       toolMessages.push({
-        message: { role: 'tool', content: result.output, tool_call_id: result.toolCallId },
+        message: new ToolResultMessage({ toolCallId: result.toolCallId, content: result.output }).toJSON(),
       });
 
-      // Persist file/folder content into session context
       if (result.name === 'read') {
         await session.addContextFiles([
-          { path: result.args.path, category: 'text', content: { encoding: 'utf-8', data: result.output } },
+          { path: result.args.path as string, category: 'text', content: { encoding: 'utf-8', data: result.output } },
         ]);
       } else if (result.name === 'tree' || result.name === 'ls') {
-        const folderPath: string = result.args.path || '.';
+        const folderPath = (result.args.path as string) || '.';
         await session.addContextFoldersInfos([{ path: folderPath, tree: result.output }]);
       }
     }
@@ -237,11 +172,9 @@ export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> 
       await session.addMessages(toolMessages);
     }
 
-    // Handle submit_result
     if (submitResultExec) {
       const args = submitResultExec.args as SubmitResult;
 
-      // Collect files and folders referenced in the result context
       const contextFiles: FileInfo[] = [];
       const contextFoldersInfos: FolderInfo[] = [];
 
@@ -255,18 +188,29 @@ export class ToolCalls extends ParallelBatchNode<SharedStore<ToolCallsContext>> 
         }
       }
 
-      shared.context.result = { args, contextFiles, contextFoldersInfos };
+      const result: ExploreResult = { args, contextFiles, contextFoldersInfos };
 
-      // Add the submit_result tool message to session
       await session.addMessages([
-        { message: { role: 'tool', content: submitResultExec.output, tool_call_id: submitResultExec.toolCallId } },
+        {
+          message: new ToolResultMessage({
+            toolCallId: submitResultExec.toolCallId,
+            content: submitResultExec.output,
+          }).toJSON(),
+        },
       ]);
 
       await session.complete();
-      console.log(`[ToolCalls.post] submit_result processed — session ${session.id} completed`);
-      return 'done';
+      console.log(`[ToolCalls.postprocess] submit_result processed — session ${session.id} completed`);
+      return exit({ data: result, context: p.context, deps: p.deps });
     }
-    shared.context.iterations++;
-    return 'loop';
+
+    return packet({ context: { ...p.context!, iterations: p.context!.iterations + 1 }, branch: 'loop', deps: p.deps });
+  }
+
+  async fallback(p: this['InBatchError'], err: AggregateError): Promise<this['Out']> {
+    console.error(`[ToolCalls.fallback] ${err.message}`, err.errors);
+    const { session } = p.context!;
+    if (!session) throw new Error('Session not initialized');
+    return packet({ context: { ...p.context!, iterations: p.context!.iterations + 1 }, branch: 'loop', deps: p.deps });
   }
 }

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import 'dotenv/config';
 import { createTaskSchedulerFlow } from './flow.js';
+import { packet } from '../../utils/agent/flow.js';
 import { App } from '../../app.js';
-import { SharedStore } from '../../types.js';
 import { TaskSchedulerContext } from './types.js';
 import { Task } from '../../data/taskRepository/types.js';
 import { Tasks } from '../../tasks/index.js';
@@ -64,6 +64,10 @@ function setupTestApp() {
         }));
         session.messages.push(...fullMessages);
         session.activeMessages = [...session.messages];
+        return session;
+      },
+      async respond(message: string) {
+        mockBus.emit('session:respond', { session, message });
         return session;
       },
       async complete() {
@@ -146,9 +150,8 @@ describe('Task Schedule Flow Integration', () => {
       userId: 'user-123',
       message: 'Remind me to check the oven in 5 minutes',
     };
-    const shared: SharedStore<TaskSchedulerContext> = { app, context };
 
-    await flow.run(shared);
+    await flow.run(packet({ context, deps: { app } }));
 
     // Verify tool call
     expect(mockStorage.saveTask).toHaveBeenCalled();
@@ -162,10 +165,9 @@ describe('Task Schedule Flow Integration', () => {
 
     // Verify final response
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'askUser',
+      'session:respond',
       expect.objectContaining({
-        userId: 'user-123',
-        message: expect.stringMatching(/check the oven/i), // LLM usually repeats the text
+        message: expect.stringMatching(/check the oven/i),
       }),
     );
   }, 90000); // Increase timeout for LLM
@@ -177,9 +179,8 @@ describe('Task Schedule Flow Integration', () => {
       userId: 'user-123',
       message: 'Remind me to drink water every hour',
     };
-    const shared: SharedStore<TaskSchedulerContext> = { app, context };
 
-    await flow.run(shared);
+    await flow.run(packet({ context, deps: { app } }));
 
     // Verify tool call
     expect(mockStorage.saveTask).toHaveBeenCalled();
@@ -218,18 +219,16 @@ describe('Task Schedule Flow Integration', () => {
       userId: 'user-123',
       message: 'What are my reminders?',
     };
-    const shared: SharedStore<TaskSchedulerContext> = { app, context };
 
-    await flow.run(shared);
+    await flow.run(packet({ context, deps: { app } }));
 
     // Verify taskRepository was queried
     expect(mockStorage.getTasks).toHaveBeenCalledWith('user-123');
 
     // Verify response mentions the reminder
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'askUser',
+      'session:respond',
       expect.objectContaining({
-        userId: 'user-123',
         message: expect.stringMatching(/Buy groceries/i),
       }),
     );
@@ -260,9 +259,8 @@ describe('Task Schedule Flow Integration', () => {
       userId: 'user-123',
       message: 'Cancel the reminder with ID rem-to-cancel',
     };
-    const shared: SharedStore<TaskSchedulerContext> = { app, context };
 
-    await flow.run(shared);
+    await flow.run(packet({ context, deps: { app } }));
 
     // Verify cancellation
     expect(mockStorage.deleteTask).toHaveBeenCalledWith('rem-to-cancel');
@@ -270,9 +268,8 @@ describe('Task Schedule Flow Integration', () => {
 
     // Verify confirmation
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'askUser',
+      'session:respond',
       expect.objectContaining({
-        userId: 'user-123',
         message: expect.stringMatching(/cancel/i),
       }),
     );
@@ -285,9 +282,8 @@ describe('Task Schedule Flow Integration', () => {
       userId: 'user-123',
       message: 'Schedule personalAssistantLookup flow in 10 minutes with message: what are my time spending for today',
     };
-    const shared: SharedStore<TaskSchedulerContext> = { app, context };
 
-    await flow.run(shared);
+    await flow.run(packet({ context, deps: { app } }));
 
     // Verify tool call
     expect(mockStorage.saveTask).toHaveBeenCalled();
@@ -302,9 +298,8 @@ describe('Task Schedule Flow Integration', () => {
 
     // Verify final response
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'askUser',
+      'session:respond',
       expect.objectContaining({
-        userId: 'user-123',
         message: expect.stringMatching(/personalAssistantLookup|scheduled|agent/i),
       }),
     );
@@ -318,9 +313,8 @@ describe('Task Schedule Flow Integration', () => {
       message:
         'Run personalAssistantLookup flow every day at 9am with the message: what are my time spending for today',
     };
-    const shared: SharedStore<TaskSchedulerContext> = { app, context };
 
-    await flow.run(shared);
+    await flow.run(packet({ context, deps: { app } }));
 
     // Verify tool call
     expect(mockStorage.saveTask).toHaveBeenCalled();
@@ -336,9 +330,8 @@ describe('Task Schedule Flow Integration', () => {
 
     // Verify final response
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'askUser',
+      'session:respond',
       expect.objectContaining({
-        userId: 'user-123',
         message: expect.stringMatching(/personalAssistantLookup|scheduled|agent|daily/i),
       }),
     );
@@ -383,25 +376,22 @@ describe('Task Schedule Flow Integration', () => {
       userId: 'user-123',
       message: 'What are my scheduled tasks?',
     };
-    const shared: SharedStore<TaskSchedulerContext> = { app, context };
 
-    await flow.run(shared);
+    await flow.run(packet({ context, deps: { app } }));
 
     // Verify taskRepository was queried
     expect(mockStorage.getTasks).toHaveBeenCalledWith('user-123');
 
-    // Verify response mentions both tasks
+    // Verify response mentions both tasks (single respond call containing both)
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'askUser',
+      'session:respond',
       expect.objectContaining({
-        userId: 'user-123',
         message: expect.stringMatching(/Buy groceries/i),
       }),
     );
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'askUser',
+      'session:respond',
       expect.objectContaining({
-        userId: 'user-123',
         message: expect.stringMatching(/personalAssistantLookup|time spending/i),
       }),
     );

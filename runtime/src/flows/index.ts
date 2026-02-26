@@ -1,4 +1,3 @@
-import type { Flow } from 'pocketflow';
 import type { TSchema } from '@sinclair/typebox';
 import { App } from '../app.js';
 import { taskSchedulerFlow } from './taskScheduler/flow.js';
@@ -8,7 +7,7 @@ type AgentFlow = {
   name: string;
   description: string;
   parameters: TSchema;
-  create: () => Flow;
+  create: () => any;
 };
 
 export class Flows {

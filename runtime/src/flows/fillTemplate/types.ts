@@ -1,4 +1,4 @@
-import type { ChatCompletionMessageFunctionToolCall } from '../../types.js';
+import type { LLMToolCall } from '../../utils/message.js';
 import type { Session } from '../../services/sessionService/index.js';
 import { Type, type Static } from '@sinclair/typebox';
 
@@ -16,9 +16,9 @@ export interface FillTemplateContext extends FillTemplateInput {
   session?: Session;
   // Flow state
   response?: string;
-  toolCalls?: ChatCompletionMessageFunctionToolCall[];
+  toolCalls?: LLMToolCall[];
   result?: string;
 }
 
 export type AskUserContext = FillTemplateContext & { response: string };
-export type SubmitTemplateContext = FillTemplateContext & { toolCalls: ChatCompletionMessageFunctionToolCall[] };
+export type SubmitTemplateContext = FillTemplateContext & { toolCalls: LLMToolCall[] };

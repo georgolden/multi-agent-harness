@@ -1,4 +1,4 @@
-import type { ChatCompletionMessageFunctionToolCall } from '../../types.js';
+import type { LLMToolCall } from '../../utils/message.js';
 import type { Session } from '../../services/sessionService/index.js';
 import type { Tool } from '../../tools/index.js';
 import type { Skill } from '../../skills/index.js';
@@ -11,13 +11,14 @@ export interface AgenticLoopContext {
   session: Session;
   tools: Tool[];
   skills: Skill[];
+  iterations: number;
 
   // Mutable flow state
   response?: string;
-  toolCalls?: ChatCompletionMessageFunctionToolCall[];
+  toolCalls?: LLMToolCall[];
   iteration?: number;
 }
 
 // Narrowed contexts for nodes that require specific fields
 export type AskUserContext = AgenticLoopContext & { response: string };
-export type ToolCallsContext = AgenticLoopContext & { toolCalls: ChatCompletionMessageFunctionToolCall[] };
+export type ToolCallsContext = AgenticLoopContext & { toolCalls: LLMToolCall[] };

@@ -1,6 +1,6 @@
 import path from 'path';
 import { readFile, stat } from 'fs/promises';
-import { ContextFile, ContextFolderInfo } from '../../data/flowSessionRepository/types.js';
+import type { FileInfo as ContextFile, FolderInfo as ContextFolderInfo } from '../../services/sessionService/types.js';
 import { User } from '../../data/userRepository/types.js';
 import { replaceVars } from '../../utils/readReplace.js';
 import { runTreeCommand } from '../../tools/tree.js';
@@ -58,12 +58,12 @@ export async function readFilesWithLimit(filePaths: string[]): Promise<ContextFi
             return null;
           }
           const buffer = await readFile(filePath);
-          return { path: filePath, content: buffer.toString('base64') };
+          return { path: filePath, category: 'image', content: { encoding: 'base64', data: buffer.toString('base64') } };
         } else {
           const content = await readFile(filePath, 'utf-8');
           const lines = content.split('\n');
           const truncated = lines.length > MAX_TEXT_LINES ? lines.slice(0, MAX_TEXT_LINES).join('\n') : content;
-          return { path: filePath, content: truncated };
+          return { path: filePath, category: 'text', content: { encoding: 'utf-8', data: truncated } };
         }
       } catch (error) {
         console.warn(`Failed to read file ${filePath}:`, error);
