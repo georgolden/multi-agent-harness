@@ -5,12 +5,12 @@
 import { Flow } from '../../utils/agent/flow.js';
 import { PrepareInput, DecideAction, ToolCalls } from './nodes.js';
 import { exploreInputSchema } from './types.js';
-import type { ExploreDeps, ExploreContext, ExploreInput, ExploreResult } from './types.js';
+import type { ExploreContext, ExploreInput, ExploreResult } from './types.js';
 import { App } from '../../app.js';
 import { Session } from '../../services/sessionService/session.js';
 import { User } from '../../data/userRepository/types.js';
 
-export type ExploreFlow = Flow<ExploreDeps, ExploreContext, ExploreInput, { exit: ExploreResult; loop: void }>;
+export type ExploreFlow = Flow<App, ExploreContext, ExploreInput, { exit: ExploreResult; loop: void }>;
 
 /**
  * Create and return the explore agent flow
@@ -43,9 +43,8 @@ export const exploreFlow = {
   create: createExploreFlow,
   run: async (app: App, { parent, user, message }: { parent?: Session; user: User; message: string }) => {
     const flow = createExploreFlow();
-    const context: ExploreContext = { parent, user, message, iterations: 0 };
-    const deps: ExploreDeps = { app };
-    const result = await flow.run({ context, deps, data: { message } });
+    const context: ExploreContext = { parent, user, message };
+    const result = await flow.run({ context, deps: app, data: { message } });
     return result.data;
   },
 };

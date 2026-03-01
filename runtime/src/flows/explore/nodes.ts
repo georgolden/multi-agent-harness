@@ -17,8 +17,10 @@ import {
   AssistantMessage,
   AssistantToolCallMessage,
   ToolResultMessage,
+  LLMToolCall,
 } from '../../utils/message.js';
-import type { ExploreDeps, ExploreContext, ExploreInput, ExploreResult, ToolCallItem, ToolResult } from './types.js';
+import type { ExploreContext, ExploreInput, ExploreResult, ToolResult, Session } from './types.js';
+import { App } from '../../app.js';
 
 const MAX_ITERATIONS = 5;
 
@@ -29,11 +31,11 @@ const CALL_LLM_OPTIONS: CallLlmOptions = {
 /**
  * PrepareInput: Prepare all context and create flow session with user's message (runs once)
  */
-export class PrepareInput extends Node<ExploreDeps, ExploreContext, ExploreInput, { default: void }> {
+export class PrepareInput extends Node<App, ExploreContext, ExploreInput, { default: Session }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { app } = p.deps!;
-    const { message } = p.data!;
-    const { user, parent } = p.context!;
+    const app = p.deps;
+    const { message } = p.data;
+    const { user, parent } = p.context;
     console.log(`[PrepareInput.run] Preparing context and creating flow session for user message: "${message}"`);
 
     const { services } = app;
@@ -60,7 +62,11 @@ export class PrepareInput extends Node<ExploreDeps, ExploreContext, ExploreInput
 
     console.log(`[PrepareInput.run] Created session '${session.id}' with system prompt and user message`);
 
-    return packet({ context: { ...p.context!, session }, deps: p.deps });
+    return packet({
+      data: session,
+      context: p.context,
+      deps: p.deps,
+    });
   }
 }
 
@@ -68,24 +74,16 @@ export class PrepareInput extends Node<ExploreDeps, ExploreContext, ExploreInput
  * DecideAction: LLM decides what action to take using session from context.
  * Returns a batch of tool calls if any, or loops back.
  */
-export class DecideAction extends Node<ExploreDeps, ExploreContext, void, { tool_calls: ToolCallItem; loop: void }> {
+export class DecideAction extends Node<App, ExploreContext, undefined, { tool_calls: LLMToolCall; loop: undefined }> {
   constructor() {
-    super({ maxRunTries: 3, wait: 1000 });
+    super({ maxRunTries: 3, wait: 1000, maxLoopEntering: 3 });
   }
 
   async run(p: this['In']): Promise<this['Out']> {
-    const { session, iterations } = p.context!;
+    const { session } = p.context!;
     if (!session) throw new Error('Session not initialized');
 
     const messages = session.activeMessages.map((msg) => msg.message);
-
-    if (iterations >= MAX_ITERATIONS) {
-      messages.push(
-        new UserMessage(
-          'MAX RETRIES NUMBER EXCEED - CALL submit_result tool immediately with best you can provide',
-        ).toJSON(),
-      );
-    }
 
     console.log(`[DecideAction.run] Calling LLM with ${messages.length} messages`);
 
@@ -98,17 +96,17 @@ export class DecideAction extends Node<ExploreDeps, ExploreContext, void, { tool
 
     if (assistantMsg instanceof AssistantToolCallMessage) {
       console.log(`[DecideAction.run] Branching to tool_calls with ${assistantMsg.toolCalls.length} calls`);
-      const items: ToolCallItem[] = assistantMsg.toolCalls.map((toolCall) => ({ toolCall }));
-      return batch({ data: items, context: p.context, branch: 'tool_calls', deps: p.deps });
+      return batch({ data: assistantMsg.toolCalls, context: p.context, branch: 'tool_calls', deps: p.deps });
     }
 
     // No tool calls — prompt to retry or submit
-    const errorText = 'error' in assistantMsg ? (assistantMsg as any).error : (assistantMsg as any).text;
+    const errorText = 'error' in assistantMsg ? assistantMsg.error : assistantMsg.text;
     const retryMsg = `${errorText}\n retry if failure or call submit_result if it makes no sense to re-try`;
     await session.addMessages([{ message: new UserMessage(retryMsg).toJSON() }]);
 
     return packet({
-      context: { ...p.context!, iterations: p.context!.iterations + 1 },
+      data: undefined,
+      context: p.context,
       branch: 'loop',
       deps: p.deps,
     });
@@ -119,11 +117,11 @@ export class DecideAction extends Node<ExploreDeps, ExploreContext, void, { tool
  * ToolCalls: Execute tools and process results.
  * run() handles a single tool call; postprocess() assembles all results.
  */
-export class ToolCalls extends Node<ExploreDeps, ExploreContext, ToolCallItem, { loop: void; exit: ExploreResult }> {
+export class ToolCalls extends Node<App, ExploreContext, LLMToolCall, { loop: undefined; exit: ExploreResult }> {
   async run(p: this['In']): Promise<SinglePacket<ToolResult, this['Deps'], this['Ctx']>> {
-    const { toolCall } = p.data!;
-    const { app } = p.deps!;
-    const { session } = p.context!;
+    const toolCall = p.data;
+    const app = p.deps;
+    const { session } = p.context;
     if (!session) throw new Error('Session not initialized');
 
     const tool = session.getAgentTool(toolCall.name);
@@ -204,13 +202,21 @@ export class ToolCalls extends Node<ExploreDeps, ExploreContext, ToolCallItem, {
       return exit({ data: result, context: p.context, deps: p.deps });
     }
 
-    return packet({ context: { ...p.context!, iterations: p.context!.iterations + 1 }, branch: 'loop', deps: p.deps });
+    return packet({
+      data: undefined,
+      context: p.context,
+      branch: 'loop',
+      deps: p.deps,
+    });
   }
 
   async fallback(p: this['InBatchError'], err: AggregateError): Promise<this['Out']> {
     console.error(`[ToolCalls.fallback] ${err.message}`, err.errors);
-    const { session } = p.context!;
-    if (!session) throw new Error('Session not initialized');
-    return packet({ context: { ...p.context!, iterations: p.context!.iterations + 1 }, branch: 'loop', deps: p.deps });
+    return packet({
+      data: undefined,
+      context: p.context,
+      branch: 'loop',
+      deps: p.deps,
+    });
   }
 }

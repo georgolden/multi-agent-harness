@@ -9,7 +9,7 @@ export const fillTemplateInputSchema = Type.Object({
   sessionId: Type.Optional(Type.String({ description: 'Existing session ID to resume' })),
 });
 
-export type FillTemplateInput = Static<typeof fillTemplateInputSchema>;
+export type FillTemplateInput = Omit<Static<typeof fillTemplateInputSchema>, 'message'>;
 
 export interface FillTemplateContext extends FillTemplateInput {
   // Flow session
@@ -19,6 +19,3 @@ export interface FillTemplateContext extends FillTemplateInput {
   toolCalls?: LLMToolCall[];
   result?: string;
 }
-
-export type AskUserContext = FillTemplateContext & { response: string };
-export type SubmitTemplateContext = FillTemplateContext & { toolCalls: LLMToolCall[] };

@@ -12,10 +12,6 @@ export const exploreInputSchema = Type.Object({
   message: Type.String({ description: "User's message" }),
 });
 
-export interface ExploreDeps {
-  app: App;
-}
-
 export type ExploreInput = Static<typeof exploreInputSchema>;
 
 export interface ExploreResult {
@@ -28,13 +24,7 @@ export interface ExploreContext extends ExploreInput {
   session?: Session;
   parent?: Session;
   user: User;
-  iterations: number;
 }
-
-export interface ToolCallItem {
-  toolCall: LLMToolCall;
-}
-
 export interface ToolResult {
   output: string;
   toolCallId: string;

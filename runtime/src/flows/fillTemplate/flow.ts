@@ -13,17 +13,18 @@
  * PrepareInput resumes the existing session and DecideAction runs again.
  */
 import { Flow, packet } from '../../utils/agent/flow.js';
-import { PrepareInput, DecideAction, AskUser, SubmitTemplate } from './nodes.js';
+import { PrepareInput, DecideAction, AskUser, SubmitTemplate, UserResponse } from './nodes.js';
 import { fillTemplateInputSchema, type FillTemplateContext } from './types.js';
 import { App } from '../../app.js';
 import { User } from '../../data/userRepository/types.js';
 
-export type FillTemplateFlow = Flow<any, FillTemplateContext>;
+export type FillTemplateFlow = Flow<App, FillTemplateContext>;
 
 export function createFillTemplateFlow(): FillTemplateFlow {
   const prepareInput = new PrepareInput();
   const decideAction = new DecideAction();
   const askUser = new AskUser();
+  const userResponse = new UserResponse();
   const submitTemplate = new SubmitTemplate();
 
   // PrepareInput runs once, then goes to DecideAction
@@ -31,6 +32,8 @@ export function createFillTemplateFlow(): FillTemplateFlow {
 
   // DecideAction routes based on LLM response
   decideAction.branch('ask_user', askUser);
+  askUser.branch('pause', userResponse);
+  userResponse.next(decideAction);
   decideAction.branch('submit_template', submitTemplate);
 
   // AskUser ends the flow run (no successor); session stays 'running'
@@ -50,8 +53,14 @@ export const fillTemplateFlow = {
     { user, message, template, sessionId }: { user: User; message: string; template?: string; sessionId?: string },
   ) => {
     const flow = createFillTemplateFlow();
-    const context: FillTemplateContext = { userId: user.id, message, template, sessionId };
-    const result = await flow.run(packet({ context, deps: { app } }));
+    const context: FillTemplateContext = { userId: user.id, template, sessionId };
+    const result = await flow.run(
+      packet({
+        data: message,
+        context,
+        deps: app,
+      }),
+    );
     return result.data;
   },
 };

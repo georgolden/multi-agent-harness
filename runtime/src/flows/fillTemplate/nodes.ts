@@ -8,16 +8,14 @@
  * Each user reply re-enters the flow via PrepareInput with the existing sessionId,
  * which resumes the conversation and feeds DecideAction again.
  */
-import { Node, packet, exit } from '../../utils/agent/flow.js';
+import { Node, packet, exit, pause } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import { createSystemPrompt } from './prompts/index.js';
 import { TOOLS } from './tools.js';
-import {
-  UserMessage,
-  AssistantMessage,
-} from '../../utils/message.js';
-import type { FillTemplateContext, AskUserContext } from './types.js';
+import { UserMessage, AssistantMessage, SystemMessage } from '../../utils/message.js';
+import type { FillTemplateContext } from './types.js';
 import type { App } from '../../app.js';
+import { Session } from '../../services/sessionService/session.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
@@ -25,10 +23,11 @@ import type { App } from '../../app.js';
  * PrepareInput: resume an existing session (when sessionId is provided) or
  * create a new one (when starting fresh with a template).
  */
-export class PrepareInput extends Node<{ app: App }, FillTemplateContext, any, { default: void }> {
+export class PrepareInput extends Node<App, FillTemplateContext, string, { default: Session }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { userId, message, template, sessionId } = p.context!;
-    const { app } = p.deps!;
+    const { userId, template, sessionId } = p.context;
+    const message = p.data;
+    const app = p.deps;
     const { sessionService } = app.services;
 
     // ── Resume existing session ──────────────────────────────────────────────
@@ -39,7 +38,11 @@ export class PrepareInput extends Node<{ app: App }, FillTemplateContext, any, {
       await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
 
       console.log(`[PrepareInput.prep] Resumed session '${session.id}' with new user message`);
-      return packet({ context: { ...p.context!, session }, deps: p.deps });
+      return packet({
+        data: undefined,
+        context: { ...p.context, session },
+        deps: p.deps,
+      });
     }
 
     // ── Create new session ───────────────────────────────────────────────────
@@ -58,7 +61,11 @@ export class PrepareInput extends Node<{ app: App }, FillTemplateContext, any, {
     await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
 
     console.log(`[PrepareInput.prep] Created session '${session.id}' for fillTemplate`);
-    return packet({ context: { ...p.context!, session }, deps: p.deps });
+    return packet({
+      data: session,
+      context: p.context,
+      deps: p.deps,
+    });
   }
 }
 
@@ -72,24 +79,25 @@ export class PrepareInput extends Node<{ app: App }, FillTemplateContext, any, {
  *   'ask_user'       — LLM replied with text (question for the user)
  *   'submit_template' — LLM called submit_template tool (template is ready)
  */
-export class DecideAction extends Node<{ app: App }, FillTemplateContext, any, { ask_user: void; submit_template: void }> {
+export class DecideAction extends Node<
+  App,
+  FillTemplateContext,
+  Session,
+  { ask_user: string; submit_template: string }
+> {
   constructor() {
     super({ maxRunTries: 3, wait: 1000 });
   }
 
   async run(p: this['In']): Promise<this['Out']> {
-    const { session } = p.context!;
-    if (!session) throw new Error('Session not initialized');
+    const session = p.data;
 
-    const messages = session.activeMessages.map((msg) => msg.message) as any[];
+    const messages = session.activeMessages.map((msg) => msg.message);
     const systemPrompt = session.systemPrompt;
 
     console.log(`[DecideAction.run] Session '${session.id}', ${messages.length} messages`);
 
-    const response = await callLlmWithTools(
-      [{ role: 'system', content: systemPrompt }, ...messages],
-      TOOLS,
-    );
+    const response = await callLlmWithTools([new SystemMessage(systemPrompt).toJSON(), ...messages], TOOLS);
 
     const assistantMsg = AssistantMessage.from(response[0].message);
     await session.addMessages([{ message: assistantMsg.toJSON() }]);
@@ -97,6 +105,7 @@ export class DecideAction extends Node<{ app: App }, FillTemplateContext, any, {
     if ('toolCalls' in assistantMsg && assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0) {
       console.log(`[DecideAction.run] Tool calls detected, routing to submit_template`);
       return packet({
+        data: assistantMsg.toolCalls[0].args.filled_template as string,
         context: p.context,
         branch: 'submit_template',
         deps: p.deps,
@@ -104,10 +113,11 @@ export class DecideAction extends Node<{ app: App }, FillTemplateContext, any, {
     }
 
     // Text response — ask user
-    const text = (assistantMsg as any).text || '';
+    const text = assistantMsg.toJSON().content || '';
     console.log(`[DecideAction.run] Text response, routing to ask_user`);
     return packet({
-      context: { ...p.context!, response: text },
+      data: text,
+      context: p.context,
       branch: 'ask_user',
       deps: p.deps,
     });
@@ -120,14 +130,37 @@ export class DecideAction extends Node<{ app: App }, FillTemplateContext, any, {
  * AskUser: Send the question to the user and keep session running.
  * Does NOT mark session as completed — that happens when SubmitTemplate is reached.
  */
-export class AskUser extends Node<{ app: App }, AskUserContext, any, { default: void }> {
+export class AskUser extends Node<App, FillTemplateContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const ctx = p.context as any;
-    const { session, response } = ctx;
-    console.log(`[AskUser.run] Sending question to user, session '${session.id}'`);
-    await session.respond(response);
-    // Session stays 'running' — user will reply and re-enter the flow
-    return packet({ context: p.context, deps: p.deps });
+    const ctx = p.context;
+    const session = ctx.session!;
+    const message = p.data;
+    console.log(`[AskUser.run] Sending question to user, session '${session!.id}'`);
+    await session.respond(message);
+    session.onUserMessage(({ sessionId, message }: { sessionId: string; message: string }) => {
+      if (sessionId !== session.id) return;
+      this.resume({ data: message, context: p.context, deps: p.deps });
+    });
+    await session.pause();
+    return pause({
+      data: undefined,
+      context: p.context,
+      deps: p.deps,
+    });
+  }
+}
+
+export class UserResponse extends Node<App, FillTemplateContext, string, { default: Session }> {
+  async run(p: this['In']): Promise<this['Out']> {
+    const session = p.context.session!;
+    const message = p.data;
+    await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
+    await session.resume();
+    return packet({
+      data: session,
+      context: p.context,
+      deps: p.deps,
+    });
   }
 }
 
@@ -136,13 +169,17 @@ export class AskUser extends Node<{ app: App }, AskUserContext, any, { default: 
 /**
  * SubmitTemplate: Mark session as completed. The LLM already called the tool in DecideAction.
  */
-export class SubmitTemplate extends Node<{ app: App }, FillTemplateContext & { session: any }, any, { default: void }> {
+export class SubmitTemplate extends Node<App, FillTemplateContext, string, { default: string }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { session } = p.context! as any;
+    const { session } = p.context;
 
-    console.log(`[SubmitTemplate.run] Marking session '${session.id}' as completed`);
-    await session.complete();
+    console.log(`[SubmitTemplate.run] Marking session '${session!.id}' as completed`);
+    await session!.complete();
 
-    return exit({ context: p.context, deps: p.deps });
+    return exit({
+      data: p.data,
+      context: p.context,
+      deps: p.deps,
+    });
   }
 }

@@ -204,6 +204,11 @@ export class Session {
     return this;
   }
 
+  onUserMessage(cb: ({ sessionId, message }: { sessionId: string; message: string }) => void) {
+    this.app.infra.bus.on(`user:message:${this.userId}`, cb);
+    return this;
+  }
+
   // ─── Tree queries (return raw SessionData data) ───────────────────────────
 
   async parent(): Promise<SessionData | null> {

@@ -146,7 +146,7 @@ export class AskUser extends Node<
     `;
     console.log(`[AskUser.run] Sending message to userId: ${userId}, output: "${message}"`);
     await session!.respond(message);
-    p.deps.infra.bus.on(`user:message:${userId}`, ({ sessionId, message }: { sessionId: string; message: string }) => {
+    session!.onUserMessage(({ sessionId, message }: { sessionId: string; message: string }) => {
       if (sessionId !== session!.id) return;
       this.resume({ data: { message, toolCallId: p.data.id }, context: p.context, deps: p.deps });
     });
@@ -169,7 +169,7 @@ export class UserResponse extends Node<
     const { session } = p.context;
     const { toolCallId, message } = p.data;
     await session!.addMessages([{ message: new ToolResultMessage({ toolCallId, content: message }).toJSON() }]);
-    await session!.pause();
+    await session!.resume();
     return packet({
       data: undefined,
       context: p.context,

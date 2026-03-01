@@ -28,7 +28,7 @@ export function createTaskSchedulerFlow(): TaskSchedulerFlow {
   decideAction.branch('tool_calls', toolCalls);
   decideAction.branch('response', response);
 
-  askUser.next(userResponse);
+  askUser.branch('pause', userResponse);
 
   userResponse.next(decideAction);
 
