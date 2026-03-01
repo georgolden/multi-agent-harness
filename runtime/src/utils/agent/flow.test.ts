@@ -4,6 +4,7 @@ import {
   batch,
   exit,
   error,
+  pause,
   Node,
   Flow,
   type SinglePacket,
@@ -68,13 +69,14 @@ function makeFlow(
 // ─── 1. Packet helpers ───────────────────────────────────────────────────────
 
 describe('packet helpers', () => {
-  it('packet() creates a packet without data', () => {
-    const p = packet();
-    expect((p as any).data).toBeUndefined();
-    expect((p as any).type).toBeUndefined();
+  it('packet() creates a packet with required data, deps, context', () => {
+    const deps = { db: 'mock' };
+    const ctx = { n: 1 };
+    const p = packet({ data: 'hi', deps, context: ctx });
+    expect(p).toMatchObject({ data: 'hi', deps, context: ctx });
   });
 
-  it('packet() passes data, branch, deps, context', () => {
+  it('packet() with all fields including branch', () => {
     const deps = { db: 'mock' };
     const ctx = { n: 1 };
     const p = packet({ data: 'hi', branch: 'go', deps, context: ctx });
@@ -82,7 +84,11 @@ describe('packet helpers', () => {
   });
 
   it('batch() creates a packet with type: batch', () => {
-    const p = batch({ data: [1, 2, 3] });
+    const p = batch({
+      data: [1, 2, 3],
+      deps: undefined,
+      context: undefined,
+    });
     expect(p).toEqual({ type: 'batch', data: [1, 2, 3] });
   });
 
@@ -91,24 +97,24 @@ describe('packet helpers', () => {
     expect(p).toMatchObject({ type: 'batch', data: [1, 2], branch: 'x' });
   });
 
-  it('exit() sets branch: exit with no data', () => {
-    const p = exit();
-    expect(p).toMatchObject({ branch: 'exit' });
-  });
-
-  it('exit() with data and context', () => {
-    const p = exit({ data: 'done', context: { n: 99 } });
+  it('exit() sets branch: exit with required deps, context', () => {
+    const p = exit({ data: 'done', deps: {}, context: { n: 99 } });
     expect(p).toMatchObject({ data: 'done', branch: 'exit', context: { n: 99 } });
   });
 
-  it('error() sets branch: error with no data', () => {
-    const p = error();
-    expect(p).toMatchObject({ branch: 'error' });
+  it('exit() with undefined data', () => {
+    const p = exit({ data: undefined, deps: {}, context: {} });
+    expect(p).toMatchObject({ branch: 'exit' });
   });
 
-  it('error() passes data, deps, context', () => {
-    const p = error({ data: 'fail', deps: { svc: 'x' } });
+  it('error() sets branch: error with required deps, context', () => {
+    const p = error({ data: 'fail', deps: { svc: 'x' }, context: {} });
     expect(p).toMatchObject({ data: 'fail', branch: 'error', deps: { svc: 'x' } });
+  });
+
+  it('error() with undefined data', () => {
+    const p = error({ data: undefined, deps: {}, context: {} });
+    expect(p).toMatchObject({ branch: 'error' });
   });
 });
 
@@ -145,8 +151,8 @@ describe('Node — graph wiring', () => {
 
 describe('Node — execution pipeline', () => {
   it('runs without preprocess or postprocess', async () => {
-    const node = makeNode(async (p) => packet({ data: (p.data as number) + 1 }));
-    const result = await node._exec(packet({ data: 10 }));
+    const node = makeNode(async (p) => packet({ data: (p.data as number) + 1, deps: p.deps, context: p.context }));
+    const result = await node._exec(packet({ data: 10, deps: {}, context: {} }));
     expect(result.data).toBe(11);
   });
 
@@ -155,7 +161,7 @@ describe('Node — execution pipeline', () => {
     const node = makeNode(
       async (p) => {
         order.push('run');
-        return packet({ data: p.data });
+        return packet({ data: p.data, deps: p.deps, context: p.context });
       },
       {
         preprocess: async (p) => {
@@ -164,7 +170,7 @@ describe('Node — execution pipeline', () => {
         },
       },
     );
-    await node._exec(packet({ data: 1 }));
+    await node._exec(packet({ data: 1, deps: {}, context: {} }));
     expect(order).toEqual(['pre', 'run']);
   });
 
@@ -173,7 +179,7 @@ describe('Node — execution pipeline', () => {
     const node = makeNode(
       async (p) => {
         order.push('run');
-        return packet({ data: p.data });
+        return packet({ data: p.data, deps: p.deps, context: p.context });
       },
       {
         postprocess: async (p) => {
@@ -182,7 +188,7 @@ describe('Node — execution pipeline', () => {
         },
       },
     );
-    await node._exec(packet({ data: 1 }));
+    await node._exec(packet({ data: 1, deps: {}, context: {} }));
     expect(order).toEqual(['run', 'post']);
   });
 
@@ -191,12 +197,12 @@ describe('Node — execution pipeline', () => {
     const node = makeNode(
       async (p) => {
         order.push('run');
-        return packet({ data: (p.data as number) * 2 });
+        return packet({ data: (p.data as number) * 2, deps: p.deps, context: p.context });
       },
       {
         preprocess: async (p) => {
           order.push('pre');
-          return packet({ data: (p.data as number) + 1 });
+          return packet({ data: (p.data as number) + 1, deps: p.deps, context: p.context });
         },
         postprocess: async (p) => {
           order.push('post');
@@ -204,16 +210,16 @@ describe('Node — execution pipeline', () => {
         },
       },
     );
-    const result = await node._exec(packet({ data: 3 }));
+    const result = await node._exec(packet({ data: 3, deps: {}, context: {} }));
     expect(order).toEqual(['pre', 'run', 'post']);
     expect(result.data).toBe(8); // (3+1)*2
   });
 
   it('postprocess can override branch', async () => {
-    const node = makeNode(async (p) => packet({ data: p.data }), {
+    const node = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }), {
       postprocess: async (p) => ({ ...p, branch: 'custom' }),
     });
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(result.branch).toBe('custom');
   });
 
@@ -221,30 +227,30 @@ describe('Node — execution pipeline', () => {
     const node = makeNode(async () => {
       throw new Error('boom');
     });
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(result.branch).toBe('error');
     expect(result.data).toBeInstanceOf(Error);
     expect((result.data as Error).message).toBe('boom');
   });
 
   it('context from preprocess is forwarded to run', async () => {
-    const node = makeNode(async (p) => packet({ data: p.data, context: p.context }), {
+    const node = makeNode(async (p) => packet({ data: p.data, context: p.context, deps: p.deps }), {
       preprocess: async (p) => ({ ...p, context: { injected: true } }),
     });
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(result.context).toEqual({ injected: true });
   });
 
   it('deps pass through unchanged', async () => {
     const deps = { svc: 'test' };
-    const node = makeNode(async (p) => packet({ data: p.data, deps: p.deps }));
-    const result = await node._exec(packet({ data: 1, deps }));
+    const node = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
+    const result = await node._exec(packet({ data: 1, deps, context: {} }));
     expect(result.deps).toBe(deps);
   });
 
   it('packet with no data passes through', async () => {
-    const node = makeNode(async (p) => packet({ context: p.context }));
-    const result = await node._exec(packet({ context: { val: 42 } }));
+    const node = makeNode(async (p) => packet({ data: undefined, context: p.context, deps: p.deps }));
+    const result = await node._exec(packet({ data: undefined, context: { val: 42 }, deps: {} }));
     expect((result as SinglePacket).data).toBeUndefined();
     expect(result.context).toEqual({ val: 42 });
   });
@@ -254,10 +260,10 @@ describe('Node — execution pipeline', () => {
 
 describe('Node — batch mode', () => {
   it('preprocess can switch to batch mode', async () => {
-    const node = makeNode(async (p) => packet({ data: (p.data as number) * 2 }), {
-      preprocess: async (_p) => batch({ data: [1, 2, 3] }),
+    const node = makeNode(async (p) => packet({ data: (p.data as number) * 2, deps: p.deps, context: p.context }), {
+      preprocess: async (p) => batch({ data: [1, 2, 3], deps: p.deps, context: p.context }),
     });
-    const result = await node._exec(packet({ data: 'ignored' }));
+    const result = await node._exec(packet({ data: 'ignored', deps: {}, context: {} }));
     expect(result.type).toBe('batch');
     expect(result.data).toEqual([2, 4, 6]);
   });
@@ -266,24 +272,24 @@ describe('Node — batch mode', () => {
     const calls: number[] = [];
     const node = makeNode(async (p) => {
       calls.push(p.data as number);
-      return packet({ data: (p.data as number) + 10 });
+      return packet({ data: (p.data as number) + 10, deps: p.deps, context: p.context });
     });
-    const result = await node._exec(batch({ data: [1, 2, 3] }));
+    const result = await node._exec(batch({ data: [1, 2, 3], deps: {}, context: {} }));
     expect(calls).toHaveLength(3);
     expect(result.type).toBe('batch');
     expect((result.data as number[]).sort()).toEqual([11, 12, 13]);
   });
 
   it('batch results reassembled into type:batch packet', async () => {
-    const node = makeNode(async (p) => packet({ data: String(p.data) }));
-    const result = await node._exec(batch({ data: [7, 8] }));
+    const node = makeNode(async (p) => packet({ data: String(p.data), deps: p.deps, context: p.context }));
+    const result = await node._exec(batch({ data: [7, 8], deps: {}, context: {} }));
     expect(result).toMatchObject({ type: 'batch', data: ['7', '8'] });
   });
 
   it('context from individual batch runs is isolated (not merged back)', async () => {
-    const node = makeNode(async (p) => packet({ data: p.data, context: { modified: true } }));
+    const node = makeNode(async (p) => packet({ data: p.data, context: { modified: true }, deps: p.deps }));
     const originalCtx = { count: 0 };
-    const result = await node._exec(batch({ data: [1, 2], context: originalCtx }));
+    const result = await node._exec(batch({ data: [1, 2], context: originalCtx, deps: {} }));
     expect(result.context).toBe(originalCtx);
   });
 
@@ -292,16 +298,16 @@ describe('Node — batch mode', () => {
     const node = makeNode(
       async (p) => {
         if (p.data === 2) throw new Error('item 2 failed');
-        return packet({ data: (p.data as number) * 10 });
+        return packet({ data: (p.data as number) * 10, deps: p.deps, context: p.context });
       },
       {
         fallback: async (p, err) => {
           received = { p, err };
-          return exit({ data: (p as any).data });
+          return exit({ data: (p as any).data, deps: (p as any).deps, context: (p as any).context });
         },
       },
     );
-    const result = await node._exec(batch({ data: [1, 2, 3] }));
+    const result = await node._exec(batch({ data: [1, 2, 3], deps: {}, context: {} }));
     expect(result.branch).toBe('exit');
     expect(received).not.toBeNull();
     expect(received!.err).toBeInstanceOf(AggregateError);
@@ -314,31 +320,32 @@ describe('Node — batch mode', () => {
       async () => {
         throw new Error('always');
       },
-      { fallback: async (_p, err) => error({ data: err }) },
+      { fallback: async (p, err) => error({ data: err, deps: p.deps, context: p.context }) },
     );
-    const result = await node._exec(batch({ data: [1, 2] }));
+    const result = await node._exec(batch({ data: [1, 2], deps: {}, context: {} }));
     expect(result.branch).toBe('error');
     expect(result.data).toBeInstanceOf(AggregateError);
   });
 
-  it('no fallback — batch failure produces error packet with AggregateError as data', async () => {
+  it('no fallback — batch failure produces error packet with AggregateError', async () => {
     const node = makeNode(async () => {
       throw new Error('fail');
     });
-    const result = await node._exec(batch({ data: [1, 2] }));
+    const result = await node._exec(batch({ data: [1, 2], deps: {}, context: {} }));
     expect(result.branch).toBe('error');
-    expect(result.data).toBeInstanceOf(AggregateError);
+    expect((result as any).error).toBeInstanceOf(AggregateError);
+    expect((result as any).data).toEqual([]);
   });
 
   it('postprocess receives reassembled batch result on full success', async () => {
     let postReceived: any = null;
-    const node = makeNode(async (p) => packet({ data: (p.data as number) * 10 }), {
+    const node = makeNode(async (p) => packet({ data: (p.data as number) * 10, deps: p.deps, context: p.context }), {
       postprocess: async (p) => {
         postReceived = p;
         return p;
       },
     });
-    await node._exec(batch({ data: [2, 3] }));
+    await node._exec(batch({ data: [2, 3], deps: {}, context: {} }));
     expect(postReceived).not.toBeNull();
     expect(postReceived.type).toBe('batch');
     expect(postReceived.data).toEqual([20, 30]);
@@ -349,11 +356,11 @@ describe('Node — batch mode', () => {
     const node = makeNode(
       async (p) => {
         if (p.data === 1) throw new Error('fail');
-        return packet({ data: p.data });
+        return packet({ data: p.data, deps: p.deps, context: p.context });
       },
-      { postprocess, fallback: async (_p, _err) => exit() },
+      { postprocess, fallback: async (p, _err) => exit({ data: undefined, deps: p.deps, context: p.context }) },
     );
-    await node._exec(batch({ data: [1, 2] }));
+    await node._exec(batch({ data: [1, 2], deps: {}, context: {} }));
     expect(postprocess).not.toHaveBeenCalled();
   });
 
@@ -362,9 +369,9 @@ describe('Node — batch mode', () => {
     const node = makeNode(async (p) => {
       startTimes.push(Date.now());
       await new Promise((r) => setTimeout(r, 50));
-      return packet({ data: p.data });
+      return packet({ data: p.data, deps: p.deps, context: p.context });
     });
-    await node._exec(batch({ data: [1, 2, 3] }));
+    await node._exec(batch({ data: [1, 2, 3], deps: {}, context: {} }));
     const spread = Math.max(...startTimes) - Math.min(...startTimes);
     expect(spread).toBeLessThan(30);
   });
@@ -374,9 +381,9 @@ describe('Node — batch mode', () => {
     ctrl.abort();
     const node = makeNode(async (p) => {
       if (p.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      return packet({ data: p.data });
+      return packet({ data: p.data, deps: p.deps, context: p.context });
     });
-    const result = await node._exec({ type: 'batch', data: [1, 2], signal: ctrl.signal });
+    const result = await node._exec({ type: 'batch', data: [1, 2], signal: ctrl.signal, deps: {}, context: {} });
     expect(result.branch).toBe('abort');
   });
 });
@@ -390,7 +397,7 @@ describe('Node — retries', () => {
       calls++;
       throw new Error('fail');
     });
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(calls).toBe(1);
     expect(result.branch).toBe('error');
   });
@@ -398,14 +405,14 @@ describe('Node — retries', () => {
   it('retries up to maxRunTries times on failure', async () => {
     let calls = 0;
     const node = makeNode(
-      async () => {
+      async (p) => {
         calls++;
         if (calls < 3) throw new Error('retry');
-        return packet({ data: 'ok' });
+        return packet({ data: 'ok', deps: p.deps, context: p.context });
       },
       { nodeOptions: { maxRunTries: 3 } },
     );
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(calls).toBe(3);
     expect(result.data).toBe('ok');
   });
@@ -417,7 +424,7 @@ describe('Node — retries', () => {
       },
       { nodeOptions: { maxRunTries: 2 } },
     );
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(result.branch).toBe('error');
     expect((result.data as Error).message).toBe('always');
   });
@@ -431,7 +438,7 @@ describe('Node — retries', () => {
       },
       { nodeOptions: { maxRunTries: 2, wait: 50 } },
     );
-    await node._exec(packet({ data: 'x' }));
+    await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(times[1]! - times[0]!).toBeGreaterThanOrEqual(40);
   });
 
@@ -444,7 +451,7 @@ describe('Node — retries', () => {
       },
       { nodeOptions: { maxRunTries: 3 } },
     );
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(calls).toBe(1);
     expect(result.branch).toBe('abort');
   });
@@ -459,11 +466,11 @@ describe('Node — retries', () => {
           ctrl.abort();
           throw new Error('fail');
         }
-        return packet({ data: p.data });
+        return packet({ data: p.data, deps: p.deps, context: p.context });
       },
       { nodeOptions: { maxRunTries: 3, wait: 0 } },
     );
-    const result = await node._exec({ data: 'x', signal: ctrl.signal });
+    const result = await node._exec({ data: 'x', signal: ctrl.signal, deps: {}, context: {} });
     expect(result.branch).toBe('abort');
     expect(calls).toBe(1);
   });
@@ -472,7 +479,7 @@ describe('Node — retries', () => {
 describe('Node — timeout', () => {
   it('throws timeout error after specified ms (per attempt)', async () => {
     const node = makeNode(async () => new Promise((r) => setTimeout(r, 200)), { nodeOptions: { timeout: 50 } });
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(result.branch).toBe('error');
     expect((result.data as Error).message).toMatch(/timed out after 50ms/);
   }, 1000);
@@ -480,14 +487,14 @@ describe('Node — timeout', () => {
   it('timeout is per-attempt, not cumulative', async () => {
     let calls = 0;
     const node = makeNode(
-      async () => {
+      async (p) => {
         calls++;
         if (calls < 2) return new Promise((r) => setTimeout(r, 200));
-        return packet({ data: 'ok' });
+        return packet({ data: 'ok', deps: p.deps, context: p.context });
       },
       { nodeOptions: { timeout: 50, maxRunTries: 2 } },
     );
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(result.data).toBe('ok');
     expect(calls).toBe(2);
   }, 2000);
@@ -495,14 +502,16 @@ describe('Node — timeout', () => {
 
 describe('Node — fallback', () => {
   it('fallback is called when all retries exhausted', async () => {
-    const fallbackFn = vi.fn(async (_p: any, _err: Error) => exit({ data: 'recovered' }));
+    const fallbackFn = vi.fn(async (p: any, _err: Error) =>
+      exit({ data: 'recovered', deps: p.deps, context: p.context }),
+    );
     const node = makeNode(
       async () => {
         throw new Error('boom');
       },
       { fallback: fallbackFn, nodeOptions: { maxRunTries: 2 } },
     );
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(fallbackFn).toHaveBeenCalledOnce();
     expect(result.branch).toBe('exit');
     expect(result.data).toBe('recovered');
@@ -517,37 +526,37 @@ describe('Node — fallback', () => {
       {
         fallback: async (p, _err) => {
           received = p;
-          return error({ data: 'handled' });
+          return error({ data: 'handled', deps: p.deps, context: p.context });
         },
       },
     );
-    const input = packet({ data: 'original-data', context: { k: 1 } });
+    const input = packet({ data: 'original-data', context: { k: 1 }, deps: {} });
     await node._exec(input);
     expect(received.data).toBe('original-data');
   });
 
   it('fallback is called when preprocess throws', async () => {
-    const fallbackFn = vi.fn(async () => exit());
-    const node = makeNode(async (p) => packet({ data: p.data }), {
+    const fallbackFn = vi.fn(async (p: any) => exit({ data: undefined, deps: p.deps, context: p.context }));
+    const node = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }), {
       preprocess: async () => {
         throw new Error('pre-error');
       },
       fallback: fallbackFn,
     });
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(fallbackFn).toHaveBeenCalledOnce();
     expect(result.branch).toBe('exit');
   });
 
   it('fallback is called when postprocess throws', async () => {
-    const fallbackFn = vi.fn(async () => exit());
-    const node = makeNode(async (p) => packet({ data: p.data }), {
+    const fallbackFn = vi.fn(async (p: any) => exit({ data: undefined, deps: p.deps, context: p.context }));
+    const node = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }), {
       postprocess: async () => {
         throw new Error('post-error');
       },
       fallback: fallbackFn,
     });
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(fallbackFn).toHaveBeenCalledOnce();
   });
 
@@ -555,7 +564,7 @@ describe('Node — fallback', () => {
     const node = makeNode(async () => {
       throw new Error('raw');
     });
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(result.branch).toBe('error');
     expect(result.data).toBeInstanceOf(Error);
   });
@@ -570,7 +579,7 @@ describe('Node — abort hook', () => {
       },
       { onAbort },
     );
-    const result = await node._exec(packet({ data: 'x' }));
+    const result = await node._exec(packet({ data: 'x', deps: {}, context: {} }));
     expect(onAbort).toHaveBeenCalledOnce();
     expect(result.branch).toBe('abort');
   });
@@ -586,7 +595,7 @@ describe('Node — abort hook', () => {
         },
       },
     );
-    await expect(node._exec(packet({ data: 'x' }))).resolves.toMatchObject({ branch: 'abort' });
+    await expect(node._exec(packet({ data: 'x', deps: {}, context: {} }))).resolves.toMatchObject({ branch: 'abort' });
   });
 });
 
@@ -597,15 +606,15 @@ describe('Flow — traversal', () => {
     const results: string[] = [];
     const a = makeNode(async (p) => {
       results.push('A');
-      return packet({ data: p.data, branch: 'default' });
+      return packet({ data: p.data, branch: 'default', deps: p.deps, context: p.context });
     });
     const b = makeNode(async (p) => {
       results.push('B');
-      return exit({ data: p.data });
+      return exit({ data: p.data, deps: p.deps, context: p.context });
     });
     a.next(b);
     const flow = makeFlow(a);
-    const out = await flow.run(packet({ data: 'start' }));
+    const out = await flow.run(packet({ data: 'start', deps: {}, context: {} }));
     expect(results).toEqual(['A', 'B']);
     expect(out.branch).toBe('exit');
   });
@@ -614,56 +623,60 @@ describe('Flow — traversal', () => {
     const signals: (AbortSignal | undefined)[] = [];
     const a = makeNode(async (p) => {
       signals.push(p.signal);
-      return exit();
+      return exit({ data: undefined, deps: p.deps, context: p.context });
     });
     const flow = makeFlow(a);
-    await flow.run(packet({ data: 'x' }));
+    await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(signals[0]).toBeInstanceOf(AbortSignal);
   });
 
   it('context from each node is forwarded to the next', async () => {
-    const a = makeNode(async (p) => packet({ data: p.data, branch: 'default', context: { step: 1 } }));
-    const b = makeNode(async (p) => exit({ data: p.data, context: { ...((p.context as any) ?? {}), step: 2 } }));
+    const a = makeNode(async (p) => packet({ data: p.data, branch: 'default', context: { step: 1 }, deps: p.deps }));
+    const b = makeNode(async (p) =>
+      exit({ data: p.data, context: { ...((p.context as any) ?? {}), step: 2 }, deps: p.deps }),
+    );
     a.next(b);
     const flow = makeFlow(a);
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.context).toMatchObject({ step: 2 });
   });
 
   it('advances using result.branch', async () => {
     const visited: string[] = [];
-    const start = makeNode(async () => {
+    const start = makeNode(async (p) => {
       visited.push('start');
-      return packet({ data: 1, branch: 'go' });
+      return packet({ data: 1, branch: 'go', deps: p.deps, context: p.context });
     });
-    const go = makeNode(async () => {
+    const go = makeNode(async (p) => {
       visited.push('go');
-      return exit({ data: 2 });
+      return exit({ data: 2, deps: p.deps, context: p.context });
     });
-    const skip = makeNode(async () => {
+    const skip = makeNode(async (p) => {
       visited.push('skip');
-      return exit({ data: 3 });
+      return exit({ data: 3, deps: p.deps, context: p.context });
     });
     start.branch('go', go).branch('skip', skip);
     const flow = makeFlow(start);
-    await flow.run(packet({ data: 'x' }));
+    await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(visited).toEqual(['start', 'go']);
   });
 
   it('returns result as-is when no next node for branch (implicit exit)', async () => {
-    const node = makeNode(async () => packet({ data: 'terminal', branch: 'nowhere' }));
+    const node = makeNode(async (p) =>
+      packet({ data: 'terminal', branch: 'nowhere', deps: p.deps, context: p.context }),
+    );
     const flow = makeFlow(node);
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.data).toBe('terminal');
     expect(out.branch).toBe('nowhere');
   });
 
   it('branch: default used when run returns no branch', async () => {
-    const a = makeNode(async () => packet({ data: 'result' }));
-    const b = makeNode(async (p) => exit({ data: p.data }));
+    const a = makeNode(async (p) => packet({ data: 'result', deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
     a.next(b);
     const flow = makeFlow(a);
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('exit');
     expect(out.data).toBe('result');
   });
@@ -674,9 +687,9 @@ describe('Flow — traversal', () => {
 describe('Flow — reserved branches', () => {
   it('exit branch terminates flow and calls onExit', async () => {
     const onExit = vi.fn(async () => {});
-    const node = makeNode(async () => exit({ data: 'done' }));
+    const node = makeNode(async (p) => exit({ data: 'done', deps: p.deps, context: p.context }));
     const flow = makeFlow(node, { onExit });
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('exit');
     expect(out.data).toBe('done');
     expect(onExit).toHaveBeenCalledOnce();
@@ -688,16 +701,16 @@ describe('Flow — reserved branches', () => {
       throw new DOMException('Aborted', 'AbortError');
     });
     const flow = makeFlow(node, { onAbort });
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('abort');
     expect(onAbort).toHaveBeenCalled();
   });
 
   it('error branch triggers error chain (terminal if no handler)', async () => {
     const onError = vi.fn(async () => {});
-    const node = makeNode(async () => error({ data: 'bad' }));
+    const node = makeNode(async (p) => error({ data: 'bad', deps: p.deps, context: p.context }));
     const flow = makeFlow(node, { onError });
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('error');
     expect(onError).toHaveBeenCalledOnce();
   });
@@ -710,24 +723,24 @@ describe('Flow — error chain', () => {
     const visited: string[] = [];
     const handler = makeNode(async (p) => {
       visited.push('handler');
-      return exit({ data: p.data });
+      return exit({ data: p.data, deps: p.deps, context: p.context });
     });
-    const node = makeNode(async () => {
+    const node = makeNode(async (p) => {
       visited.push('main');
-      return error({ data: 'fail' });
+      return error({ data: 'fail', deps: p.deps, context: p.context });
     });
     node.branch('error', handler);
     const flow = makeFlow(node);
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(visited).toEqual(['main', 'handler']);
     expect(out.branch).toBe('exit');
   });
 
   it('step 2: calls flow.fallback if no error-branch node', async () => {
-    const fallbackFn = vi.fn(async () => exit({ data: 'flow-fallback' }));
-    const node = makeNode(async () => error({ data: 'fail' }));
+    const fallbackFn = vi.fn(async (p: any) => exit({ data: 'flow-fallback', deps: p.deps, context: p.context }));
+    const node = makeNode(async (p) => error({ data: 'fail', deps: p.deps, context: p.context }));
     const flow = makeFlow(node, { fallback: fallbackFn });
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(fallbackFn).toHaveBeenCalledOnce();
     expect(out.branch).toBe('exit');
     expect(out.data).toBe('flow-fallback');
@@ -735,56 +748,56 @@ describe('Flow — error chain', () => {
 
   it('step 3: calls onError and returns terminal error packet', async () => {
     const onError = vi.fn(async () => {});
-    const node = makeNode(async () => error({ data: 'terminal' }));
+    const node = makeNode(async (p) => error({ data: 'terminal', deps: p.deps, context: p.context }));
     const flow = makeFlow(node, { onError });
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(onError).toHaveBeenCalledOnce();
     expect(out.branch).toBe('error');
   });
 
   it('error chain: error-branch node → then continues traversal', async () => {
     const visited: string[] = [];
-    const final = makeNode(async () => {
+    const final = makeNode(async (p) => {
       visited.push('final');
-      return exit({ data: 'ok' });
+      return exit({ data: 'ok', deps: p.deps, context: p.context });
     });
-    const errHandler = makeNode(async () => {
+    const errHandler = makeNode(async (p) => {
       visited.push('errHandler');
-      return packet({ data: 'recovered' });
+      return packet({ data: 'recovered', deps: p.deps, context: p.context });
     });
     errHandler.next(final);
-    const start = makeNode(async () => {
+    const start = makeNode(async (p) => {
       visited.push('start');
-      return error({ data: 'oops' });
+      return error({ data: 'oops', deps: p.deps, context: p.context });
     });
     start.branch('error', errHandler);
     const flow = makeFlow(start);
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(visited).toEqual(['start', 'errHandler', 'final']);
     expect(out.branch).toBe('exit');
   });
 
   it('onError hook errors are swallowed', async () => {
-    const node = makeNode(async () => error({ data: 'x' }));
+    const node = makeNode(async (p) => error({ data: 'x', deps: p.deps, context: p.context }));
     const flow = makeFlow(node, {
       onError: async () => {
         throw new Error('hook exploded');
       },
     });
-    await expect(flow.run(packet({ data: 'x' }))).resolves.toMatchObject({ branch: 'error' });
+    await expect(flow.run(packet({ data: 'x', deps: {}, context: {} }))).resolves.toMatchObject({ branch: 'error' });
   });
 
   it('flow.error() forced error goes through error chain', async () => {
     const onError = vi.fn(async () => {});
     let flowRef: ReturnType<typeof makeFlow>;
-    const node = makeNode(async () => {
+    const node = makeNode(async (p) => {
       flowRef!.error('forced');
-      return packet({ data: 'continue' });
+      return packet({ data: 'continue', deps: p.deps, context: p.context });
     });
-    const next = makeNode(async () => exit({ data: 'should-not-reach' }));
+    const next = makeNode(async (p) => exit({ data: 'should-not-reach', deps: p.deps, context: p.context }));
     node.next(next);
     flowRef = makeFlow(node, { onError });
-    const out = await flowRef.run(packet({ data: 'x' }));
+    const out = await flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('error');
     expect(onError).toHaveBeenCalledOnce();
   });
@@ -795,30 +808,34 @@ describe('Flow — error chain', () => {
 describe('Flow — loop guards', () => {
   it('per-node maxLoopEntering throws when exceeded', async () => {
     const onError = vi.fn(async () => {});
-    const node = makeNode(async (p) => packet({ data: p.data }), { nodeOptions: { maxLoopEntering: 3 } });
+    const node = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }), {
+      nodeOptions: { maxLoopEntering: 3 },
+    });
     node.next(node);
     const flow = makeFlow(node, { onError });
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('error');
     expect(onError).toHaveBeenCalledOnce();
   });
 
   it('flow-level maxLoopEntering counts start node re-enterings', async () => {
     const onError = vi.fn(async () => {});
-    const node = makeNode(async (p) => packet({ data: p.data }));
+    const node = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
     node.next(node);
     const flow = makeFlow(node, { onError }, { maxLoopEntering: 2 });
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('error');
     expect(onError).toHaveBeenCalledOnce();
   });
 
   it('loop guard error goes through fallback chain', async () => {
-    const fallback = vi.fn(async () => exit({ data: 'caught' }));
-    const node = makeNode(async (p) => packet({ data: p.data }), { nodeOptions: { maxLoopEntering: 1 } });
+    const fallback = vi.fn(async (p: any) => exit({ data: 'caught', deps: p.deps, context: p.context }));
+    const node = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }), {
+      nodeOptions: { maxLoopEntering: 1 },
+    });
     node.next(node);
     const flow = makeFlow(node, { fallback });
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(fallback).toHaveBeenCalledOnce();
     expect(out.branch).toBe('exit');
   });
@@ -829,14 +846,14 @@ describe('Flow — loop guards', () => {
 describe('Flow — abort', () => {
   it('flow.abort() returns branch: abort', async () => {
     let flowRef: ReturnType<typeof makeFlow>;
-    const node = makeNode(async () => {
+    const node = makeNode(async (p) => {
       flowRef!.abort();
-      return packet({ data: 'after-abort' });
+      return packet({ data: 'after-abort', deps: p.deps, context: p.context });
     });
-    const next = makeNode(async () => exit({ data: 'next' }));
+    const next = makeNode(async (p) => exit({ data: 'next', deps: p.deps, context: p.context }));
     node.next(next);
     flowRef = makeFlow(node);
-    const out = await flowRef.run(packet({ data: 'x' }));
+    const out = await flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('abort');
   });
 
@@ -850,7 +867,7 @@ describe('Flow — abort', () => {
       { onAbort: nodeOnAbort },
     );
     const flow = makeFlow(node, { onAbort: flowOnAbort });
-    await flow.run(packet({ data: 'x' }));
+    await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(nodeOnAbort).toHaveBeenCalled();
     expect(flowOnAbort).toHaveBeenCalled();
   });
@@ -859,31 +876,31 @@ describe('Flow — abort', () => {
     const ctrl = new AbortController();
     const node = makeNode(async (p) => {
       ctrl.abort();
-      return packet({ data: p.data });
+      return packet({ data: p.data, deps: p.deps, context: p.context });
     });
-    const next = makeNode(async () => exit({ data: 'should-not-reach' }));
+    const next = makeNode(async (p) => exit({ data: 'should-not-reach', deps: p.deps, context: p.context }));
     node.next(next);
     const flow = makeFlow(node, {}, { signal: ctrl.signal });
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('abort');
   });
 
   it('if signal already aborted at construction, aborts immediately', async () => {
     const ctrl = new AbortController();
     ctrl.abort();
-    const node = makeNode(async () => exit({ data: 'should-not-run' }));
+    const node = makeNode(async (p) => exit({ data: 'should-not-run', deps: p.deps, context: p.context }));
     const flow = makeFlow(node, {}, { signal: ctrl.signal });
-    const out = await flow.run(packet({ data: 'x' }));
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('abort');
   });
 
   it('abort wakes a paused flow', async () => {
     let flowRef: ReturnType<typeof makeFlow>;
-    const a = makeNode(async (p) => packet({ data: p.data }));
-    const b = makeNode(async () => exit({ data: 'ok' }));
+    const a = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: 'ok', deps: p.deps, context: p.context }));
     a.next(b);
     flowRef = makeFlow(a);
-    const runPromise = flowRef.run(packet({ data: 'x' }));
+    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     flowRef.pause();
     await new Promise((r) => setTimeout(r, 10));
     flowRef.abort();
@@ -897,12 +914,12 @@ describe('Flow — abort', () => {
 describe('Flow — pause / resume', () => {
   it('pause() holds run() pending until resume() is called', async () => {
     let flowRef: ReturnType<typeof makeFlow>;
-    const a = makeNode(async (p) => packet({ data: p.data }));
-    const b = makeNode(async (p) => exit({ data: p.data }));
+    const a = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
     a.next(b);
     flowRef = makeFlow(a);
     flowRef.pause();
-    const runPromise = flowRef.run(packet({ data: 'payload' }));
+    const runPromise = flowRef.run(packet({ data: 'payload', deps: {}, context: {} }));
     let resolved = false;
     runPromise.then(() => {
       resolved = true;
@@ -919,12 +936,12 @@ describe('Flow — pause / resume', () => {
   it('onPause fires with checkpoint packet before suspending', async () => {
     const onPause = vi.fn(async () => {});
     let flowRef: ReturnType<typeof makeFlow>;
-    const a = makeNode(async (p) => packet({ data: p.data, context: { step: 'a' } }));
-    const b = makeNode(async (p) => exit({ data: p.data }));
+    const a = makeNode(async (p) => packet({ data: p.data, context: { step: 'a' }, deps: p.deps }));
+    const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
     a.next(b);
     flowRef = makeFlow(a, { onPause });
     flowRef.pause();
-    const runPromise = flowRef.run(packet({ data: 'x' }));
+    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     await new Promise((r) => setTimeout(r, 10));
     expect(onPause).toHaveBeenCalledOnce();
     flowRef.resume();
@@ -933,26 +950,26 @@ describe('Flow — pause / resume', () => {
 
   it('resume(packet) replaces the checkpoint packet', async () => {
     let flowRef: ReturnType<typeof makeFlow>;
-    const a = makeNode(async (p) => packet({ data: p.data }));
-    const b = makeNode(async (p) => exit({ data: p.data }));
+    const a = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
     a.next(b);
     flowRef = makeFlow(a);
     flowRef.pause();
-    const runPromise = flowRef.run(packet({ data: 'original' }));
+    const runPromise = flowRef.run(packet({ data: 'original', deps: {}, context: {} }));
     await new Promise((r) => setTimeout(r, 10));
-    flowRef.resume(packet({ data: 'injected' }));
+    flowRef.resume(packet({ data: 'injected', deps: {}, context: {} }));
     const out = await runPromise;
     expect(out.data).toBe('injected');
   });
 
   it('resume() with no arg reuses checkpoint packet', async () => {
     let flowRef: ReturnType<typeof makeFlow>;
-    const a = makeNode(async (p) => packet({ data: p.data }));
-    const b = makeNode(async (p) => exit({ data: p.data }));
+    const a = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
     a.next(b);
     flowRef = makeFlow(a);
     flowRef.pause();
-    const runPromise = flowRef.run(packet({ data: 'checkpoint-data' }));
+    const runPromise = flowRef.run(packet({ data: 'checkpoint-data', deps: {}, context: {} }));
     await new Promise((r) => setTimeout(r, 10));
     flowRef.resume();
     const out = await runPromise;
@@ -962,12 +979,12 @@ describe('Flow — pause / resume', () => {
   it('onResume fires only on genuine resume (not on abort wake)', async () => {
     const onResume = vi.fn(async () => {});
     let flowRef: ReturnType<typeof makeFlow>;
-    const a = makeNode(async (p) => packet({ data: p.data }));
-    const b = makeNode(async () => exit({ data: 'ok' }));
+    const a = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: 'ok', deps: p.deps, context: p.context }));
     a.next(b);
     flowRef = makeFlow(a, { onResume });
     flowRef.pause();
-    const runPromise = flowRef.run(packet({ data: 'x' }));
+    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     await new Promise((r) => setTimeout(r, 10));
     flowRef.abort();
     await runPromise;
@@ -977,12 +994,12 @@ describe('Flow — pause / resume', () => {
   it('onResume fires on genuine resume', async () => {
     const onResume = vi.fn(async () => {});
     let flowRef: ReturnType<typeof makeFlow>;
-    const a = makeNode(async (p) => packet({ data: p.data }));
-    const b = makeNode(async () => exit({ data: 'ok' }));
+    const a = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: 'ok', deps: p.deps, context: p.context }));
     a.next(b);
     flowRef = makeFlow(a, { onResume });
     flowRef.pause();
-    const runPromise = flowRef.run(packet({ data: 'x' }));
+    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     await new Promise((r) => setTimeout(r, 10));
     flowRef.resume();
     await runPromise;
@@ -990,19 +1007,19 @@ describe('Flow — pause / resume', () => {
   });
 
   it('resume() throws if flow is not paused', () => {
-    const node = makeNode(async (p) => exit({ data: p.data }));
+    const node = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
     const flow = makeFlow(node);
     expect(() => flow.resume()).toThrow('Flow is not paused');
   });
 
   it('exit() while paused wakes and terminates with exit branch', async () => {
     let flowRef: ReturnType<typeof makeFlow>;
-    const a = makeNode(async (p) => packet({ data: p.data }));
-    const b = makeNode(async () => exit({ data: 'ok' }));
+    const a = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: 'ok', deps: p.deps, context: p.context }));
     a.next(b);
     flowRef = makeFlow(a);
     flowRef.pause();
-    const runPromise = flowRef.run(packet({ data: 'x' }));
+    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     await new Promise((r) => setTimeout(r, 10));
     flowRef.exit();
     const out = await runPromise;
@@ -1015,7 +1032,7 @@ describe('Flow — pause / resume', () => {
     const a = makeNode(
       async (p) => {
         order.push('run');
-        return packet({ data: p.data });
+        return packet({ data: p.data, deps: p.deps, context: p.context });
       },
       {
         preprocess: async (p) => {
@@ -1028,15 +1045,115 @@ describe('Flow — pause / resume', () => {
         },
       },
     );
-    const b = makeNode(async () => exit({ data: 'done' }));
+    const b = makeNode(async (p) => exit({ data: 'done', deps: p.deps, context: p.context }));
     a.next(b);
     flowRef = makeFlow(a);
     flowRef.pause();
-    const runPromise = flowRef.run(packet({ data: 'x' }));
+    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     await new Promise((r) => setTimeout(r, 10));
     expect(order).toEqual(['pre', 'run', 'post']);
     flowRef.resume();
     await runPromise;
+  });
+
+  it('pause packet: node returns pause() and flow suspends', async () => {
+    const onPause = vi.fn(async () => {});
+    let flowRef: ReturnType<typeof makeFlow>;
+    const a = makeNode(async (p) => pause({ data: 'waiting', deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
+    a.branch('pause', b);
+    flowRef = makeFlow(a, { onPause });
+    const runPromise = flowRef.run(packet({ data: 'initial', deps: {}, context: {} }));
+    let resolved = false;
+    runPromise.then(() => {
+      resolved = true;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(resolved).toBe(false);
+    expect(onPause).toHaveBeenCalledOnce();
+    flowRef.resume(packet({ data: 'resumed', deps: {}, context: {} }));
+    const out = await runPromise;
+    expect(resolved).toBe(true);
+    expect(out.data).toBe('resumed'); // resumed packet passed to b
+  });
+
+  it('node.resume(): node-driven resume wakes flow', async () => {
+    let nodeRef: ReturnType<typeof makeNode>;
+    let flowRef: ReturnType<typeof makeFlow>;
+    const a = makeNode(async (p) => pause({ data: 'waiting', deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
+    a.branch('pause', b);
+    nodeRef = a;
+    flowRef = makeFlow(a);
+    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
+    await new Promise((r) => setTimeout(r, 10));
+    // Node-driven resume
+    nodeRef.resume(packet({ data: 'node-resumed', deps: {}, context: {} }));
+    const out = await runPromise;
+    expect(out.data).toBe('node-resumed');
+  });
+
+  it('node.resume() while not paused is silently ignored', async () => {
+    const a = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
+    const nodeRef = a;
+    const flowRef = makeFlow(a);
+    const out = await flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
+    // node.resume() when not paused — should not throw
+    expect(() => nodeRef.resume(packet({ data: 'y', deps: {}, context: {} }))).not.toThrow();
+    expect(out.data).toBe('x');
+  });
+
+  it('double node.resume() — second call ignored', async () => {
+    let nodeRef: ReturnType<typeof makeNode>;
+    const a = makeNode(async (p) => pause({ data: 'waiting', deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
+    a.branch('pause', b);
+    nodeRef = a;
+    const flowRef = makeFlow(a);
+    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
+    await new Promise((r) => setTimeout(r, 10));
+    nodeRef.resume(packet({ data: 'first', deps: {}, context: {} }));
+    // Second resume while first is already processing — should be ignored
+    nodeRef.resume(packet({ data: 'second', deps: {}, context: {} }));
+    const out = await runPromise;
+    expect(out.data).toBe('first');
+  });
+
+  it('pause packet with no pause branch wired bubbles up as-is', async () => {
+    const a = makeNode(async (p) => pause({ data: 'waiting', deps: p.deps, context: p.context }));
+    // No branch('pause', ...) wired
+    const flowRef = makeFlow(a);
+    const out = await flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
+    expect(out.branch).toBe('pause');
+    expect(out.data).toBe('waiting');
+  });
+
+  it('pause packet: both node.resume() and flow.pause()/resume() work together', async () => {
+    let nodeRef: ReturnType<typeof makeNode>;
+    let flowRef: ReturnType<typeof makeFlow>;
+    const a = makeNode(async (p) => pause({ data: 'waiting', deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
+    a.branch('pause', b);
+    nodeRef = a;
+    flowRef = makeFlow(a);
+    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
+    await new Promise((r) => setTimeout(r, 10));
+    // Woke by flow.pause() then node.resume() — node wins
+    nodeRef.resume(packet({ data: 'via-node', deps: {}, context: {} }));
+    const out = await runPromise;
+    expect(out.data).toBe('via-node');
+  });
+
+  it('pause then abort: abort wakes the paused flow', async () => {
+    const a = makeNode(async (p) => pause({ data: 'waiting', deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
+    a.branch('pause', b);
+    const flowRef = makeFlow(a);
+    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
+    await new Promise((r) => setTimeout(r, 10));
+    flowRef.abort();
+    const out = await runPromise;
+    expect(out.branch).toBe('abort');
   });
 });
 
@@ -1046,14 +1163,14 @@ describe('Flow — forced exit', () => {
   it('flow.exit() resolves with branch: exit and calls onExit', async () => {
     const onExit = vi.fn(async () => {});
     let flowRef: ReturnType<typeof makeFlow>;
-    const node = makeNode(async () => {
+    const node = makeNode(async (p) => {
       flowRef!.exit();
-      return packet({ data: 'ignored' });
+      return packet({ data: 'ignored', deps: p.deps, context: p.context });
     });
-    const next = makeNode(async () => exit({ data: 'next' }));
+    const next = makeNode(async (p) => exit({ data: 'next', deps: p.deps, context: p.context }));
     node.next(next);
     flowRef = makeFlow(node, { onExit });
-    const out = await flowRef.run(packet({ data: 'x' }));
+    const out = await flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('exit');
     expect(onExit).toHaveBeenCalledOnce();
   });
@@ -1063,10 +1180,10 @@ describe('Flow — forced exit', () => {
 
 describe('Flow — Node compatibility', () => {
   it('a Flow can be used as a node inside another Flow', async () => {
-    const inner = makeNode(async () => exit({ data: 'inner-done' }));
+    const inner = makeNode(async (p) => exit({ data: 'inner-done', deps: p.deps, context: p.context }));
     const innerFlow = makeFlow(inner);
     const outer = makeFlow(innerFlow as unknown as Node<any, any, any, any>);
-    const out = await outer.run(packet({ data: 'x' }));
+    const out = await outer.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('exit');
     expect(out.data).toBe('inner-done');
   });
@@ -1077,19 +1194,19 @@ describe('Flow — Node compatibility', () => {
     });
     const innerFlow = makeFlow(innerNode);
     const outer = makeFlow(innerFlow as unknown as Node<any, any, any, any>);
-    const out = await outer.run(packet({ data: 'x' }));
+    const out = await outer.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('abort');
   });
 
   it('maxLoopEntering on Flow used as node counts outer entering', async () => {
     const onError = vi.fn(async () => {});
-    const innerNode = makeNode(async (p) => packet({ data: p.data }));
+    const innerNode = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
     const innerFlow = makeFlow(innerNode, {}, { maxLoopEntering: 1 });
-    const looper = makeNode(async (p) => packet({ data: p.data }));
+    const looper = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
     looper.next(innerFlow as unknown as Node<any, any, any, any>);
     (innerFlow as unknown as Node<any, any, any, any>).next(looper);
     const outer = makeFlow(looper, { onError });
-    const out = await outer.run(packet({ data: 'x' }));
+    const out = await outer.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('error');
     expect(onError).toHaveBeenCalledOnce();
   });
@@ -1099,13 +1216,13 @@ describe('Flow — Node compatibility', () => {
 
 describe('Flow — lifecycle hooks swallow their own errors', () => {
   it('onExit error is swallowed', async () => {
-    const node = makeNode(async () => exit({ data: 'done' }));
+    const node = makeNode(async (p) => exit({ data: 'done', deps: p.deps, context: p.context }));
     const flow = makeFlow(node, {
       onExit: async () => {
         throw new Error('onExit boom');
       },
     });
-    await expect(flow.run(packet({ data: 'x' }))).resolves.toMatchObject({ branch: 'exit' });
+    await expect(flow.run(packet({ data: 'x', deps: {}, context: {} }))).resolves.toMatchObject({ branch: 'exit' });
   });
 
   it('onAbort error is swallowed', async () => {
@@ -1117,13 +1234,13 @@ describe('Flow — lifecycle hooks swallow their own errors', () => {
         throw new Error('onAbort boom');
       },
     });
-    await expect(flow.run(packet({ data: 'x' }))).resolves.toMatchObject({ branch: 'abort' });
+    await expect(flow.run(packet({ data: 'x', deps: {}, context: {} }))).resolves.toMatchObject({ branch: 'abort' });
   });
 
   it('onPause error is swallowed', async () => {
     let flowRef: ReturnType<typeof makeFlow>;
-    const a = makeNode(async (p) => packet({ data: p.data }));
-    const b = makeNode(async () => exit({ data: 'ok' }));
+    const a = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: 'ok', deps: p.deps, context: p.context }));
     a.next(b);
     flowRef = makeFlow(a, {
       onPause: async () => {
@@ -1131,7 +1248,7 @@ describe('Flow — lifecycle hooks swallow their own errors', () => {
       },
     });
     flowRef.pause();
-    const runPromise = flowRef.run(packet({ data: 'x' }));
+    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     await new Promise((r) => setTimeout(r, 10));
     flowRef.resume();
     await expect(runPromise).resolves.toMatchObject({ branch: 'exit' });
@@ -1142,33 +1259,33 @@ describe('Flow — lifecycle hooks swallow their own errors', () => {
 
 describe('Edge Cases & Additional Coverage', () => {
   it('handles empty batch correctly', async () => {
-    const node = makeNode(async (p) => packet({ data: p.data }));
-    const result = await node._exec(batch({ data: [] }));
+    const node = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
+    const result = await node._exec(batch({ data: [], deps: {}, context: {} }));
     expect(result.type).toBe('batch');
     expect(result.data).toEqual([]);
   });
 
   it('nested flow error is routed to "error" branch in outer flow', async () => {
-    const innerNode = makeNode(async () => error({ data: 'inner-fail' }));
+    const innerNode = makeNode(async (p) => error({ data: 'inner-fail', deps: p.deps, context: p.context }));
     const innerFlow = makeFlow(innerNode);
-    const handler = makeNode(async () => exit({ data: 'handled-inner-error' }));
+    const handler = makeNode(async (p) => exit({ data: 'handled-inner-error', deps: p.deps, context: p.context }));
     (innerFlow as unknown as Node<any, any, any, any>).branch('error', handler);
     const outerFlow = makeFlow(innerFlow as unknown as Node<any, any, any, any>);
-    const result = await outerFlow.run(packet({ data: 'start' }));
+    const result = await outerFlow.run(packet({ data: 'start', deps: {}, context: {} }));
     expect(result.branch).toBe('exit');
     expect(result.data).toBe('handled-inner-error');
   });
 
   it('abort during preprocess prevents run execution', async () => {
     const ctrl = new AbortController();
-    const runFn = vi.fn(async (p: any) => packet({ data: p.data }));
+    const runFn = vi.fn(async (p: any) => packet({ data: p.data, deps: p.deps, context: p.context }));
     const node = makeNode(runFn, {
       preprocess: async (p) => {
         ctrl.abort();
         return p;
       },
     });
-    const result = await node._exec({ ...packet({ data: 'x' }), signal: ctrl.signal });
+    const result = await node._exec({ ...packet({ data: 'x', deps: {}, context: {} }), signal: ctrl.signal });
     expect(result.branch).toBe('abort');
     expect(runFn).not.toHaveBeenCalled();
   });

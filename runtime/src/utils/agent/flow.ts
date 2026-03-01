@@ -28,8 +28,8 @@ export type NodeOptions = {
 
 type PacketBase<TDeps, TContext> = {
   branch?: string;
-  deps?: TDeps;
-  context?: TContext;
+  deps: TDeps;
+  context: TContext;
   signal?: AbortSignal;
 };
 
@@ -42,7 +42,7 @@ type PacketBase<TDeps, TContext> = {
  */
 export type SinglePacket<TData = unknown, TDeps = unknown, TContext = unknown> = PacketBase<TDeps, TContext> & {
   type?: 'single';
-  data?: TData;
+  data: TData;
 };
 
 /**
@@ -56,24 +56,37 @@ export type BatchPacket<TData = unknown, TDeps = unknown, TContext = unknown> = 
 };
 
 /**
+ * Produced when a single execution fails.
+ * Routed to `fallback` instead of `postprocess`.
+ *
+ * - `data` — the error that was thrown
+ */
+export type ErrorPacket<TData = unknown, TDeps = unknown, TContext = unknown> = PacketBase<TDeps, TContext> & {
+  branch: 'error';
+  data: TData;
+};
+
+/**
  * Produced when at least one item in a batch fails.
  * Routed to `fallback` instead of `postprocess`.
  *
  * - `data`   — successful results collected so far (may be empty)
- * - `errors` — `AggregateError` wrapping all per-item failures
+ * - `error` — `AggregateError` wrapping all per-item failures
  */
 export type BatchErrorPacket<TData = unknown, TDeps = unknown, TContext = unknown> = PacketBase<TDeps, TContext> & {
   type: 'batch';
   branch: 'error';
   data: TData[];
-  errors: AggregateError;
+  error: AggregateError;
 };
 
 /** Any packet that can flow between nodes. */
 export type Packet<TData = unknown, TDeps = unknown, TContext = unknown> =
   | SinglePacket<TData, TDeps, TContext>
   | BatchPacket<TData, TDeps, TContext>
-  | BatchErrorPacket<TData, TDeps, TContext>;
+  | ErrorPacket<TData, TDeps, TContext>
+  | BatchErrorPacket<TData, TDeps, TContext>
+  | PausePacket<TData, TDeps, TContext>;
 
 /**
  * Permissive output packet union for branch-aware nodes.
@@ -84,6 +97,16 @@ export type BranchPacket<TBranches extends Record<string, unknown>, TDeps = unkn
   | { [K in keyof TBranches]: SinglePacket<TBranches[K], TDeps, TContext> }[keyof TBranches]
   | SinglePacket<void, TDeps, TContext>
   | BatchPacket<TBranches[keyof TBranches], TDeps, TContext>;
+
+/**
+ * Produced when a node explicitly pauses the flow.
+ * The flow suspends until `node.resume(packet)` or `flow.resume(packet)` is called.
+ * The resume packet becomes the input to the node wired on the 'pause' branch.
+ */
+export type PausePacket<TData = unknown, TDeps = unknown, TContext = unknown> = PacketBase<TDeps, TContext> & {
+  branch: 'pause';
+  data: TData;
+};
 
 // ============================================================
 // Packet helpers — all single-argument with named fields
@@ -96,12 +119,12 @@ export type BranchPacket<TBranches extends Record<string, unknown>, TDeps = unkn
  *   return packet({ context: { ...p.context, session }, deps: p.deps });
  *   return packet({ data: result, branch: 'done', deps: p.deps, context: p.context });
  */
-export const packet = <TData = undefined, TDeps = unknown, TContext = unknown>(opts?: {
-  data?: TData;
+export const packet = <TData = undefined, TDeps = unknown, TContext = unknown>(opts: {
+  data: TData;
   branch?: string;
-  deps?: TDeps;
-  context?: TContext;
-}): SinglePacket<TData, TDeps, TContext> => ({ ...(opts ?? {}) }) as SinglePacket<TData, TDeps, TContext>;
+  deps: TDeps;
+  context: TContext;
+}): SinglePacket<TData, TDeps, TContext> => ({ ...opts }) as SinglePacket<TData, TDeps, TContext>;
 
 /**
  * Build a batch packet.
@@ -112,8 +135,8 @@ export const packet = <TData = undefined, TDeps = unknown, TContext = unknown>(o
 export const batch = <TData, TDeps = unknown, TContext = unknown>(opts: {
   data: TData[];
   branch?: string;
-  deps?: TDeps;
-  context?: TContext;
+  deps: TDeps;
+  context: TContext;
 }): BatchPacket<TData, TDeps, TContext> => ({ type: 'batch', ...opts });
 
 /**
@@ -123,10 +146,10 @@ export const batch = <TData, TDeps = unknown, TContext = unknown>(opts: {
  *   return exit({ data: result, context: p.context });
  *   return exit();
  */
-export const exit = <TData = undefined, TDeps = unknown, TContext = unknown>(opts?: {
-  data?: TData;
-  deps?: TDeps;
-  context?: TContext;
+export const exit = <TData = undefined, TDeps = unknown, TContext = unknown>(opts: {
+  data: TData;
+  deps: TDeps;
+  context: TContext;
 }): SinglePacket<TData, TDeps, TContext> => ({ ...opts, branch: 'exit' });
 
 /**
@@ -136,11 +159,26 @@ export const exit = <TData = undefined, TDeps = unknown, TContext = unknown>(opt
  *   return error({ data: new Error('bad'), context: p.context });
  *   return error();
  */
-export const error = <TData = undefined, TDeps = unknown, TContext = unknown>(opts?: {
-  data?: TData;
-  deps?: TDeps;
-  context?: TContext;
+export const error = <TData = undefined, TDeps = unknown, TContext = unknown>(opts: {
+  data: TData;
+  deps: TDeps;
+  context: TContext;
 }): SinglePacket<TData, TDeps, TContext> => ({ ...opts, branch: 'error' });
+
+/**
+ * Pause the containing Flow. The flow suspends until `node.resume(packet)` or
+ * `flow.resume(packet)` is called with a packet to pass to the next node.
+ *
+ * The next node is determined by `node.branch('pause', nextNode)` wiring.
+ *
+ * @example
+ *   return pause({ data: { waiting: true }, context: p.context, deps: p.deps });
+ */
+export const pause = <TData = undefined, TDeps = unknown, TContext = unknown>(opts: {
+  data: TData;
+  deps: TDeps;
+  context: TContext;
+}): PausePacket<TData, TDeps, TContext> => ({ ...opts, branch: 'pause' });
 
 // ============================================================
 // Node
@@ -160,6 +198,7 @@ export const error = <TData = undefined, TDeps = unknown, TContext = unknown>(op
  *   - `this['Ctx']`          → `TContext` — use to compose custom packet types
  *   - `this['In']`           → `SinglePacket<TInput, TDeps, TContext>`
  *   - `this['InBatch']`      → `BatchPacket<TInput, TDeps, TContext>`
+ *   - `this['InError']`      → `ErrorPacket<Error, TDeps, TContext>`
  *   - `this['InBatchError']` → `BatchErrorPacket<TInput, TDeps, TContext>`
  *   - `this['Out']`          → `BranchPacket<TBranches, TDeps, TContext>` — permissive union of all branch types
  *
@@ -186,10 +225,14 @@ export const error = <TData = undefined, TDeps = unknown, TContext = unknown>(op
  *     return packet({ data: p.data, branch: 'done', deps: p.deps, context: p.context });
  *   }
  *
- *   // Handle partial batch failure:
- *   async fallback(p: this['InBatchError'], err: AggregateError): Promise<this['Out']> {
- *     console.error('failures', err.errors, 'successes', p.data);
- *     return exit({ data: p.data, context: p.context });
+ *   // Handle errors:
+ *   async fallback(p: this['In'] | this['InError'] | this['InBatchError'], err: Error | AggregateError): Promise<this['Out']> {
+ *     if (err instanceof AggregateError) {
+ *       console.error('batch failures', err.error, 'successes', p.data);
+ *     } else {
+ *       console.error('error', err);
+ *     }
+ *     return exit({ context: p.context });
  *   }
  * }
  * ```
@@ -208,6 +251,7 @@ export abstract class Node<
 
   declare readonly In: SinglePacket<TInput, TDeps, TContext>;
   declare readonly InBatch: BatchPacket<TInput, TDeps, TContext>;
+  declare readonly InError: ErrorPacket<Error, TDeps, TContext>;
   declare readonly InBatchError: BatchErrorPacket<TInput, TDeps, TContext>;
 
   /** Permissive output — union of all branch data types, void, and batch. */
@@ -222,6 +266,9 @@ export abstract class Node<
     readonly timeout?: number;
     readonly maxLoopEntering?: number;
   };
+
+  /** @internal Callback for resuming a paused node (set by Flow) */
+  private _resumeCallback: ((p: any) => void) | null = null;
 
   constructor(options: NodeOptions = {}) {
     this.options = {
@@ -245,6 +292,24 @@ export abstract class Node<
     return this.branch('default', node);
   }
 
+  /**
+   * Resume this node if it is currently paused (idempotent).
+   * Calling when not paused is silently ignored.
+   *
+   * @example
+   *   node.resume(packet({ data: response, context: p.context, deps: p.deps }));
+   */
+  resume(p: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>): void {
+    if (!this._resumeCallback) return; // silently ignore if not paused
+    this._resumeCallback(p);
+    this._resumeCallback = null;
+  }
+
+  /** @internal Called by Flow to subscribe to resume events. Never rejects. */
+  _subscribeResume(callback: (p: any) => void): void {
+    this._resumeCallback = callback;
+  }
+
   // ---- Lifecycle methods (declare in subclass as needed) ---------------
 
   /**
@@ -263,14 +328,18 @@ export abstract class Node<
   /**
    * Required. Core logic. Always receives a single-item packet.
    *
-   * Use `this['In']` and `this['Out']` for typed params without repeating generics.
-   * When preprocess transforms the type, override the param type:
+   * **Input type:** When `preprocess` is defined, the input type is whatever `preprocess` outputs.
+   * Otherwise, it's `this['In']`. You can override the parameter type:
    *   `async run(p: SinglePacket<MyPreOutput, this['Deps'], this['Ctx']>): Promise<...>`
    *
-   * Return type can be `this['Out']` (branch-aware) or a custom packet type
-   * for intermediate output that postprocess will consume.
+   * **Return type:** When `postprocess` is defined, return intermediate data
+   * (e.g., `SinglePacket<IntermediateType, this['Deps'], this['Ctx']>`).
+   * Without postprocess, return `this['Out']` (branch-aware output).
+   * You can override the return type to match your needs.
    */
-  abstract run(packet: this['In']): Promise<this['Out']>;
+  abstract run(
+    packet: SinglePacket<any, TDeps, TContext> | this['In'],
+  ): Promise<SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext> | this['Out']>;
 
   /**
    * Optional. Receives the assembled result after all `run()` calls complete successfully.
@@ -287,11 +356,14 @@ export abstract class Node<
   /**
    * Optional. Called on error in single mode or any failure in batch mode.
    *
-   * - Single error: `p` is `this['In']`, `err` is a plain `Error`
+   * - Single error: `p` is `this['In']` and `this['InError']`, `err` is a plain `Error`
    * - Batch partial/full failure: `p` is `this['InBatchError']`, `err` is `AggregateError`
-   *   — `p.data` holds all successful results, `p.errors` wraps all individual failures
+   *   — `p.data` holds all successful results, `p.error` wraps all individual failures
    */
-  fallback?(packet: this['In'] | this['InBatchError'], err: Error | AggregateError): Promise<this['Out']>;
+  fallback?(
+    packet: this['In'] | this['InError'] | this['InBatchError'],
+    err: Error | AggregateError,
+  ): Promise<this['Out']>;
 
   /**
    * Optional. Called when the flow aborts while this node is active.
@@ -347,19 +419,21 @@ export abstract class Node<
             type: 'batch',
             branch: 'error',
             data: successes,
-            errors: new AggregateError(failures, `${failures.length} of ${settled.length} batch items failed`),
+            error: new AggregateError(failures, `${failures.length} of ${settled.length} batch items failed`),
             deps: preprocessed.deps,
             context: preprocessed.context,
           };
           if (this.fallback) {
-            return this.fallback(batchErr as this['InBatchError'], batchErr.errors) as Promise<any>;
+            return this.fallback(batchErr as this['InBatchError'], batchErr.error) as Promise<any>;
           }
           return {
-            data: batchErr.errors,
+            type: 'batch',
+            data: successes,
+            error: batchErr.error,
             branch: 'error',
             deps: preprocessed.deps,
             context: preprocessed.context,
-          };
+          } as BatchErrorPacket<any, TDeps, TContext>;
         }
 
         result = {
@@ -536,17 +610,10 @@ export class Flow<
 
   onPause?(packet: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>): Promise<void>;
   onResume?(packet: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>): Promise<void>;
-  onExit?(packet: SinglePacket<any, TDeps, TContext>): Promise<void>;
-  onError?(packet: SinglePacket<any, TDeps, TContext>): Promise<void>;
+  onExit?(packet: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>): Promise<void>;
+  onError?(packet: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>): Promise<void>;
 
   // ---- Traversal helpers ---------------------------------------------
-
-  private async _handleTerminalError(
-    errPacket: SinglePacket<any, TDeps, TContext>,
-  ): Promise<SinglePacket<any, TDeps, TContext>> {
-    if (this.onError) await this.onError(errPacket).catch(() => {});
-    return errPacket;
-  }
 
   private _checkLoopGuard(node: Node<TDeps, TContext, any, any>, enters: number): void {
     const { maxLoopEntering } = node.options;
@@ -563,6 +630,7 @@ export class Flow<
   private async _suspendUntilResumed(
     checkpointPacket: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>,
     nextNode: Node<TDeps, TContext, any, any>,
+    pausingNode?: Node<TDeps, TContext, any, any>,
   ): Promise<SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>> {
     this._checkpoint = { node: nextNode, packet: checkpointPacket };
     if (this.onPause) await this.onPause(checkpointPacket).catch(() => {});
@@ -570,6 +638,8 @@ export class Flow<
     const resumed = await new Promise<SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>>(
       (resolve) => {
         this._resumeResolve = resolve;
+        // Subscribe the pausing node to the same resolve callback
+        if (pausingNode) pausingNode._subscribeResume(resolve);
       },
     );
     this._checkpoint = null;
@@ -582,7 +652,9 @@ export class Flow<
 
   // ---- Traversal -----------------------------------------------------
 
-  async run(inPacket: this['In']): Promise<this['Out']> {
+  async run(
+    inPacket: SinglePacket<any, TDeps, TContext> | this['In'],
+  ): Promise<SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext> | this['Out']> {
     const { signal } = this._controller;
     const enterCount = new Map<Node, number>();
     let currentNode: Node<TDeps, TContext, any, any> = this._start;
@@ -592,8 +664,8 @@ export class Flow<
       for (;;) {
         // ── Abort ─────────────────────────────────────────────────────
         if (signal.aborted) {
-          if (currentNode.onAbort) await currentNode.onAbort(currentPacket as any).catch(() => {});
-          if (this.onAbort) await this.onAbort(currentPacket as any).catch(() => {});
+          if (currentNode.onAbort) await currentNode.onAbort(currentPacket).catch(() => {});
+          if (this.onAbort) await this.onAbort(currentPacket).catch(() => {});
           return { branch: 'abort', deps: inPacket.deps, context: currentPacket.context } as this['Out'];
         }
 
@@ -604,17 +676,18 @@ export class Flow<
             branch: 'exit',
             deps: inPacket.deps,
             context: currentPacket.context,
+            data: undefined,
           };
           if (this.onExit) await this.onExit(exitPacket).catch(() => {});
-          return exitPacket as this['Out'];
+          return exitPacket;
         }
 
         // ── Forced error ──────────────────────────────────────────────
         const pendingError = this._errorPending;
         if (pendingError) {
           this._errorPending = null;
-          const errData = pendingError.data;
-          const errPacket: SinglePacket<any, TDeps, TContext> = {
+          const errData = ensureError(pendingError.data);
+          const errPacket: ErrorPacket<Error, TDeps, TContext> = {
             data: errData,
             branch: 'error',
             deps: inPacket.deps,
@@ -626,9 +699,9 @@ export class Flow<
             currentPacket = { ...errPacket, signal };
             continue;
           }
-          if (this.fallback)
-            return this.fallback(inPacket, errData instanceof Error ? errData : new Error(String(errData)));
-          return (await this._handleTerminalError(errPacket)) as this['Out'];
+          if (this.onError) await this.onError(errPacket).catch(() => {});
+          if (this.fallback) return this.fallback(inPacket, errData);
+          return errPacket;
         }
 
         // ── Loop guards ───────────────────────────────────────────────
@@ -642,12 +715,12 @@ export class Flow<
         // ── Branch routing ────────────────────────────────────────────
         if (result.branch === 'exit') {
           if (this.onExit) await this.onExit(result as SinglePacket<any, TDeps, TContext>).catch(() => {});
-          return result as this['Out'];
+          return result;
         }
 
         if (result.branch === 'abort') {
           if (this.onAbort) await this.onAbort(currentPacket as any).catch(() => {});
-          return result as this['Out'];
+          return result;
         }
 
         if (result.branch === 'error') {
@@ -658,13 +731,29 @@ export class Flow<
             continue;
           }
           const errVal = (result as SinglePacket<any>).data;
+          if (this.onError) await this.onError(result).catch(() => {});
           if (this.fallback)
             return this.fallback(inPacket, errVal instanceof Error ? errVal : new Error(String(errVal)));
-          return (await this._handleTerminalError(result as SinglePacket<any, TDeps, TContext>)) as this['Out'];
+          return result;
+        }
+
+        // ── Pause (reserved branch) ────────────────────────────────────
+        if (result.branch === 'pause') {
+          const pauseHandler = currentNode.branches.get('pause');
+          if (!pauseHandler) return result; // no continuation wired — bubble up
+
+          // Clear any pending external pause
+          this._pausePending = false;
+
+          // Suspend: resume packet → input to pauseHandler
+          const resumed = await this._suspendUntilResumed({ ...result, signal }, pauseHandler, currentNode);
+          currentNode = pauseHandler;
+          currentPacket = { ...resumed, signal };
+          continue;
         }
 
         const nextNode = currentNode.branches.get(result.branch ?? 'default');
-        if (!nextNode) return result as this['Out'];
+        if (!nextNode) return result;
 
         // ── Pause ─────────────────────────────────────────────────────
         if (this._pausePending) {
@@ -681,13 +770,15 @@ export class Flow<
       }
     } catch (err) {
       const safeErr = ensureError(err);
-      if (this.fallback) return this.fallback(inPacket, safeErr);
-      return (await this._handleTerminalError({
+      const errPacket = {
         data: safeErr,
         branch: 'error',
         deps: inPacket.deps,
         context: inPacket.context,
-      })) as this['Out'];
+      } as ErrorPacket<Error, TDeps, TContext>;
+      if (this.fallback) return this.fallback(errPacket, safeErr);
+      if (this.onError) await this.onError(errPacket).catch(() => {});
+      return errPacket;
     }
   }
 }
