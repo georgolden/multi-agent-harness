@@ -2,23 +2,30 @@
  * Nodes for the taskScheduler flow using the new flow framework.
  * Each node has a clear, single responsibility.
  */
-import { Node, packet, batch, BatchPacket } from '../../utils/agent/flow.js';
+import { Node, packet, batch, BatchPacket, SinglePacket, pause } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import { createSystemPrompt } from './prompts/index.js';
 import { createToolHandler, TOOLS } from './tools.js';
 import type { App } from '../../app.js';
-import type { TaskSchedulerContext, AskUserContext } from './types.js';
-import { AssistantMessage, UserMessage, ToolResultMessage, type LLMToolCall } from '../../utils/message.js';
+import type { TaskSchedulerContext } from './types.js';
+import {
+  AssistantMessage,
+  UserMessage,
+  ToolResultMessage,
+  type LLMToolCall,
+  SystemMessage,
+} from '../../utils/message.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
 /**
  * PrepareInput: Prepare all context and create flow session with user's message (runs once)
  */
-export class PrepareInput extends Node<{ app: App }, TaskSchedulerContext, any, { default: void }> {
+export class PrepareInput extends Node<App, TaskSchedulerContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { userId, message } = p.context!;
-    const { app } = p.deps!;
+    const { userId } = p.context;
+    const app = p.deps;
+    const message = p.data;
     console.log(`[PrepareInput.run] Preparing context and creating flow session for user message: "${message}"`);
 
     const { data, services } = app;
@@ -45,7 +52,11 @@ export class PrepareInput extends Node<{ app: App }, TaskSchedulerContext, any, 
     await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
 
     console.log(`[PrepareInput.run] Created session '${session.id}' with system prompt and user message`);
-    return packet({ context: { ...p.context!, session }, deps: p.deps });
+    return packet({
+      data: undefined,
+      context: { ...p.context, session },
+      deps: p.deps,
+    });
   }
 }
 
@@ -54,23 +65,28 @@ export class PrepareInput extends Node<{ app: App }, TaskSchedulerContext, any, 
 /**
  * DecideAction: LLM decides what action to take using session from context
  */
-export class DecideAction extends Node<{ app: App }, TaskSchedulerContext, any, { ask_user: void; tool_calls: void }> {
+export class DecideAction extends Node<
+  App,
+  TaskSchedulerContext,
+  undefined,
+  { ask_user: LLMToolCall; tool_calls: LLMToolCall[]; response: string }
+> {
   constructor() {
     super({ maxRunTries: 3, wait: 1000 });
   }
 
   async run(p: this['In']): Promise<this['Out']> {
-    const { session } = p.context!;
+    const { session } = p.context;
 
     if (!session) {
       throw new Error('Session is required');
     }
 
-    const conversation = session.activeMessages.map((msg) => msg.message) as any[];
+    const conversation = session.activeMessages.map((msg) => msg.message);
 
     console.log(`[DecideAction.run] Using session '${session.id}' from context with ${conversation.length} messages`);
 
-    const messages = [{ role: 'system', content: session.systemPrompt }, ...conversation] as any[];
+    const messages = [new SystemMessage(session.systemPrompt).toJSON(), ...conversation];
 
     console.log(`[DecideAction.run] Calling LLM with ${messages.length} messages`);
 
@@ -81,41 +97,98 @@ export class DecideAction extends Node<{ app: App }, TaskSchedulerContext, any, 
 
     console.log(`[DecideAction.run] LLM response:`, JSON.stringify(assistantMsg.toJSON(), null, 2));
 
-    if ('toolCalls' in assistantMsg && assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0) {
-      console.log(`[DecideAction.run] Processing ${assistantMsg.toolCalls.length} tool calls`);
+    if ('toolCalls' in assistantMsg === false || !assistantMsg.toolCalls || assistantMsg.toolCalls.length === 0) {
+      const text = assistantMsg.toJSON().content || '';
+      console.log(`[DecideAction.run] Setting response to: "${text}"`);
       return packet({
-        context: { ...p.context!, toolCalls: assistantMsg.toolCalls },
-        branch: 'tool_calls',
+        data: text,
+        context: p.context,
+        branch: 'response',
         deps: p.deps,
       });
     }
 
-    // Text response — ask user
-    const text = (assistantMsg as any).text || '';
-    console.log(`[DecideAction.run] Setting response to: "${text}"`);
+    const askUserToolCall = assistantMsg.toolCalls.find((t: any) => t.funcion?.name === 'ask_user');
+    if (askUserToolCall) {
+      return packet({
+        branch: 'ask_user',
+        context: p.context,
+        deps: p.deps,
+        data: askUserToolCall,
+      });
+    }
+
+    console.log(`[DecideAction.run] Processing ${assistantMsg.toolCalls.length} tool calls`);
     return packet({
-      context: { ...p.context!, response: text },
-      branch: 'ask_user',
+      data: assistantMsg.toolCalls,
+      context: p.context,
+      branch: 'tool_calls',
       deps: p.deps,
     });
   }
 }
 
-// ─── AskUser ──────────────────────────────────────────────────────────────────
-
-/**
- * AskUser: Send response to user and mark session as completed
- */
-export class AskUser extends Node<{ app: App }, AskUserContext, any, { default: void }> {
+export class AskUser extends Node<
+  App,
+  TaskSchedulerContext,
+  { id: string; args: { question: string; options?: string[] } },
+  { default: void }
+> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { response, userId, session } = p.context!;
+    const { userId, session } = p.context;
 
-    console.log(`[AskUser.run] Sending message to userId: ${userId}, output: "${response}"`);
-    await session.respond(response);
-    await session.complete();
-    console.log(`[AskUser.run] Marked session ${session.id} as completed`);
+    const { question, options } = p.data.args;
+    const message = `
+    ${question}
 
-    return packet({ context: p.context, deps: p.deps });
+    ${options ? 'Options:' : ''}
+    ${options?.map((option, index) => `${index + 1}. ${option}`).join('\n')} 
+    `;
+    console.log(`[AskUser.run] Sending message to userId: ${userId}, output: "${message}"`);
+    await session!.respond(message);
+    p.deps.infra.bus.on(`user:message:${userId}`, ({ sessionId, message }: { sessionId: string; message: string }) => {
+      if (sessionId !== session!.id) return;
+      this.resume({ data: { message, toolCallId: p.data.id }, context: p.context, deps: p.deps });
+    });
+    await session!.pause();
+    return pause({
+      data: undefined,
+      context: p.context,
+      deps: p.deps,
+    });
+  }
+}
+
+export class UserResponse extends Node<
+  App,
+  TaskSchedulerContext,
+  { toolCallId: string; message: string },
+  { default: void }
+> {
+  async run(p: this['In']): Promise<this['Out']> {
+    const { session } = p.context;
+    const { toolCallId, message } = p.data;
+    await session!.addMessages([{ message: new ToolResultMessage({ toolCallId, content: message }).toJSON() }]);
+    await session!.pause();
+    return packet({
+      data: undefined,
+      context: p.context,
+      deps: p.deps,
+    });
+  }
+}
+
+export class Response extends Node<App, TaskSchedulerContext, string, { default: void }> {
+  async run(p: this['In']): Promise<this['Out']> {
+    const { userId, session } = p.context;
+    const response = p.data;
+    console.log(`[Response] Sending message to userId: ${userId}, output: "${response}"`);
+    await (await session!.respond(response)).complete();
+    return packet({
+      data: undefined,
+      context: p.context,
+      deps: p.deps,
+    });
   }
 }
 
@@ -130,9 +203,10 @@ type ToolCallResult = {
 /**
  * ToolCalls: Execute tool calls in parallel and process results
  */
-export class ToolCalls extends Node<{ app: App }, TaskSchedulerContext, LLMToolCall, { default: void }> {
-  async preprocess(p: this['In']): Promise<any> {
-    const { toolCalls } = p.context as any;
+export class ToolCalls extends Node<App, TaskSchedulerContext, LLMToolCall[], { default: void }> {
+  async preprocess(p: this['In']): Promise<BatchPacket<LLMToolCall, App, TaskSchedulerContext>> {
+    const toolCalls = p.data;
+    if (!toolCalls) throw new Error('toolCalls is required');
     console.log(`[ToolCalls.preprocess] Processing ${toolCalls.length} tool calls`);
     return batch({
       data: toolCalls,
@@ -141,8 +215,10 @@ export class ToolCalls extends Node<{ app: App }, TaskSchedulerContext, LLMToolC
     });
   }
 
-  async run(p: this['In']): Promise<any> {
-    const toolCall = p.data as LLMToolCall;
+  async run(
+    p: SinglePacket<LLMToolCall, App, TaskSchedulerContext>,
+  ): Promise<SinglePacket<ToolCallResult, App, TaskSchedulerContext>> {
+    const toolCall = p.data;
     const { name, id } = toolCall;
 
     const tool = TOOLS.find((t: any) => t.function?.name === name);
@@ -157,7 +233,7 @@ export class ToolCalls extends Node<{ app: App }, TaskSchedulerContext, LLMToolC
 
     console.log(`[ToolCalls.run] Executing tool '${name}'`);
     const handler = createToolHandler(name);
-    const res = await handler(p.deps!.app, p.context!, toolCall.args);
+    const res = await handler(p.deps, p.context, toolCall.args);
     return packet({
       data: { toolCallId: id, name, content: res } as ToolCallResult,
       context: p.context,
@@ -165,9 +241,9 @@ export class ToolCalls extends Node<{ app: App }, TaskSchedulerContext, LLMToolC
     });
   }
 
-  async postprocess(p: BatchPacket<ToolCallResult, { app: App }, TaskSchedulerContext>): Promise<this['Out']> {
+  async postprocess(p: BatchPacket<ToolCallResult, App, TaskSchedulerContext>): Promise<this['Out']> {
     const results = p.data;
-    const { session } = p.context!;
+    const { session } = p.context;
 
     console.log(`[ToolCalls.postprocess] Adding ${results.length} tool results to session`);
 
@@ -177,6 +253,10 @@ export class ToolCalls extends Node<{ app: App }, TaskSchedulerContext, LLMToolC
 
     await session!.addMessages(toolMessages);
 
-    return packet({ context: p.context, deps: p.deps });
+    return packet({
+      data: undefined,
+      context: p.context,
+      deps: p.deps,
+    });
   }
 }

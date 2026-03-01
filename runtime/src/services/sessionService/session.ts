@@ -187,6 +187,9 @@ export class Session {
   async pause(): Promise<this> {
     return this._updateStatus('paused');
   }
+  async resume(): Promise<this> {
+    return this._updateStatus('running');
+  }
 
   // ─── Communication ────────────────────────────────────────────────────────
 

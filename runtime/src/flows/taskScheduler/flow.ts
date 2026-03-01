@@ -3,7 +3,7 @@
  * Connects all nodes in a clear, directed graph.
  */
 import { Flow } from '../../utils/agent/flow.js';
-import { PrepareInput, DecideAction, AskUser, ToolCalls } from './nodes.js';
+import { PrepareInput, DecideAction, AskUser, ToolCalls, Response, UserResponse } from './nodes.js';
 import { taskSchedulerInputSchema, type TaskSchedulerContext } from './types.js';
 
 export type TaskSchedulerFlow = Flow<any, TaskSchedulerContext>;
@@ -16,6 +16,8 @@ export function createTaskSchedulerFlow(): TaskSchedulerFlow {
   const prepareInput = new PrepareInput();
   const decideAction = new DecideAction();
   const askUser = new AskUser();
+  const userResponse = new UserResponse();
+  const response = new Response();
   const toolCalls = new ToolCalls();
 
   // PrepareInput runs once, then goes to DecideAction
@@ -24,8 +26,11 @@ export function createTaskSchedulerFlow(): TaskSchedulerFlow {
   // DecideAction routes to different actions
   decideAction.branch('ask_user', askUser);
   decideAction.branch('tool_calls', toolCalls);
+  decideAction.branch('response', response);
 
-  // AskUser ends the flow (response is the question)
+  askUser.next(userResponse);
+
+  userResponse.next(decideAction);
 
   // ToolCalls loops back to DecideAction
   toolCalls.next(decideAction);

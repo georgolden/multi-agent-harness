@@ -148,10 +148,9 @@ describe('Task Schedule Flow Integration', () => {
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
       userId: 'user-123',
-      message: 'Remind me to check the oven in 5 minutes',
     };
-
-    await flow.run(packet({ context, deps: { app } }));
+    const data = 'Remind me to check the oven in 5 minutes';
+    await flow.run(packet({ data, context, deps: app }));
 
     // Verify tool call
     expect(mockStorage.saveTask).toHaveBeenCalled();
@@ -177,10 +176,9 @@ describe('Task Schedule Flow Integration', () => {
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
       userId: 'user-123',
-      message: 'Remind me to drink water every hour',
     };
-
-    await flow.run(packet({ context, deps: { app } }));
+    const data = 'Remind me to drink water every hour';
+    await flow.run(packet({ data, context, deps: app }));
 
     // Verify tool call
     expect(mockStorage.saveTask).toHaveBeenCalled();
@@ -217,10 +215,9 @@ describe('Task Schedule Flow Integration', () => {
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
       userId: 'user-123',
-      message: 'What are my reminders?',
     };
-
-    await flow.run(packet({ context, deps: { app } }));
+    const data = 'What are my reminders?';
+    await flow.run(packet({ data, context, deps: app }));
 
     // Verify taskRepository was queried
     expect(mockStorage.getTasks).toHaveBeenCalledWith('user-123');
@@ -257,10 +254,9 @@ describe('Task Schedule Flow Integration', () => {
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
       userId: 'user-123',
-      message: 'Cancel the reminder with ID rem-to-cancel',
     };
-
-    await flow.run(packet({ context, deps: { app } }));
+    const data = 'Cancel the reminder with ID rem-to-cancel';
+    await flow.run(packet({ data, context, deps: app }));
 
     // Verify cancellation
     expect(mockStorage.deleteTask).toHaveBeenCalledWith('rem-to-cancel');
@@ -280,10 +276,10 @@ describe('Task Schedule Flow Integration', () => {
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
       userId: 'user-123',
-      message: 'Schedule personalAssistantLookup flow in 10 minutes with message: what are my time spending for today',
     };
-
-    await flow.run(packet({ context, deps: { app } }));
+    const data =
+      'Schedule personalAssistantLookup flow in 10 minutes with message: what are my time spending for today';
+    await flow.run(packet({ data, context, deps: app }));
 
     // Verify tool call
     expect(mockStorage.saveTask).toHaveBeenCalled();
@@ -310,11 +306,10 @@ describe('Task Schedule Flow Integration', () => {
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
       userId: 'user-123',
-      message:
-        'Run personalAssistantLookup flow every day at 9am with the message: what are my time spending for today',
     };
-
-    await flow.run(packet({ context, deps: { app } }));
+    const data =
+      'Run personalAssistantLookup flow every day at 9am with the message: what are my time spending for today';
+    await flow.run(packet({ data, context, deps: app }));
 
     // Verify tool call
     expect(mockStorage.saveTask).toHaveBeenCalled();
@@ -374,10 +369,9 @@ describe('Task Schedule Flow Integration', () => {
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
       userId: 'user-123',
-      message: 'What are my scheduled tasks?',
     };
-
-    await flow.run(packet({ context, deps: { app } }));
+    const data = 'What are my scheduled tasks?';
+    await flow.run(packet({ data, context, deps: app }));
 
     // Verify taskRepository was queried
     expect(mockStorage.getTasks).toHaveBeenCalledWith('user-123');
