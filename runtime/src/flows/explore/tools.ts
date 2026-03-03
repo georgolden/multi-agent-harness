@@ -1,4 +1,5 @@
 import { Type, type Static } from '@sinclair/typebox';
+import type { OpenAI } from 'openai';
 import { AgentTool } from '../../types.js';
 
 export const submitResultSchema = Type.Object(
@@ -84,4 +85,69 @@ const submitResultTool: AgentTool<typeof submitResultSchema> = {
   execute: async (app, params) => ({ content: [{ type: 'text', text: JSON.stringify(params) }], details: params }),
 };
 
-export const TOOLS = [submitResultTool];
+const askUserTool: AgentTool = {
+  name: 'ask_user',
+  description: 'Ask the user a question to get clarification or more information about their task',
+  label: 'Ask user',
+  parameters: {
+    type: 'object',
+    properties: {
+      question: {
+        type: 'string',
+        description: 'The question to ask the user',
+      },
+      options: {
+        type: 'array',
+        items: {
+          type: 'string',
+        },
+        description: 'Optional list of suggested answers/options for the user to choose from',
+      },
+    },
+    required: ['question'],
+  } as any,
+  execute: async (app, params) => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(params) }],
+    details: params
+  }),
+};
+
+// Export as AgentTools for session usage
+export const AGENT_TOOLS = [submitResultTool, askUserTool];
+
+// Export as ChatCompletionTools for LLM calls
+export const TOOLS: OpenAI.ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'ask_user',
+      description: 'Ask the user a question to get clarification or more information about their task',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: {
+            type: 'string',
+            description: 'The question to ask the user',
+          },
+          options: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+            description: 'Optional list of suggested answers/options for the user to choose from',
+          },
+        },
+        required: ['question'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'submit_result',
+      description:
+        "Submit the final exploration results. Call this tool when you have gathered enough context to understand the user's task and identified all relevant files and folders. Every file or folder you include must have a clear role in the task — do not include items just because the user mentioned them if they have no relevance. If the user mentioned something that is clearly irrelevant, add it to the ignored array with an explanation.",
+      parameters: submitResultSchema as any,
+    },
+  },
+];

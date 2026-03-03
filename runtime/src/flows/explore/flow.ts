@@ -1,9 +1,14 @@
 /**
- * PocketFlow flow for the reminder agent.
+ * Flow for the explore agent.
  * Connects all nodes in a clear, directed graph.
+ *
+ * Flow graph:
+ *   PrepareInput → DecideAction ─┬─ ask_user       → AskUser        (pause; session stays running)
+ *                                ├─ tool_calls     → ToolCalls      (loops back to DecideAction)
+ *                                └─ submit_result  → SubmitResult    (exit; session completed)
  */
 import { Flow } from '../../utils/agent/flow.js';
-import { PrepareInput, DecideAction, ToolCalls } from './nodes.js';
+import { PrepareInput, DecideAction, AskUser, UserResponse, ToolCalls, SubmitResult } from './nodes.js';
 import { exploreInputSchema } from './types.js';
 import type { ExploreContext, ExploreInput, ExploreResult } from './types.js';
 import { App } from '../../app.js';
@@ -19,17 +24,26 @@ export function createExploreFlow(): ExploreFlow {
   // Create nodes
   const prepareInput = new PrepareInput();
   const decideAction = new DecideAction();
+  const askUser = new AskUser();
+  const userResponse = new UserResponse();
   const toolCalls = new ToolCalls();
+  const submitResult = new SubmitResult();
 
   // PrepareInput runs once, then goes to DecideAction
   prepareInput.next(decideAction);
 
   // DecideAction routes to different actions
-  decideAction.branch('loop', decideAction);
+  decideAction.branch('ask_user', askUser);
   decideAction.branch('tool_calls', toolCalls);
+  decideAction.branch('submit_result', submitResult);
+  decideAction.branch('loop', decideAction);
 
-  // ToolCalls: 'loop' continues back to DecideAction
-  toolCalls.branch('loop', decideAction);
+  // AskUser pauses and resumes with UserResponse
+  askUser.branch('pause', userResponse);
+  userResponse.next(decideAction);
+
+  // ToolCalls loops back to DecideAction
+  toolCalls.next(decideAction);
 
   // Create flow starting with PrepareInput
   return new Flow(prepareInput);
@@ -38,13 +52,13 @@ export function createExploreFlow(): ExploreFlow {
 export const exploreFlow = {
   name: 'explore',
   description:
-    'Explore agent flow that allows users to schedule tasks. It helps to:\n• Schedule one-time tasks\n• Set up recurring tasks\n• List your active tasks\n• Cancel tasks',
+    'Explore agent flow that allows users to explore and understand a codebase or problem domain. It helps to:\n• Map out project structure\n• Understand key files and their relationships\n• Identify modification targets and dependencies\n• Gather context for downstream agents',
   parameters: exploreInputSchema,
   create: createExploreFlow,
   run: async (app: App, { parent, user, message }: { parent?: Session; user: User; message: string }) => {
     const flow = createExploreFlow();
     const context: ExploreContext = { parent, user, message };
-    const result = await flow.run({ context, deps: app, data: { message } });
+    const result = await flow.run({ context, deps: app, data: message });
     return result.data;
   },
 };
