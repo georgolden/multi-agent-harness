@@ -15,17 +15,56 @@
   - using relevant knowledge samples
   - treat memory not as personalization but as learning
 
-- [ ] move all specifics and make a generic flows:
+- [x] move all specifics and make a generic flows:
   - universal agentic tool call loop - similar as web search or reminder
     - [x] universal agent loop
     - [x] make fill tempalte flow
-    - [ ] use prompt template with fill tempalte flow
+    - [x] use prompt template with fill tempalte flow
     - [x] make context retrieval flow (explore)
-    - [ ] use context retrieval flow
-  - IMPORTANT: add llm message models and update session repo and usage everywhere to handle messages via message model
-  - IMPORTANT: make own version of a pocketflow that works nice with stack trace, respects options and that works with not shared store but with result state as well
-  - universal map/reduce agent processing flow - for batch processing
-  - agentic map reduce - 2 prompts combination of first 2 for unstructured input like user's queries and parallel agent executions
+  - [x] add llm message models and update session repo and usage everywhere to handle messages via message model
+  - [x] make own version of a pocketflow that works nice with stack trace, respects options and that works with not shared store but with result state as well
+
+- [ ] Finish agentic app
+  - agent flows must be used as skills or tools with similar schema and syntax
+  - for schema based agents they must be executed with a schema
+  - execute agent flow tool
+  - user's channel to runtime
+  - dashboard of agents that hold all running agents (and history probably) it could or could not communicate with orchestrator agent, but it uses async messaging to comminucate with users and used by UI to show all the running agents and their statuses.
+  - orchestrator agent
+  - 1st application - just executable that glues and runs everything
+  - agent builder of agents
+  - build secretary agent/agents
+  - execute skill tool
+  - UI
+  - Telegram Channel
+  - autonomous mode - mimic user is the best way to not tweak agent. agent could be user of another agent
+  - sandboxing and security tweaks for outside agents
+  - agents for creating skills/tools
+  - introspection reflection agents
+  - memory agents
+  - coding agents
+  - business automation agents
+  - application dynamic load to runtime - will allow to create any programmatic parts on demand
+  - MCP running tool
+  - Software as skill/agent/tool - e.g. use any agentic software withing your own agents - not even required to learn stuff
+  - multi user
+  - edit all agents not only schema, but also built in agents must be editable such as orchestrator, task scheduler, agent builder
+
+  1. Agent that builds agent - minimal fill schema and make helpers on each step and have defaults
+  2. Main agent that orchestrates between agents
+    - agent invocation manually invoked by user or other agent or as task with scheduler
+    - orchestrator must based on user query use task scheduler agent with flow and parameters or just run agent session in background
+  3. Runtime: orchestrator agent running with other agents inside the dashboard of agents which has ui and fully observable
+  4. UI: Board of agents. Left column list to spawn agents default session is orchestrator. Central column - chat with agent where you do task. Right column - running sessions that are working with notifications: Done, User required, Failed. Somewhere history of sessions.
+    - User can just type what he wants and he will go through orchesrator agent
+    - User can pick agent himself to run with a task from the list of agents
+    - User resolves notifications blockers and reviews done agentic jobs - it could be done with central column split on push notification
+    - UI is a channel as well
+  5. Channels:
+    - Telegram:
+      - Capabilites: message with options or command.
+      - Best usage: use as main chat but on notification have buttons to reply, review to not interfere with main session.
+      - On scale need to switch between modes and probably have an agent that operates in the middle to resolve tons of notifications or assign tasks
 
 - [ ] write reflection agent - this agent must reflect and log success and failure of each flow/workflow run
 
@@ -34,6 +73,11 @@
     - preprocessing agent here to ask for writing prompt in a template
     - good context management here - maybe via review agents will be nice
   - continious learning
+
+- Backlog:
+  - universal map/reduce agent processing flow - for batch processing
+  - agentic map reduce - 2 prompts combination of first 2 for unstructured input like user's queries and parallel agent executions
+  - use context retrieval flow
 
 Ralph loop:
 
