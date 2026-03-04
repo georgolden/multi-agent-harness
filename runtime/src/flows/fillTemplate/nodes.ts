@@ -25,25 +25,10 @@ import { Session } from '../../services/sessionService/session.js';
  */
 export class PrepareInput extends Node<App, FillTemplateContext, string, { default: Session }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { userId, template, sessionId } = p.context;
+    const { userId, template, parentId } = p.context;
     const message = p.data;
     const app = p.deps;
     const { sessionService } = app.services;
-
-    // ── Resume existing session ──────────────────────────────────────────────
-    if (sessionId) {
-      const session = await sessionService.get(sessionId);
-      if (!session) throw new Error(`Session '${sessionId}' not found`);
-
-      await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
-
-      console.log(`[PrepareInput.prep] Resumed session '${session.id}' with new user message`);
-      return packet({
-        data: undefined,
-        context: { ...p.context, session },
-        deps: p.deps,
-      });
-    }
 
     // ── Create new session ───────────────────────────────────────────────────
     if (!template) throw new Error('template is required when starting a new session');
@@ -53,6 +38,7 @@ export class PrepareInput extends Node<App, FillTemplateContext, string, { defau
     const systemPrompt = createSystemPrompt(currentDate, timezone, template);
 
     const session = await sessionService.create({
+      parentSessionId: parentId,
       userId,
       flowName: 'fillTemplate',
       systemPrompt,

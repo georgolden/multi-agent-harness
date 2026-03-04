@@ -50,10 +50,10 @@ export const fillTemplateFlow = {
   create: createFillTemplateFlow,
   run: async (
     app: App,
-    { user, message, template, sessionId }: { user: User; message: string; template?: string; sessionId?: string },
+    { user, message, template, parentId }: { user: User; message: string; template?: string; parentId?: string },
   ) => {
     const flow = createFillTemplateFlow();
-    const context: FillTemplateContext = { userId: user.id, template, sessionId };
+    const context: FillTemplateContext = { userId: user.id, template, parentId };
     const result = await flow.run(
       packet({
         data: message,

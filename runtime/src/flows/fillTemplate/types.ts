@@ -6,7 +6,7 @@ export const fillTemplateInputSchema = Type.Object({
   userId: Type.String({ description: 'User ID' }),
   message: Type.String({ description: "User's message" }),
   template: Type.Optional(Type.String({ description: 'Template to fill (required when starting a new session)' })),
-  sessionId: Type.Optional(Type.String({ description: 'Existing session ID to resume' })),
+  parentId: Type.Optional(Type.String({ description: 'Parent session id' })),
 });
 
 export type FillTemplateInput = Omit<Static<typeof fillTemplateInputSchema>, 'message'>;
