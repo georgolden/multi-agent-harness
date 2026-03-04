@@ -6,19 +6,8 @@ import type { User } from '../../data/userRepository/types.js';
 
 export interface AgenticLoopContext {
   user: User;
-  message: string;
   parent?: Session;
   session: Session;
   tools: Tool[];
   skills: Skill[];
-  iterations: number;
-
-  // Mutable flow state
-  response?: string;
-  toolCalls?: LLMToolCall[];
-  iteration?: number;
 }
-
-// Narrowed contexts for nodes that require specific fields
-export type AskUserContext = AgenticLoopContext & { response: string };
-export type ToolCallsContext = AgenticLoopContext & { toolCalls: LLMToolCall[] };
