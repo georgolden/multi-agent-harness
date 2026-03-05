@@ -55,7 +55,7 @@ export const exploreFlow = {
     'Explore agent flow that allows users to explore and understand a codebase or problem domain. It helps to:\n• Map out project structure\n• Understand key files and their relationships\n• Identify modification targets and dependencies\n• Gather context for downstream agents',
   parameters: exploreInputSchema,
   create: createExploreFlow,
-  run: async (app: App, { parent, user, message }: { parent?: Session; user: User; message: string }) => {
+  run: async (app: App, { parent, user }: { parent?: Session; user: User }, { message }: { message: string }) => {
     const flow = createExploreFlow();
     const context: ExploreContext = { parent, user, message };
     const result = await flow.run({ context, deps: app, data: message });

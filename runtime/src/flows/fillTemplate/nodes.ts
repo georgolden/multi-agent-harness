@@ -30,9 +30,6 @@ export class PrepareInput extends Node<App, FillTemplateContext, string, { defau
     const app = p.deps;
     const { sessionService } = app.services;
 
-    // ── Create new session ───────────────────────────────────────────────────
-    if (!template) throw new Error('template is required when starting a new session');
-
     const timezone = await app.data.taskRepository.getUserTimezone(userId);
     const currentDate = new Date().toISOString();
     const systemPrompt = createSystemPrompt(currentDate, timezone, template);

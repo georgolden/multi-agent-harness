@@ -6,9 +6,12 @@ import { CallLlmOptions } from '../../utils/callLlm.js';
 import { fillSystemPrompt, readFilesWithLimit, readFoldersInfos } from './utils.js';
 import { PrepareInput, DecideAction, AskUser, UserResponse, ToolCalls, SubmitAnswer, BestAnswer } from './nodes.js';
 import type { AgenticLoopContext } from './types.js';
+import { Session } from '../../services/sessionService/session.js';
+import { Type, type Static } from '@sinclair/typebox';
 
 export interface AgenticLoopSchema {
   flowName: string;
+  description: string;
   userPromptTemplate?: string;
   systemPrompt: string;
   toolNames: string[];
@@ -95,53 +98,92 @@ export function createAgenticLoopFlow({ maxLoopEntering }: { maxLoopEntering?: n
   return flow;
 }
 
-export async function prepareAgenticLoop(app: App, schema: AgenticLoopSchema, user: User) {
-  const {
-    flowName,
-    systemPrompt,
-    toolNames,
-    skillNames,
-    contextPaths,
-    callLlmOptions,
-    messageWindowConfig,
-    userPromptTemplate,
-    agentLoopConfig,
-  } = schema;
-
-  const filledSystemPrompt = fillSystemPrompt(systemPrompt, user);
-
-  const tools = app.tools.getSlice(toolNames);
-  const skills = app.skills.getSlice(skillNames);
-
-  const contextFiles = await readFilesWithLimit(contextPaths.files);
-  const contextFoldersInfos = await readFoldersInfos(contextPaths.folders);
-
-  const session = await app.services.sessionService.create({
-    flowName,
-    systemPrompt: filledSystemPrompt,
-    userPromptTemplate: userPromptTemplate,
-    userId: user.id,
-    messageWindowConfig,
-    tools,
-    skills,
-    contextFiles,
-    contextFoldersInfos,
-    callLlmOptions,
-    agentLoopConfig,
-  });
-
-  const flow = createAgenticLoopFlow(agentLoopConfig);
-
-  return {
-    flow,
-    session,
-    run: (message: string) =>
-      flow.run(
-        packet({
-          data: message,
-          context: { session, user, tools, skills },
-          deps: app,
-        }),
+export const agentFlowParametersSchema = Type.Object({
+  schema: Type.Object(
+    {
+      flowName: Type.String({ description: 'Name of the agentic loop flow' }),
+      userPromptTemplate: Type.Optional(Type.String({ description: 'Template for user prompt' })),
+      systemPrompt: Type.String({ description: 'System prompt for the LLM' }),
+      toolNames: Type.Array(Type.String(), { description: 'Array of tool names to use' }),
+      skillNames: Type.Array(Type.String(), { description: 'Array of skill names to use' }),
+      contextPaths: Type.Object(
+        {
+          files: Type.Array(Type.String(), { description: 'Context file paths' }),
+          folders: Type.Array(Type.String(), { description: 'Context folder paths' }),
+        },
+        { description: 'Context paths for files and folders' },
       ),
-  };
-}
+      callLlmOptions: Type.Object({}, { description: 'LLM call options' }),
+      messageWindowConfig: Type.Object({}, { description: 'Message window configuration' }),
+      agentLoopConfig: Type.Object(
+        {
+          onError: Type.Union([Type.Literal('askUser'), Type.Literal('retry')], {
+            description: 'Error handling strategy',
+          }),
+          maxLoopEntering: Type.Number({ description: 'Maximum loop iterations' }),
+          loopExit: Type.Union([Type.Literal('failure'), Type.Literal('bestAnswer')], {
+            description: 'Loop exit strategy',
+          }),
+          useMemory: Type.Boolean({ description: 'Enable memory' }),
+          useKnowledgeBase: Type.Boolean({ description: 'Enable knowledge base' }),
+        },
+        { description: 'Agentic loop configuration' },
+      ),
+    },
+    { description: 'Agentic loop schema configuration' },
+  ),
+  message: Type.String({ description: 'User message to send to the flow' }),
+});
+
+export type AgentFlowParameters = Static<typeof agentFlowParametersSchema>;
+
+export const agenticLoopFlow = {
+  name: 'Agentic Loop',
+  description: 'Universal agentic flow that runs with schema',
+  parameters: agentFlowParametersSchema,
+  create: createAgenticLoopFlow,
+  run: async (
+    app: App,
+    context: { user: User; parent?: Session },
+    parameters: { schema: AgenticLoopSchema; message: string },
+  ) => {
+    const { user, parent } = context;
+    const { schema, message } = parameters;
+    const {
+      flowName,
+      systemPrompt,
+      toolNames,
+      skillNames,
+      contextPaths,
+      callLlmOptions,
+      messageWindowConfig,
+      userPromptTemplate,
+      agentLoopConfig,
+    } = schema;
+
+    const filledSystemPrompt = fillSystemPrompt(systemPrompt, user);
+
+    const tools = app.tools.getSlice(toolNames);
+    const skills = app.skills.getSlice(skillNames);
+
+    const contextFiles = await readFilesWithLimit(contextPaths.files);
+    const contextFoldersInfos = await readFoldersInfos(contextPaths.folders);
+
+    const session = await app.services.sessionService.create({
+      flowName,
+      systemPrompt: filledSystemPrompt,
+      userPromptTemplate: userPromptTemplate,
+      userId: user.id,
+      messageWindowConfig,
+      tools,
+      skills,
+      contextFiles,
+      contextFoldersInfos,
+      callLlmOptions,
+      agentLoopConfig,
+    });
+
+    const flow = createAgenticLoopFlow(agentLoopConfig);
+    return flow.run({ data: message, context: { session, user, tools, skills }, deps: app });
+  },
+};

@@ -5,7 +5,7 @@ import { Type, type Static } from '@sinclair/typebox';
 export const fillTemplateInputSchema = Type.Object({
   userId: Type.String({ description: 'User ID' }),
   message: Type.String({ description: "User's message" }),
-  template: Type.Optional(Type.String({ description: 'Template to fill (required when starting a new session)' })),
+  template: Type.String({ description: 'Template to fill (required when starting a new session)' }),
   parentId: Type.Optional(Type.String({ description: 'Parent session id' })),
 });
 

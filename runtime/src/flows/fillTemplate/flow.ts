@@ -17,6 +17,7 @@ import { PrepareInput, DecideAction, AskUser, SubmitTemplate, UserResponse } fro
 import { fillTemplateInputSchema, type FillTemplateContext } from './types.js';
 import { App } from '../../app.js';
 import { User } from '../../data/userRepository/types.js';
+import { Session } from '../../services/sessionService/session.js';
 
 export type FillTemplateFlow = Flow<App, FillTemplateContext>;
 
@@ -50,14 +51,16 @@ export const fillTemplateFlow = {
   create: createFillTemplateFlow,
   run: async (
     app: App,
-    { user, message, template, parentId }: { user: User; message: string; template?: string; parentId?: string },
+    context: { user: User; parent?: Session },
+    parameters: { message: string; template: string },
   ) => {
     const flow = createFillTemplateFlow();
-    const context: FillTemplateContext = { userId: user.id, template, parentId };
+    const { message, template } = parameters;
+    const { user, parent } = context;
     const result = await flow.run(
       packet({
         data: message,
-        context,
+        context: { userId: user.id, template, parentId: parent?.id },
         deps: app,
       }),
     );
