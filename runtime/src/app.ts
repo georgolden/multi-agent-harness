@@ -27,7 +27,13 @@ export class App {
   }
 
   async start() {
-    return Promise.all([this.services.start(), this.infra.start(), this.data.start(), this.skills.start()]);
+    return Promise.all([
+      this.services.start(),
+      this.infra.start(),
+      this.data.start(),
+      this.skills.start(),
+      this.flows.start(),
+    ]);
   }
 
   async stop() {
