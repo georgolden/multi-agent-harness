@@ -2,6 +2,7 @@ import type { AgentTool } from '../types.js';
 import { type Static, Type } from '@sinclair/typebox';
 import { mkdir as fsMkdir, writeFile as fsWriteFile } from 'fs/promises';
 import { dirname } from 'path';
+import { ToolResultMessage } from '../utils/message.js';
 import { resolveToCwd } from './path-utils.js';
 import { App } from '../app.js';
 
@@ -44,16 +45,22 @@ export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentT
     parameters: writeSchema,
     execute: async (
       _app: App,
+      _context: any,
       { path, content },
-      { toolCallId: _toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
+      { toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
     ) => {
       const absolutePath = resolveToCwd(path, cwd);
       const dir = dirname(absolutePath);
 
-      return new Promise<{ content: Array<{ type: 'text'; text: string }>; details: undefined }>((resolve, reject) => {
+      return new Promise<any>((resolve) => {
         // Check if already aborted
         if (signal?.aborted) {
-          reject(new Error('Operation aborted'));
+          const error = new Error('Operation aborted');
+          resolve({
+            data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+            details: undefined,
+            error,
+          });
           return;
         }
 
@@ -62,7 +69,6 @@ export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentT
         // Set up abort handler
         const onAbort = () => {
           aborted = true;
-          reject(new Error('Operation aborted'));
         };
 
         if (signal) {
@@ -94,7 +100,7 @@ export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentT
             }
 
             resolve({
-              content: [{ type: 'text', text: `Successfully wrote ${content.length} bytes to ${path}` }],
+              data: new ToolResultMessage({ toolCallId, content: `Successfully wrote ${content.length} bytes to ${path}` }),
               details: undefined,
             });
           } catch (error: any) {
@@ -104,7 +110,12 @@ export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentT
             }
 
             if (!aborted) {
-              reject(error);
+              const err = error instanceof Error ? error : new Error(String(error));
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: `Error: ${err.message}` }),
+                details: undefined,
+                error: err,
+              });
             }
           }
         })();

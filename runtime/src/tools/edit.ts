@@ -11,6 +11,7 @@ import {
   restoreLineEndings,
   stripBom,
 } from './edit-diff.js';
+import { ToolResultMessage } from '../utils/message.js';
 import { resolveToCwd } from './path-utils.js';
 import { App } from '../app.js';
 
@@ -64,18 +65,21 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
     parameters: editSchema,
     execute: async (
       _app: App,
+      _context: any,
       { path, oldText, newText },
-      { toolCallId: _toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
+      { toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
     ) => {
       const absolutePath = resolveToCwd(path, cwd);
 
-      return new Promise<{
-        content: Array<{ type: 'text'; text: string }>;
-        details: EditToolDetails | undefined;
-      }>((resolve, reject) => {
+      return new Promise<any>((resolve) => {
         // Check if already aborted
         if (signal?.aborted) {
-          reject(new Error('Operation aborted'));
+          const error = new Error('Operation aborted');
+          resolve({
+            data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+            details: undefined,
+            error,
+          });
           return;
         }
 
@@ -84,7 +88,6 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
         // Set up abort handler
         const onAbort = () => {
           aborted = true;
-          reject(new Error('Operation aborted'));
         };
 
         if (signal) {
@@ -101,7 +104,12 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
               if (signal) {
                 signal.removeEventListener('abort', onAbort);
               }
-              reject(new Error(`File not found: ${path}`));
+              const error = new Error(`File not found: ${path}`);
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                details: undefined,
+                error,
+              });
               return;
             }
 
@@ -134,11 +142,14 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
               if (signal) {
                 signal.removeEventListener('abort', onAbort);
               }
-              reject(
-                new Error(
-                  `Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
-                ),
+              const error = new Error(
+                `Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
               );
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                details: undefined,
+                error,
+              });
               return;
             }
 
@@ -151,11 +162,14 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
               if (signal) {
                 signal.removeEventListener('abort', onAbort);
               }
-              reject(
-                new Error(
-                  `Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
-                ),
+              const error = new Error(
+                `Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
               );
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                details: undefined,
+                error,
+              });
               return;
             }
 
@@ -177,11 +191,14 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
               if (signal) {
                 signal.removeEventListener('abort', onAbort);
               }
-              reject(
-                new Error(
-                  `No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`,
-                ),
+              const error = new Error(
+                `No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`,
               );
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                details: undefined,
+                error,
+              });
               return;
             }
 
@@ -200,12 +217,7 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
 
             const diffResult = generateDiffString(baseContent, newContent);
             resolve({
-              content: [
-                {
-                  type: 'text',
-                  text: `Successfully replaced text in ${path}.`,
-                },
-              ],
+              data: new ToolResultMessage({ toolCallId, content: `Successfully replaced text in ${path}.` }),
               details: { diff: diffResult.diff, firstChangedLine: diffResult.firstChangedLine },
             });
           } catch (error: any) {
@@ -215,7 +227,12 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
             }
 
             if (!aborted) {
-              reject(error);
+              const err = error instanceof Error ? error : new Error(String(error));
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: `Error: ${err.message}` }),
+                details: undefined,
+                error: err,
+              });
             }
           }
         })();

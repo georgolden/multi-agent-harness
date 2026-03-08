@@ -5,6 +5,7 @@ import { spawn } from 'child_process';
 import { readFileSync, statSync } from 'fs';
 import path from 'path';
 import { ensureTool } from '../utils/tools-manager.js';
+import { ToolResultMessage } from '../utils/message.js';
 import { resolveToCwd } from './path-utils.js';
 import {
   DEFAULT_MAX_BYTES,
@@ -71,18 +72,24 @@ export function createGrepTool(cwd: string, options?: GrepToolOptions): AgentToo
     parameters: grepSchema,
     execute: async (
       _app: App,
+      _context: any,
       { pattern, path: searchDir, glob, ignoreCase, literal, context, limit },
       {
-        toolCallId: _toolCallId,
+        toolCallId,
         signal,
       }: {
         toolCallId: string;
         signal?: AbortSignal;
       },
     ) => {
-      return new Promise((resolve, reject) => {
+      return new Promise<any>((resolve) => {
         if (signal?.aborted) {
-          reject(new Error('Operation aborted'));
+          const error = new Error('Operation aborted');
+          resolve({
+            data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+            details: undefined,
+            error,
+          });
           return;
         }
 
@@ -98,7 +105,14 @@ export function createGrepTool(cwd: string, options?: GrepToolOptions): AgentToo
           try {
             const rgPath = await ensureTool('rg', true);
             if (!rgPath) {
-              settle(() => reject(new Error('ripgrep (rg) is not available and could not be downloaded')));
+              const error = new Error('ripgrep (rg) is not available and could not be downloaded');
+              settle(() =>
+                resolve({
+                  data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                  details: undefined,
+                  error,
+                }),
+              );
               return;
             }
 
@@ -109,7 +123,14 @@ export function createGrepTool(cwd: string, options?: GrepToolOptions): AgentToo
             try {
               isDirectory = await ops.isDirectory(searchPath);
             } catch (_err) {
-              settle(() => reject(new Error(`Path not found: ${searchPath}`)));
+              const error = new Error(`Path not found: ${searchPath}`);
+              settle(() =>
+                resolve({
+                  data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                  details: undefined,
+                  error,
+                }),
+              );
               return;
             }
             const contextValue = context && context > 0 ? context : 0;
@@ -254,25 +275,51 @@ export function createGrepTool(cwd: string, options?: GrepToolOptions): AgentToo
 
             child.on('error', (error) => {
               cleanup();
-              settle(() => reject(new Error(`Failed to run ripgrep: ${error.message}`)));
+              const err = new Error(`Failed to run ripgrep: ${error.message}`);
+              settle(() =>
+                resolve({
+                  data: new ToolResultMessage({ toolCallId, content: `Error: ${err.message}` }),
+                  details: undefined,
+                  error: err,
+                }),
+              );
             });
 
             child.on('close', async (code) => {
               cleanup();
 
               if (aborted) {
-                settle(() => reject(new Error('Operation aborted')));
+                const error = new Error('Operation aborted');
+                settle(() =>
+                  resolve({
+                    data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                    details: undefined,
+                    error,
+                  }),
+                );
                 return;
               }
 
               if (!killedDueToLimit && code !== 0 && code !== 1) {
                 const errorMsg = stderr.trim() || `ripgrep exited with code ${code}`;
-                settle(() => reject(new Error(errorMsg)));
+                const error = new Error(errorMsg);
+                settle(() =>
+                  resolve({
+                    data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                    details: undefined,
+                    error,
+                  }),
+                );
                 return;
               }
 
               if (matchCount === 0) {
-                settle(() => resolve({ content: [{ type: 'text', text: 'No matches found' }], details: undefined }));
+                settle(() =>
+                  resolve({
+                    data: new ToolResultMessage({ toolCallId, content: 'No matches found' }),
+                    details: undefined,
+                  }),
+                );
                 return;
               }
 
@@ -315,13 +362,20 @@ export function createGrepTool(cwd: string, options?: GrepToolOptions): AgentToo
 
               settle(() =>
                 resolve({
-                  content: [{ type: 'text', text: output }],
+                  data: new ToolResultMessage({ toolCallId, content: output }),
                   details: Object.keys(details).length > 0 ? details : undefined,
                 }),
               );
             });
           } catch (err) {
-            settle(() => reject(err as Error));
+            const error = err instanceof Error ? err : new Error(String(err));
+            settle(() =>
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                details: undefined,
+                error,
+              }),
+            );
           }
         })();
       });

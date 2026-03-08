@@ -1,6 +1,7 @@
 import type { Static, TSchema } from '@sinclair/typebox';
 
 import { App } from './app.js';
+import { ToolResultMessage } from './utils/message.js';
 
 // Shared store for PocketFlow
 export type SharedStore<Context = Record<string, any>> = { app: App; context: Context };
@@ -26,17 +27,19 @@ export interface ImageContent {
 }
 
 export interface AgentToolResult<T> {
-  // Content blocks supporting text and images
-  content: (TextContent | ImageContent)[];
+  // ToolResultMessage containing text/image content blocks
+  data: ToolResultMessage;
   // Details to be displayed in a UI or logged
   details: T;
+  // Optional error if the tool execution failed
+  error?: Error;
 }
 
 // Callback for streaming tool execution updates
 export type AgentToolUpdateCallback<T = any> = (partialResult: AgentToolResult<T>) => void;
 
 // AgentTool extends Tool but adds the execute function
-export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> {
+export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any, TContext = any> {
   name: string;
   description: string;
   parameters: TParameters;
@@ -45,6 +48,7 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
   label: string;
   execute: (
     app: App,
+    context: TContext,
     params: Static<TParameters>,
     system: {
       toolCallId: string;

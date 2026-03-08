@@ -2,6 +2,7 @@ import type { AgentTool } from '../types.js';
 import { type Static, Type } from '@sinclair/typebox';
 import { existsSync, readdirSync, statSync } from 'fs';
 import nodePath from 'path';
+import { ToolResultMessage } from '../utils/message.js';
 import { resolveToCwd } from './path-utils.js';
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from './truncate.js';
 import { App } from '../app.js';
@@ -54,16 +55,29 @@ export function createLsTool(cwd: string, options?: LsToolOptions): AgentTool<ty
     parameters: lsSchema,
     execute: async (
       _app: App,
+      _context: any,
       { path, limit },
-      { toolCallId: _toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
+      { toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
     ) => {
-      return new Promise((resolve, reject) => {
+      return new Promise<any>((resolve) => {
         if (signal?.aborted) {
-          reject(new Error('Operation aborted'));
+          const error = new Error('Operation aborted');
+          resolve({
+            data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+            details: undefined,
+            error,
+          });
           return;
         }
 
-        const onAbort = () => reject(new Error('Operation aborted'));
+        const onAbort = () => {
+          const error = new Error('Operation aborted');
+          resolve({
+            data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+            details: undefined,
+            error,
+          });
+        };
         signal?.addEventListener('abort', onAbort, { once: true });
 
         (async () => {
@@ -73,14 +87,24 @@ export function createLsTool(cwd: string, options?: LsToolOptions): AgentTool<ty
 
             // Check if path exists
             if (!(await ops.exists(dirPath))) {
-              reject(new Error(`Path not found: ${dirPath}`));
+              const error = new Error(`Path not found: ${dirPath}`);
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                details: undefined,
+                error,
+              });
               return;
             }
 
             // Check if path is a directory
             const stat = await ops.stat(dirPath);
             if (!stat.isDirectory()) {
-              reject(new Error(`Not a directory: ${dirPath}`));
+              const error = new Error(`Not a directory: ${dirPath}`);
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                details: undefined,
+                error,
+              });
               return;
             }
 
@@ -89,7 +113,12 @@ export function createLsTool(cwd: string, options?: LsToolOptions): AgentTool<ty
             try {
               entries = await ops.readdir(dirPath);
             } catch (e: any) {
-              reject(new Error(`Cannot read directory: ${e.message}`));
+              const error = new Error(`Cannot read directory: ${e.message}`);
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                details: undefined,
+                error,
+              });
               return;
             }
 
@@ -125,7 +154,10 @@ export function createLsTool(cwd: string, options?: LsToolOptions): AgentTool<ty
             signal?.removeEventListener('abort', onAbort);
 
             if (results.length === 0) {
-              resolve({ content: [{ type: 'text', text: '(empty directory)' }], details: undefined });
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: '(empty directory)' }),
+                details: undefined,
+              });
               return;
             }
 
@@ -154,12 +186,17 @@ export function createLsTool(cwd: string, options?: LsToolOptions): AgentTool<ty
             }
 
             resolve({
-              content: [{ type: 'text', text: output }],
+              data: new ToolResultMessage({ toolCallId, content: output }),
               details: Object.keys(details).length > 0 ? details : undefined,
             });
           } catch (e: any) {
             signal?.removeEventListener('abort', onAbort);
-            reject(e);
+            const error = e instanceof Error ? e : new Error(String(e));
+            resolve({
+              data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+              details: undefined,
+              error,
+            });
           }
         })();
       });

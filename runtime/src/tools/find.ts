@@ -5,6 +5,7 @@ import { existsSync } from 'fs';
 import { globSync } from 'glob';
 import path from 'path';
 import { ensureTool } from '../utils/tools-manager.js';
+import { ToolResultMessage } from '../utils/message.js';
 import { resolveToCwd } from './path-utils.js';
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from './truncate.js';
 import { App } from '../app.js';
@@ -60,16 +61,29 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
     parameters: findSchema,
     execute: async (
       _app: App,
+      _context: any,
       { pattern, path: searchDir, limit },
-      { toolCallId: _toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
+      { toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
     ) => {
-      return new Promise((resolve, reject) => {
+      return new Promise<any>((resolve) => {
         if (signal?.aborted) {
-          reject(new Error('Operation aborted'));
+          const error = new Error('Operation aborted');
+          resolve({
+            data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+            details: undefined,
+            error,
+          });
           return;
         }
 
-        const onAbort = () => reject(new Error('Operation aborted'));
+        const onAbort = () => {
+          const error = new Error('Operation aborted');
+          resolve({
+            data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+            details: undefined,
+            error,
+          });
+        };
         signal?.addEventListener('abort', onAbort, { once: true });
 
         (async () => {
@@ -81,7 +95,12 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
             // If custom operations provided with glob, use that
             if (customOps?.glob) {
               if (!(await ops.exists(searchPath))) {
-                reject(new Error(`Path not found: ${searchPath}`));
+                const error = new Error(`Path not found: ${searchPath}`);
+                resolve({
+                  data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                  details: undefined,
+                  error,
+                });
                 return;
               }
 
@@ -94,7 +113,7 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
 
               if (results.length === 0) {
                 resolve({
-                  content: [{ type: 'text', text: 'No files found matching pattern' }],
+                  data: new ToolResultMessage({ toolCallId, content: 'No files found matching pattern' }),
                   details: undefined,
                 });
                 return;
@@ -131,7 +150,7 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
               }
 
               resolve({
-                content: [{ type: 'text', text: resultOutput }],
+                data: new ToolResultMessage({ toolCallId, content: resultOutput }),
                 details: Object.keys(details).length > 0 ? details : undefined,
               });
               return;
@@ -140,7 +159,12 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
             // Default: use fd
             const fdPath = await ensureTool('fd', true);
             if (!fdPath) {
-              reject(new Error('fd is not available and could not be downloaded'));
+              const error = new Error('fd is not available and could not be downloaded');
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                details: undefined,
+                error,
+              });
               return;
             }
 
@@ -182,7 +206,12 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
             signal?.removeEventListener('abort', onAbort);
 
             if (result.error) {
-              reject(new Error(`Failed to run fd: ${result.error.message}`));
+              const error = new Error(`Failed to run fd: ${result.error.message}`);
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                details: undefined,
+                error,
+              });
               return;
             }
 
@@ -191,14 +220,19 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
             if (result.status !== 0) {
               const errorMsg = result.stderr?.trim() || `fd exited with code ${result.status}`;
               if (!output) {
-                reject(new Error(errorMsg));
+                const error = new Error(errorMsg);
+                resolve({
+                  data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+                  details: undefined,
+                  error,
+                });
                 return;
               }
             }
 
             if (!output) {
               resolve({
-                content: [{ type: 'text', text: 'No files found matching pattern' }],
+                data: new ToolResultMessage({ toolCallId, content: 'No files found matching pattern' }),
                 details: undefined,
               });
               return;
@@ -251,12 +285,17 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
             }
 
             resolve({
-              content: [{ type: 'text', text: resultOutput }],
+              data: new ToolResultMessage({ toolCallId, content: resultOutput }),
               details: Object.keys(details).length > 0 ? details : undefined,
             });
           } catch (e: any) {
             signal?.removeEventListener('abort', onAbort);
-            reject(e);
+            const error = e instanceof Error ? e : new Error(String(e));
+            resolve({
+              data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+              details: undefined,
+              error,
+            });
           }
         })();
       });

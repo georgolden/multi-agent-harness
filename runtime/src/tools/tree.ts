@@ -1,7 +1,8 @@
-import type { AgentTool } from '../types.js';
+import type { AgentTool, AgentToolResult } from '../types.js';
 import { type Static, Type } from '@sinclair/typebox';
 import { execFile } from 'child_process';
 import { existsSync } from 'fs';
+import { ToolResultMessage } from '../utils/message.js';
 import { resolveToCwd } from './path-utils.js';
 import { App } from '../app.js';
 
@@ -173,7 +174,7 @@ export function runTreeCommand(dirPath: string, options?: RunTreeOptions): Promi
   });
 }
 
-export function createTreeTool(cwd: string, options?: TreeToolOptions): AgentTool<typeof treeSchema> {
+export function createTreeTool(cwd: string, options?: TreeToolOptions): AgentTool<typeof treeSchema, TreeToolDetails | undefined> {
   const baseIgnore = options?.defaultIgnore ?? DEFAULT_TREE_IGNORE;
 
   return {
@@ -183,13 +184,19 @@ export function createTreeTool(cwd: string, options?: TreeToolOptions): AgentToo
     parameters: treeSchema,
     execute: async (
       _app: App,
+      _context: unknown,
       { path, level, ignore, limit }: TreeToolInput,
-      { signal }: { toolCallId: string; signal?: AbortSignal },
+      { toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
     ) => {
       const dirPath = resolveToCwd(path || '.', cwd);
 
       if (!existsSync(dirPath)) {
-        throw new Error(`Path not found: ${dirPath}`);
+        const error = new Error(`Path not found: ${dirPath}`);
+        return {
+          data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+          details: undefined,
+          error,
+        };
       }
 
       const effectiveLevel = level ?? DEFAULT_LEVEL;
@@ -210,25 +217,40 @@ export function createTreeTool(cwd: string, options?: TreeToolOptions): AgentToo
 
       const command = `tree ${args.map((a) => (a.includes(' ') || a.includes('|') ? `'${a}'` : a)).join(' ')}`;
 
-      return new Promise((resolve, reject) => {
+      return new Promise<AgentToolResult<TreeToolDetails | undefined>>((resolve) => {
         if (signal?.aborted) {
-          reject(new Error('Operation aborted'));
+          const error = new Error('Operation aborted');
+          resolve({
+            data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+            details: undefined,
+            error,
+          });
           return;
         }
 
         const proc = execFile('tree', args, { maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
           if (signal?.aborted) {
-            reject(new Error('Operation aborted'));
+            const error = new Error('Operation aborted');
+            resolve({
+              data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+              details: undefined,
+              error,
+            });
             return;
           }
           // tree exits non-zero when filelimit is hit in some versions — still useful output
           if (err && !stdout) {
-            reject(new Error(`tree failed: ${stderr || err.message}`));
+            const error = new Error(`tree failed: ${stderr || err.message}`);
+            resolve({
+              data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+              details: undefined,
+              error,
+            });
             return;
           }
           const text = stdout || stderr;
           resolve({
-            content: [{ type: 'text', text }],
+            data: new ToolResultMessage({ toolCallId, content: text }),
             details: { command } satisfies TreeToolDetails,
           });
         });

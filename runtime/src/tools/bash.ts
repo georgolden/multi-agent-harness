@@ -2,10 +2,11 @@ import { randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentTool } from '../types.js';
+import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from '../types.js';
 import { type Static, Type } from '@sinclair/typebox';
 import { spawn } from 'child_process';
 import { getShellConfig, getShellEnv, killProcessTree } from '../utils/shell.js';
+import { ToolResultMessage } from '../utils/message.js';
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateTail } from './truncate.js';
 import { App } from '../app.js';
 
@@ -164,7 +165,7 @@ export interface BashToolOptions {
   spawnHook?: BashSpawnHook;
 }
 
-export function createBashTool(cwd: string, options?: BashToolOptions): AgentTool<typeof bashSchema> {
+export function createBashTool(cwd: string, options?: BashToolOptions): AgentTool<typeof bashSchema, BashToolDetails | undefined> {
   const ops = options?.operations ?? defaultBashOperations;
   const commandPrefix = options?.commandPrefix;
   const spawnHook = options?.spawnHook;
@@ -176,22 +177,23 @@ export function createBashTool(cwd: string, options?: BashToolOptions): AgentToo
     parameters: bashSchema,
     execute: async (
       _app: App,
+      _context: unknown,
       { command, timeout },
       {
-        toolCallId: _toolCallId,
+        toolCallId,
         signal,
         onUpdate,
       }: {
         toolCallId: string;
         signal?: AbortSignal;
-        onUpdate?: any;
+        onUpdate?: AgentToolUpdateCallback<BashToolDetails>;
       },
     ) => {
       // Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
       const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
       const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
 
-      return new Promise((resolve, reject) => {
+      return new Promise<AgentToolResult<BashToolDetails | undefined>>((resolve) => {
         // We'll stream to a temp file if output gets large
         let tempFilePath: string | undefined;
         let tempFileStream: ReturnType<typeof createWriteStream> | undefined;
@@ -237,7 +239,7 @@ export function createBashTool(cwd: string, options?: BashToolOptions): AgentToo
             const fullText = fullBuffer.toString('utf-8');
             const truncation = truncateTail(fullText);
             onUpdate({
-              content: [{ type: 'text', text: truncation.content || '' }],
+              data: new ToolResultMessage({ toolCallId, content: truncation.content || '' }),
               details: {
                 truncation: truncation.truncated ? truncation : undefined,
                 fullOutputPath: tempFilePath,
@@ -293,9 +295,17 @@ export function createBashTool(cwd: string, options?: BashToolOptions): AgentToo
 
             if (exitCode !== 0 && exitCode !== null) {
               outputText += `\n\nCommand exited with code ${exitCode}`;
-              reject(new Error(outputText));
+              const error = new Error(outputText);
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: outputText }),
+                details,
+                error,
+              });
             } else {
-              resolve({ content: [{ type: 'text', text: outputText }], details });
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: outputText }),
+                details,
+              });
             }
           })
           .catch((err: Error) => {
@@ -307,19 +317,26 @@ export function createBashTool(cwd: string, options?: BashToolOptions): AgentToo
             // Combine all buffered chunks for error output
             const fullBuffer = Buffer.concat(chunks);
             let output = fullBuffer.toString('utf-8');
+            let error: Error;
 
             if (err.message === 'aborted') {
               if (output) output += '\n\n';
               output += 'Command aborted';
-              reject(new Error(output));
+              error = new Error(output);
             } else if (err.message.startsWith('timeout:')) {
               const timeoutSecs = err.message.split(':')[1];
               if (output) output += '\n\n';
               output += `Command timed out after ${timeoutSecs} seconds`;
-              reject(new Error(output));
+              error = new Error(output);
             } else {
-              reject(err);
+              error = err;
             }
+
+            resolve({
+              data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
+              details: undefined,
+              error,
+            });
           });
       });
     },
