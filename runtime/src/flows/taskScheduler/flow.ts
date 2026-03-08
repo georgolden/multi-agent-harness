@@ -8,6 +8,8 @@ import { PrepareInput, DecideAction, AskUser, ToolCalls, Response, UserResponse 
 import { taskSchedulerInputSchema, type TaskSchedulerContext } from './types.js';
 import { App } from '../../app.js';
 import { User } from '../../data/userRepository/types.js';
+import { createSystemPrompt } from './prompts/index.js';
+import { UserMessage } from '../../utils/message.js';
 
 export type TaskSchedulerFlow = Flow<any, TaskSchedulerContext>;
 
@@ -42,6 +44,27 @@ export function createTaskSchedulerFlow(): TaskSchedulerFlow {
   return new Flow(prepareInput);
 }
 
+async function createSession(app: App, user: User, message: string): Promise<Session> {
+  const { data, services } = app;
+
+  const userTasks = await data.taskRepository.getTasks(user.id);
+  const timezone = await data.taskRepository.getUserTimezone(user.id);
+  const currentDate = new Date().toISOString();
+  const tasksSchema = app.tasks.getTasksSchema();
+
+  const systemPrompt = createSystemPrompt(currentDate, timezone, JSON.stringify(userTasks), tasksSchema);
+
+  const session = await services.sessionService.create({
+    userId: user.id,
+    flowName: 'taskScheduler',
+    systemPrompt,
+  });
+
+  await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
+
+  return session;
+}
+
 export const taskSchedulerFlow = {
   name: 'taskScheduler',
   description:
@@ -51,7 +74,8 @@ export const taskSchedulerFlow = {
   run: async (app: App, context: { user: User; parent?: Session }, parameters: { message: string }) => {
     const { user, parent } = context;
     const { message } = parameters;
+    const session = await createSession(app, user, message);
     const flow = createTaskSchedulerFlow();
-    return flow.run({ deps: app, context: { user, parent }, data: message });
+    return flow.run({ deps: app, context: { user, parent, session }, data: message });
   },
 };

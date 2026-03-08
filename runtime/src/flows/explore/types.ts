@@ -21,7 +21,7 @@ export interface ExploreResult {
 }
 
 export interface ExploreContext extends ExploreInput {
-  session?: Session;
+  session: Session;
   parent?: Session;
   user: User;
 }

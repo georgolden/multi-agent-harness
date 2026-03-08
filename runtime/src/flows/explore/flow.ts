@@ -14,6 +14,9 @@ import type { ExploreContext, ExploreInput, ExploreResult } from './types.js';
 import { App } from '../../app.js';
 import { Session } from '../../services/sessionService/session.js';
 import { User } from '../../data/userRepository/types.js';
+import { createSystemPrompt, wrapUserPrompt } from './prompts/index.js';
+import { SystemMessage, UserMessage } from '../../utils/message.js';
+import { AGENT_TOOLS } from './tools.js';
 
 export type ExploreFlow = Flow<App, ExploreContext, ExploreInput, { exit: ExploreResult; loop: void }>;
 
@@ -49,6 +52,27 @@ export function createExploreFlow(): ExploreFlow {
   return new Flow(prepareInput);
 }
 
+async function createSession(app: App, user: User, parent: Session | undefined, message: string): Promise<Session> {
+  const systemPrompt = createSystemPrompt();
+  const userPrompt = wrapUserPrompt(message);
+
+  const session = await app.services.sessionService.create({
+    parentSessionId: parent?.id,
+    userId: user.id,
+    flowName: 'explore',
+    systemPrompt,
+  });
+
+  session.addAgentTools(AGENT_TOOLS as any);
+
+  await session.addMessages([
+    { message: new SystemMessage(systemPrompt).toJSON() },
+    { message: new UserMessage(userPrompt).toJSON() },
+  ]);
+
+  return session;
+}
+
 export const exploreFlow = {
   name: 'explore',
   description:
@@ -56,8 +80,9 @@ export const exploreFlow = {
   parameters: exploreInputSchema,
   create: createExploreFlow,
   run: async (app: App, { parent, user }: { parent?: Session; user: User }, { message }: { message: string }) => {
+    const session = await createSession(app, user, parent, message);
     const flow = createExploreFlow();
-    const context: ExploreContext = { parent, user, message };
+    const context: ExploreContext = { parent, user, message, session };
     const result = await flow.run({ context, deps: app, data: message });
     return result.data;
   },

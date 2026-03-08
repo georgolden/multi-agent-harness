@@ -18,6 +18,8 @@ import { fillTemplateInputSchema, type FillTemplateContext } from './types.js';
 import { App } from '../../app.js';
 import { User } from '../../data/userRepository/types.js';
 import { Session } from '../../services/sessionService/session.js';
+import { createSystemPrompt } from './prompts/index.js';
+import { UserMessage } from '../../utils/message.js';
 
 export type FillTemplateFlow = Flow<App, FillTemplateContext>;
 
@@ -43,6 +45,29 @@ export function createFillTemplateFlow(): FillTemplateFlow {
   return new Flow(prepareInput);
 }
 
+async function createSession(
+  app: App,
+  user: User,
+  parent: Session | undefined,
+  message: string,
+  template: string,
+): Promise<Session> {
+  const timezone = await app.data.taskRepository.getUserTimezone(user.id);
+  const currentDate = new Date().toISOString();
+  const systemPrompt = createSystemPrompt(currentDate, timezone, template);
+
+  const session = await app.services.sessionService.create({
+    parentSessionId: parent?.id,
+    userId: user.id,
+    flowName: 'fillTemplate',
+    systemPrompt,
+  });
+
+  await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
+
+  return session;
+}
+
 export const fillTemplateFlow = {
   name: 'fillTemplate',
   description:
@@ -54,13 +79,14 @@ export const fillTemplateFlow = {
     context: { user: User; parent?: Session },
     parameters: { message: string; template: string },
   ) => {
-    const flow = createFillTemplateFlow();
     const { message, template } = parameters;
     const { user, parent } = context;
+    const session = await createSession(app, user, parent, message, template);
+    const flow = createFillTemplateFlow();
     const result = await flow.run(
       packet({
         data: { message, template },
-        context: { user, parent },
+        context: { user, parent, session },
         deps: app,
       }),
     );

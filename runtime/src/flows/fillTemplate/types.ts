@@ -14,9 +14,5 @@ export interface FillTemplateContext {
   user: User;
   parent?: Session;
   // Flow session
-  session?: Session;
-  // Flow state
-  response?: string;
-  toolCalls?: LLMToolCall[];
-  result?: string;
+  session: Session;
 }

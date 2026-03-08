@@ -11,8 +11,7 @@
  */
 import { Node, packet, batch, exit, pause, type SinglePacket, type BatchPacket } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
-import { createSystemPrompt, wrapUserPrompt } from './prompts/index.js';
-import { TOOLS, AGENT_TOOLS } from './tools.js';
+import { TOOLS } from './tools.js';
 import type { SubmitResult as SubmitResultArgs } from './tools.js';
 import { FolderInfo } from '../../utils/folder.js';
 import { FileInfo } from '../../utils/file.js';
@@ -33,36 +32,11 @@ import { App } from '../../app.js';
  */
 export class PrepareInput extends Node<App, ExploreContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const app = p.deps;
-    const message = p.data;
-    const { user, parent } = p.context;
-    console.log(`[PrepareInput.run] Preparing context and creating flow session for user message: "${message}"`);
-
-    const { services } = app;
-
-    const systemPrompt = createSystemPrompt();
-    const userPrompt = wrapUserPrompt(message);
-
-    const session = await services.sessionService.create({
-      parentSessionId: parent?.id,
-      userId: user.id,
-      flowName: 'explore',
-      systemPrompt,
-    });
-
-    // Add explore-specific tools to the session
-    session.addAgentTools(AGENT_TOOLS as any);
-
-    await session.addMessages([
-      { message: new SystemMessage(systemPrompt).toJSON() },
-      { message: new UserMessage(userPrompt).toJSON() },
-    ]);
-
-    console.log(`[PrepareInput.run] Created session '${session.id}' with system prompt and user message`);
-
+    const { session } = p.context;
+    console.log(`[PrepareInput.run] Using session '${session.id}'`);
     return packet({
       data: undefined,
-      context: { ...p.context, session },
+      context: p.context,
       deps: p.deps,
     });
   }
@@ -87,7 +61,6 @@ export class DecideAction extends Node<
 
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
-    if (!session) throw new Error('Session not initialized');
 
     const messages = session.activeMessages.map((msg) => msg.message);
 
@@ -163,7 +136,7 @@ export class AskUser extends Node<
   { pause: { toolCallId: string; message: string } }
 > {
   async run(p: this['In']): Promise<this['Out']> {
-    const session = p.context.session!;
+    const session = p.context.session;
     const user = p.context.user;
     const toolCall = p.data;
     const { question, options } = toolCall.args as { question: string; options?: string[] };
@@ -194,7 +167,7 @@ export class UserResponse extends Node<
   { default: Session }
 > {
   async run(p: this['In']): Promise<this['Out']> {
-    const session = p.context.session!;
+    const session = p.context.session;
     const { toolCallId, message } = p.data;
 
     await session.addMessages([{ message: new ToolResultMessage({ toolCallId, content: message }).toJSON() }]);
@@ -238,7 +211,7 @@ export class ToolCalls extends Node<App, ExploreContext, LLMToolCall[], { defaul
   ): Promise<SinglePacket<ToolCallResult, App, ExploreContext>> {
     const toolCall = p.data;
     const app = p.deps;
-    const session = p.context.session!;
+    const session = p.context.session;
 
     const { name, id, args } = toolCall;
 
@@ -265,7 +238,7 @@ export class ToolCalls extends Node<App, ExploreContext, LLMToolCall[], { defaul
 
   async postprocess(p: BatchPacket<ToolCallResult, App, ExploreContext>): Promise<this['Out']> {
     const results = p.data;
-    const session = p.context.session!;
+    const session = p.context.session;
 
     console.log(`[ToolCalls.postprocess] Adding ${results.length} tool results to session`);
 
@@ -307,7 +280,7 @@ export class ToolCalls extends Node<App, ExploreContext, LLMToolCall[], { defaul
  */
 export class SubmitResult extends Node<App, ExploreContext, SubmitResultArgs, { default: ExploreResult }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const session = p.context.session!;
+    const session = p.context.session;
     const args = p.data;
 
     const contextFiles: FileInfo[] = [];

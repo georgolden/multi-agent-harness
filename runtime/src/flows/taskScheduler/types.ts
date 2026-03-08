@@ -13,7 +13,7 @@ export interface TaskSchedulerContext {
   user: User;
   parent?: Session;
   // Flow session
-  session?: Session;
+  session: Session;
   // Flow state
   response?: string;
   toolCalls?: LLMToolCall[];

@@ -4,57 +4,23 @@
  */
 import { Node, packet, batch, BatchPacket, SinglePacket, pause } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
-import { createSystemPrompt } from './prompts/index.js';
 import { createToolHandler, TOOLS } from './tools.js';
 import type { App } from '../../app.js';
 import type { TaskSchedulerContext } from './types.js';
-import {
-  AssistantMessage,
-  UserMessage,
-  ToolResultMessage,
-  type LLMToolCall,
-  SystemMessage,
-} from '../../utils/message.js';
+import { AssistantMessage, ToolResultMessage, type LLMToolCall, SystemMessage } from '../../utils/message.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
 /**
- * PrepareInput: Prepare all context and create flow session with user's message (runs once)
+ * PrepareInput: Validate session is present in context (session is created before flow runs)
  */
 export class PrepareInput extends Node<App, TaskSchedulerContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { user } = p.context;
-    const app = p.deps;
-    const message = p.data;
-    console.log(`[PrepareInput.run] Preparing context and creating flow session for user message: "${message}"`);
-
-    const { data, services } = app;
-
-    // Fetch all required context
-    const userTasks = await data.taskRepository.getTasks(user.id);
-    const timezone = await data.taskRepository.getUserTimezone(user.id);
-    const currentDate = new Date().toISOString();
-    const tasksSchema = app.tasks.getTasksSchema();
-
-    console.log(`[PrepareInput.run] Found ${userTasks.length} tasks, timezone: ${timezone}`);
-
-    // Create system prompt with all context
-    const systemPrompt = createSystemPrompt(currentDate, timezone, JSON.stringify(userTasks), tasksSchema);
-
-    // Create flow session
-    const session = await services.sessionService.create({
-      userId: user.id,
-      flowName: 'taskScheduler',
-      systemPrompt,
-    });
-
-    // Add user message to session
-    await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
-
-    console.log(`[PrepareInput.run] Created session '${session.id}' with system prompt and user message`);
+    const { session } = p.context;
+    console.log(`[PrepareInput.run] Using session '${session.id}'`);
     return packet({
       data: undefined,
-      context: { ...p.context, session },
+      context: p.context,
       deps: p.deps,
     });
   }
@@ -77,10 +43,6 @@ export class DecideAction extends Node<
 
   async run(p: this['In']): Promise<this['Out']> {
     const { session } = p.context;
-
-    if (!session) {
-      throw new Error('Session is required');
-    }
 
     const conversation = session.activeMessages.map((msg) => msg.message);
 
@@ -145,11 +107,11 @@ export class AskUser extends Node<
     ${options?.map((option, index) => `${index + 1}. ${option}`).join('\n')} 
     `;
     console.log(`[AskUser.run] Sending message to userId: ${user.id}, output: "${message}"`);
-    await session!.respond(user, message);
-    session!.onUserMessage(({ message }: { message: string }) => {
+    await session.respond(user, message);
+    session.onUserMessage(({ message }: { message: string }) => {
       this.resume({ data: { message, toolCallId: p.data.id }, context: p.context, deps: p.deps });
     });
-    await session!.pause();
+    await session.pause();
     return pause({
       data: undefined,
       context: p.context,
@@ -167,8 +129,8 @@ export class UserResponse extends Node<
   async run(p: this['In']): Promise<this['Out']> {
     const { session } = p.context;
     const { toolCallId, message } = p.data;
-    await session!.addMessages([{ message: new ToolResultMessage({ toolCallId, content: message }).toJSON() }]);
-    await session!.resume();
+    await session.addMessages([{ message: new ToolResultMessage({ toolCallId, content: message }).toJSON() }]);
+    await session.resume();
     return packet({
       data: undefined,
       context: p.context,
@@ -182,7 +144,7 @@ export class Response extends Node<App, TaskSchedulerContext, string, { default:
     const { user, session } = p.context;
     const response = p.data;
     console.log(`[Response] Sending message to userId: ${user.id}, output: "${response}"`);
-    await (await session!.respond(user, response)).complete();
+    await (await session.respond(user, response)).complete();
     return packet({
       data: undefined,
       context: p.context,
@@ -250,7 +212,7 @@ export class ToolCalls extends Node<App, TaskSchedulerContext, LLMToolCall[], { 
       message: new ToolResultMessage({ toolCallId: result.toolCallId, content: result.content }).toJSON(),
     }));
 
-    await session!.addMessages(toolMessages);
+    await session.addMessages(toolMessages);
 
     return packet({
       data: undefined,

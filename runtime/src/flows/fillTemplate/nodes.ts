@@ -10,7 +10,6 @@
  */
 import { Node, packet, exit, pause } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
-import { createSystemPrompt } from './prompts/index.js';
 import { TOOLS } from './tools.js';
 import { UserMessage, AssistantMessage, SystemMessage } from '../../utils/message.js';
 import type { FillTemplateContext, FillTemplateInput } from './types.js';
@@ -20,30 +19,12 @@ import { Session } from '../../services/sessionService/session.js';
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
 /**
- * PrepareInput: resume an existing session (when sessionId is provided) or
- * create a new one (when starting fresh with a template).
+ * PrepareInput: validate session is present in context (session is created before flow runs)
  */
 export class PrepareInput extends Node<App, FillTemplateContext, FillTemplateInput, { default: Session }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { user, parent } = p.context;
-    const { message, template } = p.data;
-    const app = p.deps;
-    const { sessionService } = app.services;
-
-    const timezone = await app.data.taskRepository.getUserTimezone(user.id);
-    const currentDate = new Date().toISOString();
-    const systemPrompt = createSystemPrompt(currentDate, timezone, template);
-
-    const session = await sessionService.create({
-      parentSessionId: parent?.id,
-      userId: user.id,
-      flowName: 'fillTemplate',
-      systemPrompt,
-    });
-
-    await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
-
-    console.log(`[PrepareInput.prep] Created session '${session.id}' for fillTemplate`);
+    const { session } = p.context;
+    console.log(`[PrepareInput.run] Using session '${session.id}'`);
     return packet({
       data: session,
       context: p.context,
@@ -116,9 +97,9 @@ export class DecideAction extends Node<
 export class AskUser extends Node<App, FillTemplateContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const ctx = p.context;
-    const session = ctx.session!;
+    const session = ctx.session;
     const message = p.data;
-    console.log(`[AskUser.run] Sending question to user, session '${session!.id}'`);
+    console.log(`[AskUser.run] Sending question to user, session '${session.id}'`);
     await session.respond(ctx.user, message);
     session.onUserMessage(({ message }: { message: string }) => {
       this.resume({ data: message, context: p.context, deps: p.deps });
@@ -134,7 +115,7 @@ export class AskUser extends Node<App, FillTemplateContext, string, { default: v
 
 export class UserResponse extends Node<App, FillTemplateContext, string, { default: Session }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const session = p.context.session!;
+    const session = p.context.session;
     const message = p.data;
     await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
     await session.resume();
@@ -155,8 +136,8 @@ export class SubmitTemplate extends Node<App, FillTemplateContext, string, { def
   async run(p: this['In']): Promise<this['Out']> {
     const { session } = p.context;
 
-    console.log(`[SubmitTemplate.run] Marking session '${session!.id}' as completed`);
-    await session!.complete();
+    console.log(`[SubmitTemplate.run] Marking session '${session.id}' as completed`);
+    await session.complete();
 
     return exit({
       data: p.data,
