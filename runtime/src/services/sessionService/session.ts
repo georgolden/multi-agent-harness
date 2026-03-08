@@ -14,6 +14,7 @@ import type {
   ToolLog,
   ToolSchema,
 } from './types.js';
+import { User } from '../../data/userRepository/types.js';
 
 /**
  * Session — a live, self-updating object backed by the SessionDataRepository.
@@ -199,13 +200,16 @@ export class Session {
    * message so consumers have full context (flowName, userId, status, etc.).
    * Does NOT change status — call complete() / fail() separately if needed.
    */
-  async respond(message: string): Promise<this> {
-    this.app.infra.bus.emit('session:respond', { session: this.sessionData, message });
+  async respond(user: User, message: string): Promise<this> {
+    this.app.infra.bus.emit('session:message', { session: this, message, userId: user.id });
     return this;
   }
 
-  onUserMessage(cb: ({ sessionId, message }: { sessionId: string; message: string }) => void) {
-    this.app.infra.bus.on(`user:message:${this.userId}`, cb);
+  onUserMessage(cb: ({ session, message, user }: { session: Session; message: string; user: User }) => void) {
+    const eventName = `session:user:${this.userId}:${this.id}`;
+    this.app.infra.bus.once(eventName, ({ session, message, user }) => {
+      return cb({ session, message, user });
+    });
     return this;
   }
 

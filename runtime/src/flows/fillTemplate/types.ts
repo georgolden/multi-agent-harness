@@ -1,17 +1,18 @@
 import type { LLMToolCall } from '../../utils/message.js';
 import type { Session } from '../../services/sessionService/index.js';
 import { Type, type Static } from '@sinclair/typebox';
+import { User } from '../../data/userRepository/types.js';
 
 export const fillTemplateInputSchema = Type.Object({
-  userId: Type.String({ description: 'User ID' }),
   message: Type.String({ description: "User's message" }),
   template: Type.String({ description: 'Template to fill (required when starting a new session)' }),
-  parentId: Type.Optional(Type.String({ description: 'Parent session id' })),
 });
 
-export type FillTemplateInput = Omit<Static<typeof fillTemplateInputSchema>, 'message'>;
+export type FillTemplateInput = typeof fillTemplateInputSchema;
 
-export interface FillTemplateContext extends FillTemplateInput {
+export interface FillTemplateContext {
+  user: User;
+  parent?: Session;
   // Flow session
   session?: Session;
   // Flow state

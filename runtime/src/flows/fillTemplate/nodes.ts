@@ -13,7 +13,7 @@ import { callLlmWithTools } from '../../utils/callLlm.js';
 import { createSystemPrompt } from './prompts/index.js';
 import { TOOLS } from './tools.js';
 import { UserMessage, AssistantMessage, SystemMessage } from '../../utils/message.js';
-import type { FillTemplateContext } from './types.js';
+import type { FillTemplateContext, FillTemplateInput } from './types.js';
 import type { App } from '../../app.js';
 import { Session } from '../../services/sessionService/session.js';
 
@@ -23,20 +23,20 @@ import { Session } from '../../services/sessionService/session.js';
  * PrepareInput: resume an existing session (when sessionId is provided) or
  * create a new one (when starting fresh with a template).
  */
-export class PrepareInput extends Node<App, FillTemplateContext, string, { default: Session }> {
+export class PrepareInput extends Node<App, FillTemplateContext, FillTemplateInput, { default: Session }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { userId, template, parentId } = p.context;
-    const message = p.data;
+    const { user, parent } = p.context;
+    const { message, template } = p.data;
     const app = p.deps;
     const { sessionService } = app.services;
 
-    const timezone = await app.data.taskRepository.getUserTimezone(userId);
+    const timezone = await app.data.taskRepository.getUserTimezone(user.id);
     const currentDate = new Date().toISOString();
     const systemPrompt = createSystemPrompt(currentDate, timezone, template);
 
     const session = await sessionService.create({
-      parentSessionId: parentId,
-      userId,
+      parentSessionId: parent?.id,
+      userId: user.id,
       flowName: 'fillTemplate',
       systemPrompt,
     });
@@ -119,9 +119,8 @@ export class AskUser extends Node<App, FillTemplateContext, string, { default: v
     const session = ctx.session!;
     const message = p.data;
     console.log(`[AskUser.run] Sending question to user, session '${session!.id}'`);
-    await session.respond(message);
-    session.onUserMessage(({ sessionId, message }: { sessionId: string; message: string }) => {
-      if (sessionId !== session.id) return;
+    await session.respond(ctx.user, message);
+    session.onUserMessage(({ message }: { message: string }) => {
       this.resume({ data: message, context: p.context, deps: p.deps });
     });
     await session.pause();

@@ -52,6 +52,6 @@ export const taskSchedulerFlow = {
     const { user, parent } = context;
     const { message } = parameters;
     const flow = createTaskSchedulerFlow();
-    return flow.run({ deps: app, context: { userId: user.id, parent }, data: message });
+    return flow.run({ deps: app, context: { user, parent }, data: message });
   },
 };

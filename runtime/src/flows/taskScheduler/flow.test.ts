@@ -49,8 +49,8 @@ function setupTestApp() {
       activeMessages: [],
       messageWindowConfig: params.messageWindowConfig || { keepFirstMessages: 2, slidingWindowSize: 20 },
       contextFiles: params.contextFiles || [],
-      toolSchemas: params.tools || [],
-      skillSchemas: params.skills || [],
+      toolSchemas: [],
+      skillSchemas: [],
       toolLogs: [],
       skillLogs: [],
       contextFoldersInfos: [],
@@ -66,8 +66,12 @@ function setupTestApp() {
         session.activeMessages = [...session.messages];
         return session;
       },
-      async respond(message: string) {
-        mockBus.emit('session:respond', { session, message });
+      async respond(user: any, message: string) {
+        mockBus.emit(`session:message:${user.id}`, { session, message });
+        return session;
+      },
+      async running() {
+        session.status = 'running';
         return session;
       },
       async complete() {
@@ -78,6 +82,24 @@ function setupTestApp() {
       async fail() {
         session.status = 'failed';
         session.endedAt = new Date();
+        return session;
+      },
+      async pause() {
+        session.status = 'paused';
+        return session;
+      },
+      async resume() {
+        session.status = 'running';
+        return session;
+      },
+      addAgentTools(tools: any[]) {
+        // No-op for tests
+      },
+      onUserMessage(cb: any) {
+        mockBus.on(`user:message:${session.userId}`, ({ session: s, message }: any) => {
+          if (s.id !== session.id) return;
+          return cb({ session: s, message });
+        });
         return session;
       },
     };
@@ -147,7 +169,7 @@ describe('Task Schedule Flow Integration', () => {
     const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
-      userId: 'user-123',
+      user: { id: 'user-123' } as any,
     };
     const data = 'Remind me to check the oven in 5 minutes';
     await flow.run(packet({ data, context, deps: app }));
@@ -164,7 +186,7 @@ describe('Task Schedule Flow Integration', () => {
 
     // Verify final response
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'session:respond',
+      expect.stringMatching(/session:message:/),
       expect.objectContaining({
         message: expect.stringMatching(/check the oven/i),
       }),
@@ -175,7 +197,7 @@ describe('Task Schedule Flow Integration', () => {
     const { app, mockStorage, mockScheduler } = setupTestApp();
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
-      userId: 'user-123',
+      user: { id: 'user-123' } as any,
     };
     const data = 'Remind me to drink water every hour';
     await flow.run(packet({ data, context, deps: app }));
@@ -214,7 +236,7 @@ describe('Task Schedule Flow Integration', () => {
 
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
-      userId: 'user-123',
+      user: { id: 'user-123' } as any,
     };
     const data = 'What are my reminders?';
     await flow.run(packet({ data, context, deps: app }));
@@ -224,7 +246,7 @@ describe('Task Schedule Flow Integration', () => {
 
     // Verify response mentions the reminder
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'session:respond',
+      expect.stringMatching(/session:message:/),
       expect.objectContaining({
         message: expect.stringMatching(/Buy groceries/i),
       }),
@@ -253,7 +275,7 @@ describe('Task Schedule Flow Integration', () => {
 
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
-      userId: 'user-123',
+      user: { id: 'user-123' } as any,
     };
     const data = 'Cancel the reminder with ID rem-to-cancel';
     await flow.run(packet({ data, context, deps: app }));
@@ -264,7 +286,7 @@ describe('Task Schedule Flow Integration', () => {
 
     // Verify confirmation
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'session:respond',
+      expect.stringMatching(/session:message:/),
       expect.objectContaining({
         message: expect.stringMatching(/cancel/i),
       }),
@@ -275,7 +297,7 @@ describe('Task Schedule Flow Integration', () => {
     const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
-      userId: 'user-123',
+      user: { id: 'user-123' } as any,
     };
     const data =
       'Schedule personalAssistantLookup builtin flow in 10 minutes with message: what are my time spending for today';
@@ -295,7 +317,7 @@ describe('Task Schedule Flow Integration', () => {
 
     // Verify final response mentions the task details
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'session:respond',
+      expect.stringMatching(/session:message:/),
       expect.objectContaining({
         message: expect.stringMatching(/time spending|Set Task/i),
       }),
@@ -306,7 +328,7 @@ describe('Task Schedule Flow Integration', () => {
     const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
-      userId: 'user-123',
+      user: { id: 'user-123' } as any,
     };
     const data =
       'Run personalAssistantLookup builtin flow every day at 9am with the message: what are my time spending for today';
@@ -327,7 +349,7 @@ describe('Task Schedule Flow Integration', () => {
 
     // Verify final response mentions the task details
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'session:respond',
+      expect.stringMatching(/session:message:/),
       expect.objectContaining({
         message: expect.stringMatching(/time spending|Set Task/i),
       }),
@@ -370,7 +392,7 @@ describe('Task Schedule Flow Integration', () => {
 
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
-      userId: 'user-123',
+      user: { id: 'user-123' } as any,
     };
     const data = 'What are my scheduled tasks?';
     await flow.run(packet({ data, context, deps: app }));
@@ -380,13 +402,13 @@ describe('Task Schedule Flow Integration', () => {
 
     // Verify response mentions both tasks (single respond call containing both)
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'session:respond',
+      expect.stringMatching(/session:message:/),
       expect.objectContaining({
         message: expect.stringMatching(/Buy groceries/i),
       }),
     );
     expect(mockBus.emit).toHaveBeenCalledWith(
-      'session:respond',
+      expect.stringMatching(/session:message:/),
       expect.objectContaining({
         message: expect.stringMatching(/personalAssistantLookup|time spending/i),
       }),

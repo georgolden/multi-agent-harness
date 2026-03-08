@@ -165,9 +165,8 @@ export class AskUser extends Node<App, AgenticLoopContext, string, { default: vo
     const session = ctx.session!;
     const message = p.data;
     console.log(`[AskUser.run] Sending question to user, session '${session!.id}'`);
-    await session.respond(message);
-    session.onUserMessage(({ sessionId, message }: { sessionId: string; message: string }) => {
-      if (sessionId !== session.id) return;
+    await session.respond(ctx.user, message);
+    session.onUserMessage(({ message }) => {
       this.resume({ data: message, context: p.context, deps: p.deps });
     });
     await session.pause();
@@ -315,7 +314,7 @@ export class SubmitAnswer extends Node<App, AgenticLoopContext, string, { defaul
  */
 export class BestAnswer extends Node<App, AgenticLoopContext, Error, { default: string }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { session } = p.context;
+    const { session, user } = p.context;
     const conversation = session.activeMessages.map((m) => m.message);
     const submitSchema = session.toolSchemas.find((t) => t.name === 'submit_answer')!;
     const tools: OpenAI.ChatCompletionTool[] = [
@@ -347,7 +346,7 @@ export class BestAnswer extends Node<App, AgenticLoopContext, Error, { default: 
       throw new Error('BestAnswer: submit_answer tool not called');
     }
     const answer = submitCall.args.answer as string;
-    await session.respond(answer);
+    await session.respond(user, answer);
     await session.complete();
     return exit({ data: answer, context: p.context, deps: p.deps });
   }

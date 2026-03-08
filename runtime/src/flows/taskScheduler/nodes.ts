@@ -23,7 +23,7 @@ import {
  */
 export class PrepareInput extends Node<App, TaskSchedulerContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { userId } = p.context;
+    const { user } = p.context;
     const app = p.deps;
     const message = p.data;
     console.log(`[PrepareInput.run] Preparing context and creating flow session for user message: "${message}"`);
@@ -31,8 +31,8 @@ export class PrepareInput extends Node<App, TaskSchedulerContext, string, { defa
     const { data, services } = app;
 
     // Fetch all required context
-    const userTasks = await data.taskRepository.getTasks(userId);
-    const timezone = await data.taskRepository.getUserTimezone(userId);
+    const userTasks = await data.taskRepository.getTasks(user.id);
+    const timezone = await data.taskRepository.getUserTimezone(user.id);
     const currentDate = new Date().toISOString();
     const tasksSchema = app.tasks.getTasksSchema();
 
@@ -43,7 +43,7 @@ export class PrepareInput extends Node<App, TaskSchedulerContext, string, { defa
 
     // Create flow session
     const session = await services.sessionService.create({
-      userId,
+      userId: user.id,
       flowName: 'taskScheduler',
       systemPrompt,
     });
@@ -135,7 +135,7 @@ export class AskUser extends Node<
   { default: void }
 > {
   async run(p: this['In']): Promise<this['Out']> {
-    const { userId, session } = p.context;
+    const { user, session } = p.context;
 
     const { question, options } = p.data.args;
     const message = `
@@ -144,10 +144,9 @@ export class AskUser extends Node<
     ${options ? 'Options:' : ''}
     ${options?.map((option, index) => `${index + 1}. ${option}`).join('\n')} 
     `;
-    console.log(`[AskUser.run] Sending message to userId: ${userId}, output: "${message}"`);
-    await session!.respond(message);
-    session!.onUserMessage(({ sessionId, message }: { sessionId: string; message: string }) => {
-      if (sessionId !== session!.id) return;
+    console.log(`[AskUser.run] Sending message to userId: ${user.id}, output: "${message}"`);
+    await session!.respond(user, message);
+    session!.onUserMessage(({ message }: { message: string }) => {
       this.resume({ data: { message, toolCallId: p.data.id }, context: p.context, deps: p.deps });
     });
     await session!.pause();
@@ -180,10 +179,10 @@ export class UserResponse extends Node<
 
 export class Response extends Node<App, TaskSchedulerContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { userId, session } = p.context;
+    const { user, session } = p.context;
     const response = p.data;
-    console.log(`[Response] Sending message to userId: ${userId}, output: "${response}"`);
-    await (await session!.respond(response)).complete();
+    console.log(`[Response] Sending message to userId: ${user.id}, output: "${response}"`);
+    await (await session!.respond(user, response)).complete();
     return packet({
       data: undefined,
       context: p.context,

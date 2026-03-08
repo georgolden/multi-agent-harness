@@ -9,6 +9,7 @@ import timezone from 'dayjs/plugin/timezone.js';
 dayjs.extend(utc);
 dayjs.extend(timezone);
 import type { App } from '../../app.js';
+import { User } from '../../data/userRepository/types.js';
 
 export const TOOLS: OpenAI.ChatCompletionTool[] = [
   {
@@ -29,16 +30,19 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
             properties: {
               message: {
                 type: 'string',
-                description: 'Message for the task (for reminders: what to remind about; for agent flows: the input message)',
+                description:
+                  'Message for the task (for reminders: what to remind about; for agent flows: the input message)',
               },
               agentType: {
                 type: 'string',
                 enum: ['builtin', 'schema'],
-                description: 'Agent type: "builtin" for predefined flows, "schema" for stored schema agents. Required only for runAgentFlow task type.',
+                description:
+                  'Agent type: "builtin" for predefined flows, "schema" for stored schema agents. Required only for runAgentFlow task type.',
               },
               flowName: {
                 type: 'string',
-                description: 'Agent flow name (required only for runAgentFlow task type). Use with agentType to specify which agent to run.',
+                description:
+                  'Agent flow name (required only for runAgentFlow task type). Use with agentType to specify which agent to run.',
               },
             },
             required: ['message'],
@@ -70,16 +74,19 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
             properties: {
               message: {
                 type: 'string',
-                description: 'Message for the task (for reminders: what to remind about; for agent flows: the input message)',
+                description:
+                  'Message for the task (for reminders: what to remind about; for agent flows: the input message)',
               },
               agentType: {
                 type: 'string',
                 enum: ['builtin', 'schema'],
-                description: 'Agent type: "builtin" for predefined flows, "schema" for stored schema agents. Required only for runAgentFlow task type.',
+                description:
+                  'Agent type: "builtin" for predefined flows, "schema" for stored schema agents. Required only for runAgentFlow task type.',
               },
               flowName: {
                 type: 'string',
-                description: 'Agent flow name (required only for runAgentFlow task type). Use with agentType to specify which agent to run.',
+                description:
+                  'Agent flow name (required only for runAgentFlow task type). Use with agentType to specify which agent to run.',
               },
             },
             required: ['message'],
@@ -120,16 +127,19 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
             properties: {
               message: {
                 type: 'string',
-                description: 'Message for the task (for reminders: what to remind about; for agent flows: the input message)',
+                description:
+                  'Message for the task (for reminders: what to remind about; for agent flows: the input message)',
               },
               agentType: {
                 type: 'string',
                 enum: ['builtin', 'schema'],
-                description: 'Agent type: "builtin" for predefined flows, "schema" for stored schema agents. Required only for runAgentFlow task type.',
+                description:
+                  'Agent type: "builtin" for predefined flows, "schema" for stored schema agents. Required only for runAgentFlow task type.',
               },
               flowName: {
                 type: 'string',
-                description: 'Agent flow name (required only for runAgentFlow task type). Use with agentType to specify which agent to run.',
+                description:
+                  'Agent flow name (required only for runAgentFlow task type). Use with agentType to specify which agent to run.',
               },
             },
             required: ['message'],
@@ -242,11 +252,16 @@ const toolHandlers = {
    */
   schedule_once: async (
     app: App,
-    context: { userId: string },
-    args: { taskName: string; parameters: { message: string; agentType?: string; flowName?: string }; datetime: string },
+    context: { user: User },
+    args: {
+      taskName: string;
+      parameters: { message: string; agentType?: string; flowName?: string };
+      datetime: string;
+    },
   ) => {
     try {
-      const { userId } = context;
+      const { user } = context;
+      const userId = user.id;
       const userTimezone = await app.data.taskRepository.getUserTimezone(userId);
 
       // Build parameters with userId
@@ -282,7 +297,7 @@ const toolHandlers = {
    */
   schedule_recurring: async (
     app: App,
-    context: { userId: string },
+    context: { user: User },
     args: {
       taskName: string;
       parameters: { message: string; agentType?: string; flowName?: string };
@@ -292,7 +307,8 @@ const toolHandlers = {
     },
   ) => {
     try {
-      const { userId } = context;
+      const { user } = context;
+      const userId = user.id;
       const userTimezone = await app.data.taskRepository.getUserTimezone(userId);
 
       // Dates are already ISO strings, just convert to Date objects if provided
@@ -342,7 +358,7 @@ const toolHandlers = {
    */
   schedule_interval: async (
     app: App,
-    context: { userId: string },
+    context: { user: User },
     args: {
       taskName: string;
       parameters: { message: string; agentType?: string; flowName?: string };
@@ -358,9 +374,10 @@ const toolHandlers = {
   /**
    * List all active tasks for the user
    */
-  list_tasks: async (app: App, context: { userId: string }, _args: {}) => {
+  list_tasks: async (app: App, context: { user: User }, _args: {}) => {
     try {
-      const { userId } = context;
+      const { user } = context;
+      const userId = user.id;
       const tasks = await app.data.taskRepository.getTasks(userId);
       return { status: 'success', tasks };
     } catch (error: any) {
@@ -372,9 +389,10 @@ const toolHandlers = {
   /**
    * Cancel a specific task by ID
    */
-  cancel_task: async (app: App, context: { userId: string }, args: { task_id: string }) => {
+  cancel_task: async (app: App, context: { user: User }, args: { task_id: string }) => {
     try {
-      const { userId } = context;
+      const { user } = context;
+      const userId = user.id;
       // Verify the task belongs to this user
       const task = await app.data.taskRepository.getTaskForUser(args.task_id, userId);
 
@@ -398,9 +416,10 @@ const toolHandlers = {
   /**
    * Cancel all tasks for the user
    */
-  cancel_all_tasks: async (app: App, context: { userId: string }, _args: {}) => {
+  cancel_all_tasks: async (app: App, context: { user: User }, _args: {}) => {
     try {
-      const { userId } = context;
+      const { user } = context;
+      const userId = user.id;
       const tasks = await app.data.taskRepository.getTasks(userId);
 
       if (tasks.length === 0) {
@@ -425,9 +444,10 @@ const toolHandlers = {
   /**
    * Set the user's preferred timezone
    */
-  set_timezone: async (app: App, context: { userId: string }, args: { timezone: string }) => {
+  set_timezone: async (app: App, context: { user: User }, args: { timezone: string }) => {
     try {
-      const { userId } = context;
+      const { user } = context;
+      const userId = user.id;
       // Validate timezone by trying to use it
       const testDate = dayjs.tz(new Date(), args.timezone);
       if (!testDate.isValid()) {
@@ -450,7 +470,7 @@ export function createToolHandler(name: string) {
   if (!handler) {
     throw new Error(`Unknown tool: ${name}`);
   }
-  return async (app: App, context: { userId: string }, args: any): Promise<string> => {
+  return async (app: App, context: { user: User }, args: any): Promise<string> => {
     const res = await handler(app, context, args);
     return JSON.stringify(res);
   };

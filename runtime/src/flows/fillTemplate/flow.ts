@@ -59,8 +59,8 @@ export const fillTemplateFlow = {
     const { user, parent } = context;
     const result = await flow.run(
       packet({
-        data: message,
-        context: { userId: user.id, template, parentId: parent?.id },
+        data: { message, template },
+        context: { user, parent },
         deps: app,
       }),
     );

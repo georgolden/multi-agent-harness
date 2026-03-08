@@ -164,16 +164,16 @@ export class AskUser extends Node<
 > {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session!;
+    const user = p.context.user;
     const toolCall = p.data;
     const { question, options } = toolCall.args as { question: string; options?: string[] };
 
     const message = `${question}${options ? '\n\nOptions:\n' + options.map((opt, i) => `${i + 1}. ${opt}`).join('\n') : ''}`;
 
     console.log(`[AskUser.run] Sending question to user, session '${session.id}'`);
-    await session.respond(message);
-    session.onUserMessage(({ sessionId, message: userMsg }: { sessionId: string; message: string }) => {
-      if (sessionId !== session.id) return;
-      this.resume({ data: { toolCallId: toolCall.id, message: userMsg }, context: p.context, deps: p.deps });
+    await session.respond(user, message);
+    session.onUserMessage(({ message }) => {
+      this.resume({ data: { toolCallId: toolCall.id, message }, context: p.context, deps: p.deps });
     });
     await session.pause();
     return pause({
@@ -197,9 +197,7 @@ export class UserResponse extends Node<
     const session = p.context.session!;
     const { toolCallId, message } = p.data;
 
-    await session.addMessages([
-      { message: new ToolResultMessage({ toolCallId, content: message }).toJSON() },
-    ]);
+    await session.addMessages([{ message: new ToolResultMessage({ toolCallId, content: message }).toJSON() }]);
     await session.resume();
 
     return packet({
@@ -235,7 +233,9 @@ export class ToolCalls extends Node<App, ExploreContext, LLMToolCall[], { defaul
     });
   }
 
-  async run(p: SinglePacket<LLMToolCall, App, ExploreContext>): Promise<SinglePacket<ToolCallResult, App, ExploreContext>> {
+  async run(
+    p: SinglePacket<LLMToolCall, App, ExploreContext>,
+  ): Promise<SinglePacket<ToolCallResult, App, ExploreContext>> {
     const toolCall = p.data;
     const app = p.deps;
     const session = p.context.session!;
@@ -277,7 +277,11 @@ export class ToolCalls extends Node<App, ExploreContext, LLMToolCall[], { defaul
     for (const result of results) {
       if (result.name === 'read') {
         await session.addContextFiles([
-          { path: (result.args.path as string) || '', category: 'text', content: { encoding: 'utf-8', data: result.content } },
+          {
+            path: (result.args.path as string) || '',
+            category: 'text',
+            content: { encoding: 'utf-8', data: result.content },
+          },
         ]);
       } else if (result.name === 'tree' || result.name === 'ls') {
         const folderPath = (result.args.path as string) || '.';
