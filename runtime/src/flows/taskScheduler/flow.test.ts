@@ -66,8 +66,8 @@ function setupTestApp() {
         session.activeMessages = [...session.messages];
         return session;
       },
-      async respond(user: any, message: string) {
-        mockBus.emit(`session:message:${user.id}`, { session, message });
+      async respond(_user: any, message: string) {
+        mockBus.emit('session:message', { session, message });
         return session;
       },
       async running() {
@@ -96,9 +96,8 @@ function setupTestApp() {
         // No-op for tests
       },
       onUserMessage(cb: any) {
-        mockBus.on(`user:message:${session.userId}`, ({ session: s, message }: any) => {
-          if (s.id !== session.id) return;
-          return cb({ session: s, message });
+        mockBus.on(`user:message:${session.userId}:${session.id}`, ({ message }: any) => {
+          return cb({ session, message, user: { id: session.userId } });
         });
         return session;
       },

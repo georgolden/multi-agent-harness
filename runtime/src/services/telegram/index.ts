@@ -2,6 +2,7 @@ import { Telegraf, Context } from 'telegraf';
 import { message } from 'telegraf/filters';
 import { Update } from 'telegraf/types';
 import type { App } from '../../app.js';
+import { TelegramChannel } from './channel.js';
 
 export class TelegramService {
   private bot: Telegraf;
@@ -23,19 +24,16 @@ export class TelegramService {
   async start(): Promise<void> {
     console.log('[Telegram] Starting bot...');
 
+    // Create and register Telegram channel
+    const channel = new TelegramChannel(this.app, this.bot);
+    this.app.services.channel.registerChannel(channel);
+
     // Launch bot
     this.bot
       .launch(() => {
         console.log('[Telegram] Bot launched!');
       })
       .catch((error) => console.error('[Telegram] Error launching bot:', error));
-
-    this.app.infra.bus.on('telegram.sendMessage', async (data: { chatId: string; message: string }) => {
-      console.log(`[Telegram] Sending message to chat ${data.chatId}: ${data.message}`);
-      await this.sendMessage(data.chatId, data.message).catch((error) => {
-        console.error(`[Telegram] Failed to send message to chat ${data.chatId}:`, error);
-      });
-    });
   }
 
   /**
@@ -51,9 +49,7 @@ export class TelegramService {
    */
   async sendMessage(chatId: string, message: string): Promise<void> {
     try {
-      await this.bot.telegram.sendMessage(parseInt(chatId), message, {
-        parse_mode: 'Markdown',
-      });
+      await this.bot.telegram.sendMessage(parseInt(chatId), message);
       console.log(`[Telegram] Sent message to chat ${chatId}`);
     } catch (error) {
       console.error(`[Telegram] Failed to send message to chat ${chatId}:`, error);
@@ -75,12 +71,12 @@ export class TelegramService {
   }
 
   private async startCommand(ctx: Context): Promise<void> {
-    const welcome = `👋 Hi! I'm your reminder assistant.\n\nI can help you:\n• Schedule one-time reminders\n• Set up recurring reminders\n• List your active reminders\n• Cancel reminders\n\nJust tell me what you want to be reminded about!`;
+    const welcome = `Hi! I'm your assistant.`;
     await ctx.reply(welcome);
   }
 
   private async helpCommand(ctx: Context): Promise<void> {
-    const helpText = `📖 How to use:\n\nOne-time reminders:\n- "Remind me to [task] at [time]"\n\nRecurring reminders:\n- "Remind me to [task] every day at [time]"\n\nManage reminders:\n- "Show my reminders"\n- "Cancel reminder [ID]"`;
+    const helpText = 'Help';
     await ctx.reply(helpText);
   }
 }

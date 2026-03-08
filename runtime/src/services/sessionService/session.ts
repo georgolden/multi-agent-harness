@@ -201,11 +201,11 @@ export class Session {
    * Does NOT change status — call complete() / fail() separately if needed.
    */
   async respond(user: User, message: string): Promise<this> {
-    this.app.infra.bus.emit('session:message', { session: this, message, userId: user.id });
+    this.app.infra.bus.emit('session:message', { session: this.sessionData, message, user: user });
     return this;
   }
 
-  onUserMessage(cb: ({ session, message, user }: { session: Session; message: string; user: User }) => void) {
+  onUserMessage(cb: ({ session, message, user }: { session: SessionData; message: string; user: User }) => void) {
     const eventName = `session:user:${this.userId}:${this.id}`;
     this.app.infra.bus.once(eventName, ({ session, message, user }) => {
       return cb({ session, message, user });
