@@ -72,15 +72,6 @@ export class TelegramService {
     const message = ctx.message.text;
 
     console.log(`\n[Bot] Message from ${userId}: ${message}`);
-    const flow = this.app.flows.flows.reminder.create();
-    const context = { userId, message, chatId };
-    const sharedStore = { app: this.app, context };
-    try {
-      await flow.run(sharedStore);
-    } catch (error) {
-      console.error('[Bot] Error:', error);
-      await ctx.reply(`❌ Error: ${error instanceof Error ? error.message : String(error)}`);
-    }
   }
 
   private async startCommand(ctx: Context): Promise<void> {

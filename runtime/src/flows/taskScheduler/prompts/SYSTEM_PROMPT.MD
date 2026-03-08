@@ -25,6 +25,10 @@ ${tasks}
 ${tasksTypes}
 ```
 
+**Task Type Details:**
+- **reminder:** Send a user a reminder with a message. Parameters: message (required)
+- **runAgentFlow:** Run a specified agent flow (builtin or schema-based). Parameters: agentType ("builtin" or "schema"), flowName (agent/flow name), message (input to the agent)
+
 ## Core Responsibilities
 
 You must determine task type - just use task types description to determine which type of task user requests

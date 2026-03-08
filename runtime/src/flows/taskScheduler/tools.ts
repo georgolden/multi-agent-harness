@@ -31,9 +31,14 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
                 type: 'string',
                 description: 'Message for the task (for reminders: what to remind about; for agent flows: the input message)',
               },
+              agentType: {
+                type: 'string',
+                enum: ['builtin', 'schema'],
+                description: 'Agent type: "builtin" for predefined flows, "schema" for stored schema agents. Required only for runAgentFlow task type.',
+              },
               flowName: {
                 type: 'string',
-                description: 'Flow name (required only for runAgentFlow task type)',
+                description: 'Agent flow name (required only for runAgentFlow task type). Use with agentType to specify which agent to run.',
               },
             },
             required: ['message'],
@@ -67,9 +72,14 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
                 type: 'string',
                 description: 'Message for the task (for reminders: what to remind about; for agent flows: the input message)',
               },
+              agentType: {
+                type: 'string',
+                enum: ['builtin', 'schema'],
+                description: 'Agent type: "builtin" for predefined flows, "schema" for stored schema agents. Required only for runAgentFlow task type.',
+              },
               flowName: {
                 type: 'string',
-                description: 'Flow name (required only for runAgentFlow task type)',
+                description: 'Agent flow name (required only for runAgentFlow task type). Use with agentType to specify which agent to run.',
               },
             },
             required: ['message'],
@@ -112,9 +122,14 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
                 type: 'string',
                 description: 'Message for the task (for reminders: what to remind about; for agent flows: the input message)',
               },
+              agentType: {
+                type: 'string',
+                enum: ['builtin', 'schema'],
+                description: 'Agent type: "builtin" for predefined flows, "schema" for stored schema agents. Required only for runAgentFlow task type.',
+              },
               flowName: {
                 type: 'string',
-                description: 'Flow name (required only for runAgentFlow task type)',
+                description: 'Agent flow name (required only for runAgentFlow task type). Use with agentType to specify which agent to run.',
               },
             },
             required: ['message'],
@@ -228,7 +243,7 @@ const toolHandlers = {
   schedule_once: async (
     app: App,
     context: { userId: string },
-    args: { taskName: string; parameters: { message: string; flowName?: string }; datetime: string },
+    args: { taskName: string; parameters: { message: string; agentType?: string; flowName?: string }; datetime: string },
   ) => {
     try {
       const { userId } = context;
@@ -238,6 +253,7 @@ const toolHandlers = {
       const taskParameters = {
         userId,
         message: args.parameters.message,
+        ...(args.parameters.agentType && { agentType: args.parameters.agentType }),
         ...(args.parameters.flowName && { flowName: args.parameters.flowName }),
       };
 
@@ -269,7 +285,7 @@ const toolHandlers = {
     context: { userId: string },
     args: {
       taskName: string;
-      parameters: { message: string; flowName?: string };
+      parameters: { message: string; agentType?: string; flowName?: string };
       cron_expression: string;
       schedule_start_date?: string;
       schedule_end_date?: string;
@@ -295,6 +311,7 @@ const toolHandlers = {
       const taskParameters = {
         userId,
         message: args.parameters.message,
+        ...(args.parameters.agentType && { agentType: args.parameters.agentType }),
         ...(args.parameters.flowName && { flowName: args.parameters.flowName }),
       };
 
@@ -328,7 +345,7 @@ const toolHandlers = {
     context: { userId: string },
     args: {
       taskName: string;
-      parameters: { message: string; flowName?: string };
+      parameters: { message: string; agentType?: string; flowName?: string };
       cron_expression: string;
       schedule_start_date?: string;
       schedule_end_date?: string;

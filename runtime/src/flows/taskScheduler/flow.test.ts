@@ -278,7 +278,7 @@ describe('Task Schedule Flow Integration', () => {
       userId: 'user-123',
     };
     const data =
-      'Schedule personalAssistantLookup flow in 10 minutes with message: what are my time spending for today';
+      'Schedule personalAssistantLookup builtin flow in 10 minutes with message: what are my time spending for today';
     await flow.run(packet({ data, context, deps: app }));
 
     // Verify tool call
@@ -286,17 +286,18 @@ describe('Task Schedule Flow Integration', () => {
     const savedTask = mockStorage.saveTask.mock.calls[0][0];
     expect(savedTask.taskName).toBe('runAgentFlow');
     expect(savedTask.parameters.flowName).toBe('personalAssistantLookup');
+    expect(savedTask.parameters.agentType).toBe('builtin');
     expect(savedTask.parameters.message).toMatch(/time spending/i);
     expect(savedTask.scheduleType).toBe('once');
 
     // Verify scheduler
     expect(mockScheduler.scheduleTask).toHaveBeenCalled();
 
-    // Verify final response
+    // Verify final response mentions the task details
     expect(mockBus.emit).toHaveBeenCalledWith(
       'session:respond',
       expect.objectContaining({
-        message: expect.stringMatching(/personalAssistantLookup|scheduled|agent/i),
+        message: expect.stringMatching(/time spending|Set Task/i),
       }),
     );
   }, 90000);
@@ -308,7 +309,7 @@ describe('Task Schedule Flow Integration', () => {
       userId: 'user-123',
     };
     const data =
-      'Run personalAssistantLookup flow every day at 9am with the message: what are my time spending for today';
+      'Run personalAssistantLookup builtin flow every day at 9am with the message: what are my time spending for today';
     await flow.run(packet({ data, context, deps: app }));
 
     // Verify tool call
@@ -316,6 +317,7 @@ describe('Task Schedule Flow Integration', () => {
     const savedTask = mockStorage.saveTask.mock.calls[0][0];
     expect(savedTask.taskName).toBe('runAgentFlow');
     expect(savedTask.parameters.flowName).toBe('personalAssistantLookup');
+    expect(savedTask.parameters.agentType).toBe('builtin');
     expect(savedTask.parameters.message).toMatch(/time spending/i);
     expect(savedTask.scheduleType).toBe('cron');
     // "every day at 9am" is usually "0 9 * * *"
@@ -323,11 +325,11 @@ describe('Task Schedule Flow Integration', () => {
 
     expect(mockScheduler.scheduleTask).toHaveBeenCalled();
 
-    // Verify final response
+    // Verify final response mentions the task details
     expect(mockBus.emit).toHaveBeenCalledWith(
       'session:respond',
       expect.objectContaining({
-        message: expect.stringMatching(/personalAssistantLookup|scheduled|agent|daily/i),
+        message: expect.stringMatching(/time spending|Set Task/i),
       }),
     );
   }, 90000);

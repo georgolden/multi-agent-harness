@@ -43,9 +43,9 @@ export function createTaskSchedulerFlow(): TaskSchedulerFlow {
 }
 
 export const taskSchedulerFlow = {
-  name: 'reminder',
+  name: 'taskScheduler',
   description:
-    'TaskScheduler agent flow that allows users to schedule tasks. It helps to:\n• Schedule one-time tasks\n• Set up recurring tasks\n• List your active tasks\n• Cancel tasks',
+    'TaskScheduler agent flow that allows users to schedule tasks. It helps to:\n• Schedule one-time reminders and agent flows\n• Set up recurring reminders and agent flows\n• List your active tasks\n• Cancel tasks',
   parameters: taskSchedulerInputSchema,
   create: createTaskSchedulerFlow,
   run: async (app: App, context: { user: User; parent?: Session }, parameters: { message: string }) => {
