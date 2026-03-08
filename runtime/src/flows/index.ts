@@ -92,8 +92,8 @@ export class Flows {
   /**
    * Get a flow by name from the registry
    */
-  getFlow<K extends keyof FlowRegistry>(name: K): FlowRegistry[K] | undefined {
-    return this.flowRegistry[name];
+  getFlow(name: string): FlowRegistry[keyof FlowRegistry] | undefined {
+    return this.flowRegistry[name as keyof FlowRegistry];
   }
 
   /**
@@ -110,6 +110,13 @@ export class Flows {
     return names
       .map((name) => this.flowRegistry[name as keyof FlowRegistry])
       .filter((flow): flow is FlowRegistry[keyof FlowRegistry] => flow !== undefined);
+  }
+
+  /**
+   * Get a schema agent by flow name
+   */
+  getSchemaAgent(flowName: string): StoredAgenticLoopSchema | undefined {
+    return this.agenticLoopSchemas.get(flowName);
   }
 
   /**

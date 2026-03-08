@@ -235,10 +235,8 @@ export class ToolCalls extends Node<App, AgenticLoopContext, LLMToolCall[], { de
       });
     }
 
-    const result = await tool.execute(p.deps, args, { toolCallId: id });
-    const content = result.content
-      .map((block) => (block.type === 'text' ? block.text : `[image: ${block.mimeType}]`))
-      .join('\n');
+    const result = await tool.execute(p.deps, p.context, args, { toolCallId: id });
+    const content = result.data.content;
 
     console.log(`[ToolCalls.exec] Tool '${name}' returned ${content.length} chars`);
     return packet({

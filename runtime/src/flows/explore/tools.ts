@@ -1,6 +1,7 @@
 import { Type, type Static } from '@sinclair/typebox';
 import type { OpenAI } from 'openai';
-import { AgentTool } from '../../types.js';
+import type { AgentTool } from '../../types.js';
+import { ToolResultMessage } from '../../utils/message.js';
 
 export const submitResultSchema = Type.Object(
   {
@@ -82,7 +83,10 @@ const submitResultTool: AgentTool<typeof submitResultSchema> = {
     "Submit the final exploration results. Call this tool when you have gathered enough context to understand the user's task and identified all relevant files and folders. Every file or folder you include must have a clear role in the task — do not include items just because the user mentioned them if they have no relevance. If the user mentioned something that is clearly irrelevant, add it to the ignored array with an explanation.",
   parameters: submitResultSchema,
   label: 'Submit result',
-  execute: async (app, params) => ({ content: [{ type: 'text', text: JSON.stringify(params) }], details: params }),
+  execute: async (app, _context, params, { toolCallId }) => ({
+    data: new ToolResultMessage({ toolCallId, content: JSON.stringify(params) }),
+    details: params,
+  }),
 };
 
 const askUserTool: AgentTool = {
@@ -106,9 +110,9 @@ const askUserTool: AgentTool = {
     },
     required: ['question'],
   } as any,
-  execute: async (app, params) => ({
-    content: [{ type: 'text' as const, text: JSON.stringify(params) }],
-    details: params
+  execute: async (app, _context, params, { toolCallId }) => ({
+    data: new ToolResultMessage({ toolCallId, content: JSON.stringify(params) }),
+    details: params,
   }),
 };
 

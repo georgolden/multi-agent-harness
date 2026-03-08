@@ -253,8 +253,8 @@ export class ToolCalls extends Node<App, ExploreContext, LLMToolCall[], { defaul
     }
 
     console.log(`[ToolCalls.run] Executing tool '${name}'`);
-    const { content } = await tool.execute(app, args, { toolCallId: id });
-    const output = (content as { text: string }[])[0]?.text || JSON.stringify(content);
+    const result = await tool.execute(app, p.context, args, { toolCallId: id });
+    const output = result.data.content;
 
     return packet({
       data: { toolCallId: id, name, content: output, args } as ToolCallResult,
