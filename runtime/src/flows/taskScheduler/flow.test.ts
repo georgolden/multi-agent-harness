@@ -1,9 +1,7 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import 'dotenv/config';
-import { createTaskSchedulerFlow } from './flow.js';
-import { packet } from '../../utils/agent/flow.js';
+import { taskSchedulerFlow } from './flow.js';
 import { App } from '../../app.js';
-import { TaskSchedulerContext } from './types.js';
 import { Task } from '../../data/taskRepository/types.js';
 import { Tasks } from '../../tasks/index.js';
 
@@ -41,7 +39,7 @@ function setupTestApp() {
       id: sessionId,
       userId: params.userId,
       flowName: params.flowName,
-      systemPrompt: params.systemPrompt,
+      systemPrompt: params.systemPrompt || '',
       userPromptTemplate: params.userPromptTemplate,
       status: 'running',
       parentSessionId: params.parentSessionId,
@@ -67,7 +65,7 @@ function setupTestApp() {
         return session;
       },
       async respond(_user: any, message: string) {
-        mockBus.emit('session:message', { session, message });
+        mockBus.emit(`session:message:${sessionId}`, { session, message });
         return session;
       },
       async running() {
@@ -92,7 +90,7 @@ function setupTestApp() {
         session.status = 'running';
         return session;
       },
-      addAgentTools(tools: any[]) {
+      addAgentTools(_tools: any[]) {
         // No-op for tests
       },
       onUserMessage(cb: any) {
@@ -154,7 +152,14 @@ function setupTestApp() {
     active: true,
   }));
 
-  return { app, mockStorage, mockScheduler, mockBus, mockSessionService };
+  // Helper: run the flow the same way taskSchedulerFlow.run does
+  async function runFlow(message: string) {
+    const user = { id: 'user-123' } as any;
+    const { flow, promise } = await taskSchedulerFlow.run(app, { user }, { message });
+    await promise;
+  }
+
+  return { app, mockStorage, mockScheduler, mockBus, mockSessionService, runFlow };
 }
 
 describe('Task Schedule Flow Integration', () => {
@@ -165,149 +170,89 @@ describe('Task Schedule Flow Integration', () => {
   });
 
   it('should schedule a one-time reminder', async () => {
-    const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
-    const flow = createTaskSchedulerFlow();
-    const context: TaskSchedulerContext = {
-      session: {} as any,
-      user: { id: 'user-123' } as any,
-    };
-    const data = 'Remind me to check the oven in 5 minutes';
-    await flow.run(packet({ data, context, deps: app }));
+    const { mockStorage, mockScheduler, mockBus, runFlow } = setupTestApp();
+    await runFlow('Remind me to check the oven in 5 minutes');
 
-    // Verify tool call
     expect(mockStorage.saveTask).toHaveBeenCalled();
     const savedTask = mockStorage.saveTask.mock.calls[0][0];
     expect(savedTask.taskName).toBe('reminder');
     expect(savedTask.parameters.message).toContain('check the oven');
     expect(savedTask.scheduleType).toBe('once');
-
-    // Verify scheduler
     expect(mockScheduler.scheduleTask).toHaveBeenCalled();
-
-    // Verify final response
     expect(mockBus.emit).toHaveBeenCalledWith(
       expect.stringMatching(/session:message:/),
-      expect.objectContaining({
-        message: expect.stringMatching(/check the oven/i),
-      }),
+      expect.objectContaining({ message: expect.stringMatching(/check the oven/i) }),
     );
-  }, 90000); // Increase timeout for LLM
+  }, 90000);
 
   it('should schedule a recurring reminder', async () => {
-    const { app, mockStorage, mockScheduler } = setupTestApp();
-    const flow = createTaskSchedulerFlow();
-    const context: TaskSchedulerContext = {
-      session: {} as any,
-      user: { id: 'user-123' } as any,
-    };
-    const data = 'Remind me to drink water every hour';
-    await flow.run(packet({ data, context, deps: app }));
+    const { mockStorage, mockScheduler, runFlow } = setupTestApp();
+    await runFlow('Remind me to drink water every hour');
 
-    // Verify tool call
     expect(mockStorage.saveTask).toHaveBeenCalled();
     const savedTask = mockStorage.saveTask.mock.calls[0][0];
     expect(savedTask.taskName).toBe('reminder');
     expect(savedTask.parameters.message).toMatch(/drink water/i);
     expect(savedTask.scheduleType).toBe('cron');
-    // "every hour" is usually "0 * * * *" or similar
     expect(savedTask.scheduleValue).toMatch(/(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)/);
-
     expect(mockScheduler.scheduleTask).toHaveBeenCalled();
   }, 90000);
 
   it('should list reminders', async () => {
-    const { app, mockStorage, mockBus } = setupTestApp();
-    // Setup existing tasks
-    const existingTasks: Task[] = [
+    const { mockStorage, mockBus, runFlow } = setupTestApp();
+    mockStorage.getTasks.mockResolvedValue([
       {
         id: 'r1',
         userId: 'user-123',
         taskName: 'reminder',
-        parameters: {
-          message: 'Buy groceries',
-        },
+        parameters: { message: 'Buy groceries' },
         scheduleType: 'once',
         scheduleValue: new Date(Date.now() + 3600000).toISOString(),
         createdAt: new Date(),
         timezone: 'UTC',
         active: true,
       },
-    ];
-    mockStorage.getTasks.mockResolvedValue(existingTasks);
+    ] as Task[]);
 
-    const flow = createTaskSchedulerFlow();
-    const context: TaskSchedulerContext = {
-      session: {} as any,
-      user: { id: 'user-123' } as any,
-    };
-    const data = 'What are my reminders?';
-    await flow.run(packet({ data, context, deps: app }));
+    await runFlow('What are my reminders?');
 
-    // Verify taskRepository was queried
     expect(mockStorage.getTasks).toHaveBeenCalledWith('user-123');
-
-    // Verify response mentions the reminder
     expect(mockBus.emit).toHaveBeenCalledWith(
       expect.stringMatching(/session:message:/),
-      expect.objectContaining({
-        message: expect.stringMatching(/Buy groceries/i),
-      }),
+      expect.objectContaining({ message: expect.stringMatching(/Buy groceries/i) }),
     );
   }, 90000);
 
   it('should cancel a reminder', async () => {
-    const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
-    // Setup existing tasks so LLM can see ID
-    const existingTasks: Task[] = [
+    const { mockStorage, mockScheduler, mockBus, runFlow } = setupTestApp();
+    mockStorage.getTasks.mockResolvedValue([
       {
         id: 'rem-to-cancel',
         userId: 'user-123',
         taskName: 'reminder',
-        parameters: {
-          message: 'Remind me to cancel this reminder',
-        },
+        parameters: { message: 'Remind me to cancel this reminder' },
         scheduleType: 'once',
         scheduleValue: new Date().toISOString(),
         createdAt: new Date(),
         timezone: 'UTC',
         active: true,
       },
-    ];
-    mockStorage.getTasks.mockResolvedValue(existingTasks);
+    ] as Task[]);
 
-    const flow = createTaskSchedulerFlow();
-    const context: TaskSchedulerContext = {
-      session: {} as any,
-      user: { id: 'user-123' } as any,
-    };
-    const data = 'Cancel the reminder with ID rem-to-cancel';
-    await flow.run(packet({ data, context, deps: app }));
+    await runFlow('Cancel the reminder with ID rem-to-cancel');
 
-    // Verify cancellation
     expect(mockStorage.deleteTask).toHaveBeenCalledWith('rem-to-cancel');
     expect(mockScheduler.removeJob).toHaveBeenCalledWith('rem-to-cancel');
-
-    // Verify confirmation
     expect(mockBus.emit).toHaveBeenCalledWith(
       expect.stringMatching(/session:message:/),
-      expect.objectContaining({
-        message: expect.stringMatching(/cancel/i),
-      }),
+      expect.objectContaining({ message: expect.stringMatching(/cancel/i) }),
     );
   }, 90000);
 
   it('should schedule a one-time agent flow task', async () => {
-    const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
-    const flow = createTaskSchedulerFlow();
-    const context: TaskSchedulerContext = {
-      session: {} as any,
-      user: { id: 'user-123' } as any,
-    };
-    const data =
-      'Schedule personalAssistantLookup builtin flow in 10 minutes with message: what are my time spending for today';
-    await flow.run(packet({ data, context, deps: app }));
+    const { mockStorage, mockScheduler, mockBus, runFlow } = setupTestApp();
+    await runFlow('Schedule personalAssistantLookup builtin flow in 10 minutes with message: what are my time spending for today');
 
-    // Verify tool call
     expect(mockStorage.saveTask).toHaveBeenCalled();
     const savedTask = mockStorage.saveTask.mock.calls[0][0];
     expect(savedTask.taskName).toBe('runAgentFlow');
@@ -315,31 +260,17 @@ describe('Task Schedule Flow Integration', () => {
     expect(savedTask.parameters.agentType).toBe('builtin');
     expect(savedTask.parameters.message).toMatch(/time spending/i);
     expect(savedTask.scheduleType).toBe('once');
-
-    // Verify scheduler
     expect(mockScheduler.scheduleTask).toHaveBeenCalled();
-
-    // Verify final response mentions the task details
     expect(mockBus.emit).toHaveBeenCalledWith(
       expect.stringMatching(/session:message:/),
-      expect.objectContaining({
-        message: expect.stringMatching(/time spending|Set Task/i),
-      }),
+      expect.objectContaining({ message: expect.stringMatching(/time spending|Set Task/i) }),
     );
   }, 90000);
 
   it('should schedule a recurring agent flow task', async () => {
-    const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
-    const flow = createTaskSchedulerFlow();
-    const context: TaskSchedulerContext = {
-      session: {} as any,
-      user: { id: 'user-123' } as any,
-    };
-    const data =
-      'Run personalAssistantLookup builtin flow every day at 9am with the message: what are my time spending for today';
-    await flow.run(packet({ data, context, deps: app }));
+    const { mockStorage, mockScheduler, mockBus, runFlow } = setupTestApp();
+    await runFlow('Run personalAssistantLookup builtin flow every day at 9am with the message: what are my time spending for today');
 
-    // Verify tool call
     expect(mockStorage.saveTask).toHaveBeenCalled();
     const savedTask = mockStorage.saveTask.mock.calls[0][0];
     expect(savedTask.taskName).toBe('runAgentFlow');
@@ -347,31 +278,22 @@ describe('Task Schedule Flow Integration', () => {
     expect(savedTask.parameters.agentType).toBe('builtin');
     expect(savedTask.parameters.message).toMatch(/time spending/i);
     expect(savedTask.scheduleType).toBe('cron');
-    // "every day at 9am" is usually "0 9 * * *"
     expect(savedTask.scheduleValue).toMatch(/(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)\s+(\*|\d+)/);
-
     expect(mockScheduler.scheduleTask).toHaveBeenCalled();
-
-    // Verify final response mentions the task details
     expect(mockBus.emit).toHaveBeenCalledWith(
       expect.stringMatching(/session:message:/),
-      expect.objectContaining({
-        message: expect.stringMatching(/time spending|Set Task/i),
-      }),
+      expect.objectContaining({ message: expect.stringMatching(/time spending|Set Task/i) }),
     );
   }, 90000);
 
   it('should list both reminder and agent flow tasks', async () => {
-    const { app, mockStorage, mockBus } = setupTestApp();
-    // Setup existing tasks of both types
-    const existingTasks: Task[] = [
+    const { mockStorage, mockBus, runFlow } = setupTestApp();
+    mockStorage.getTasks.mockResolvedValue([
       {
         id: 'r1',
         userId: 'user-123',
         taskName: 'reminder',
-        parameters: {
-          message: 'Buy groceries',
-        },
+        parameters: { message: 'Buy groceries' },
         scheduleType: 'once',
         scheduleValue: new Date(Date.now() + 3600000).toISOString(),
         createdAt: new Date(),
@@ -382,42 +304,25 @@ describe('Task Schedule Flow Integration', () => {
         id: 'a1',
         userId: 'user-123',
         taskName: 'runAgentFlow',
-        parameters: {
-          flowName: 'personalAssistantLookup',
-          message: 'what are my time spending for today',
-        },
+        parameters: { flowName: 'personalAssistantLookup', message: 'what are my time spending for today' },
         scheduleType: 'cron',
         scheduleValue: '0 9 * * *',
         createdAt: new Date(),
         timezone: 'UTC',
         active: true,
       },
-    ];
-    mockStorage.getTasks.mockResolvedValue(existingTasks);
+    ] as Task[]);
 
-    const flow = createTaskSchedulerFlow();
-    const context: TaskSchedulerContext = {
-      session: {} as any,
-      user: { id: 'user-123' } as any,
-    };
-    const data = 'What are my scheduled tasks?';
-    await flow.run(packet({ data, context, deps: app }));
+    await runFlow('What are my scheduled tasks?');
 
-    // Verify taskRepository was queried
     expect(mockStorage.getTasks).toHaveBeenCalledWith('user-123');
-
-    // Verify response mentions both tasks (single respond call containing both)
     expect(mockBus.emit).toHaveBeenCalledWith(
       expect.stringMatching(/session:message:/),
-      expect.objectContaining({
-        message: expect.stringMatching(/Buy groceries/i),
-      }),
+      expect.objectContaining({ message: expect.stringMatching(/Buy groceries/i) }),
     );
     expect(mockBus.emit).toHaveBeenCalledWith(
       expect.stringMatching(/session:message:/),
-      expect.objectContaining({
-        message: expect.stringMatching(/personalAssistantLookup|time spending/i),
-      }),
+      expect.objectContaining({ message: expect.stringMatching(/personalAssistantLookup|time spending/i) }),
     );
   }, 90000);
 });
