@@ -184,6 +184,7 @@ export const agenticLoopFlow = {
     });
 
     const flow = createAgenticLoopFlow(agentLoopConfig);
-    return flow.run({ data: message, context: { session, user, tools, skills }, deps: app });
+    const promise = flow.run({ data: message, context: { session, user, tools, skills }, deps: app });
+    return { flow, session, promise };
   },
 };

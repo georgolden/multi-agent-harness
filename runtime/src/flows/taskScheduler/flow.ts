@@ -76,6 +76,7 @@ export const taskSchedulerFlow = {
     const { message } = parameters;
     const session = await createSession(app, user, message);
     const flow = createTaskSchedulerFlow();
-    return flow.run({ deps: app, context: { user, parent, session }, data: message });
+    const promise = flow.run({ deps: app, context: { user, parent, session }, data: message });
+    return { flow, session, promise };
   },
 };

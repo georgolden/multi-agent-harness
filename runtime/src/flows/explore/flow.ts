@@ -83,7 +83,7 @@ export const exploreFlow = {
     const session = await createSession(app, user, parent, message);
     const flow = createExploreFlow();
     const context: ExploreContext = { parent, user, message, session };
-    const result = await flow.run({ context, deps: app, data: message });
-    return result.data;
+    const promise = flow.run({ context, deps: app, data: message });
+    return { flow, session, promise };
   },
 };

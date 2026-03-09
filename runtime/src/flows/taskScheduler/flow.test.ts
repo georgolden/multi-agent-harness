@@ -168,6 +168,7 @@ describe('Task Schedule Flow Integration', () => {
     const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
+      session: {} as any,
       user: { id: 'user-123' } as any,
     };
     const data = 'Remind me to check the oven in 5 minutes';
@@ -196,6 +197,7 @@ describe('Task Schedule Flow Integration', () => {
     const { app, mockStorage, mockScheduler } = setupTestApp();
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
+      session: {} as any,
       user: { id: 'user-123' } as any,
     };
     const data = 'Remind me to drink water every hour';
@@ -235,6 +237,7 @@ describe('Task Schedule Flow Integration', () => {
 
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
+      session: {} as any,
       user: { id: 'user-123' } as any,
     };
     const data = 'What are my reminders?';
@@ -274,6 +277,7 @@ describe('Task Schedule Flow Integration', () => {
 
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
+      session: {} as any,
       user: { id: 'user-123' } as any,
     };
     const data = 'Cancel the reminder with ID rem-to-cancel';
@@ -296,6 +300,7 @@ describe('Task Schedule Flow Integration', () => {
     const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
+      session: {} as any,
       user: { id: 'user-123' } as any,
     };
     const data =
@@ -327,6 +332,7 @@ describe('Task Schedule Flow Integration', () => {
     const { app, mockStorage, mockScheduler, mockBus } = setupTestApp();
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
+      session: {} as any,
       user: { id: 'user-123' } as any,
     };
     const data =
@@ -391,6 +397,7 @@ describe('Task Schedule Flow Integration', () => {
 
     const flow = createTaskSchedulerFlow();
     const context: TaskSchedulerContext = {
+      session: {} as any,
       user: { id: 'user-123' } as any,
     };
     const data = 'What are my scheduled tasks?';

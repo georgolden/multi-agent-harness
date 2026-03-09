@@ -44,7 +44,7 @@ export class PrepareInput extends Node<App, AgenticLoopContext, string, { defaul
     const { session, user } = p.context;
     let message = p.data;
     if (session.userPromptTemplate) {
-      message = await fillTemplateFlow.run(
+      const handle = await fillTemplateFlow.run(
         p.deps,
         { user, parent: session },
         {
@@ -52,6 +52,8 @@ export class PrepareInput extends Node<App, AgenticLoopContext, string, { defaul
           template: session.userPromptTemplate,
         },
       );
+      const result = await handle.promise;
+      message = (result as any).data ?? message;
     }
     console.log(`[PrepareInput.prep] Adding user message to session '${session.id}'`);
     await session.addMessages([{ message: new UserMessage(message).toJSON() }]);

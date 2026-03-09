@@ -83,13 +83,13 @@ export const fillTemplateFlow = {
     const { user, parent } = context;
     const session = await createSession(app, user, parent, message, template);
     const flow = createFillTemplateFlow();
-    const result = await flow.run(
+    const promise = flow.run(
       packet({
         data: { message, template },
         context: { user, parent, session },
         deps: app,
       }),
     );
-    return result.data;
+    return { flow, session, promise };
   },
 };

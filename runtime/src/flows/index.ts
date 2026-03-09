@@ -6,6 +6,8 @@ import { agenticLoopFlow } from './agentictLoop/flow.js';
 import { User } from '../data/userRepository/types.js';
 import { Session } from '../services/sessionService/index.js';
 import type { StoredAgenticLoopSchema } from '../data/agenticLoopSchemaRepository/types.js';
+import type { TObject, Static } from '@sinclair/typebox';
+import type { FlowDef, FlowHandle, FlowRunRecord } from './types.js';
 
 /**
  * Common context passed to all flow run functions
@@ -15,19 +17,6 @@ export type FlowContext = {
   parent?: Session;
 };
 
-/**
- * Flow registry mapping flow names to their definitions
- */
-export type FlowRegistry = {
-  taskScheduler: typeof taskSchedulerFlow;
-  fillTemplate: typeof fillTemplateFlow;
-  explore: typeof exploreFlow;
-  agenticLoop: typeof agenticLoopFlow;
-};
-
-/**
- * Escape XML special characters
- */
 function escapeXml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
@@ -38,26 +27,28 @@ function escapeXml(str: string): string {
 }
 
 /**
- * Flows manager class that provides access to all registered flows
+ * Flows manager. All flow execution is centralized here.
+ *
+ * runFlow(name, context, { message }) looks up the flow by name — checking
+ * built-in flows first, then schema-based agents — and runs it with full
+ * observability (DB record, bus events, activeFlows tracking).
  */
 export class Flows {
-  private flowRegistry: FlowRegistry = {
-    taskScheduler: taskSchedulerFlow,
-    fillTemplate: fillTemplateFlow,
-    explore: exploreFlow,
-    agenticLoop: agenticLoopFlow,
-  };
+  private registry = new Map<string, FlowDef<any>>([
+    [taskSchedulerFlow.name, taskSchedulerFlow],
+    [fillTemplateFlow.name, fillTemplateFlow],
+    [exploreFlow.name, exploreFlow],
+    [agenticLoopFlow.name, agenticLoopFlow],
+  ]);
 
   app: App;
   private agenticLoopSchemas: Map<string, StoredAgenticLoopSchema> = new Map();
+  private activeFlows: Map<string, FlowHandle> = new Map();
 
   constructor(app: App) {
     this.app = app;
   }
 
-  /**
-   * Initialize schemas from database and register hooks on startup
-   */
   async start(): Promise<void> {
     const schemas = await this.app.data.agenticLoopSchemaRepository.getAllSchemas();
     schemas.forEach((schema) => {
@@ -65,7 +56,6 @@ export class Flows {
     });
     console.log(`[Flows] Loaded ${schemas.length} agentic loop schemas from database`);
 
-    // Register hooks to keep schemas in sync
     this.app.data.agenticLoopSchemaRepository.registerHooks({
       onInsert: (schema) => {
         this.agenticLoopSchemas.set(schema.flowName, schema);
@@ -82,62 +72,40 @@ export class Flows {
     });
   }
 
-  /**
-   * Get all stored agentic loop schemas
-   */
   getAgenticLoopSchemas(): StoredAgenticLoopSchema[] {
     return Array.from(this.agenticLoopSchemas.values());
   }
 
-  /**
-   * Get a flow by name from the registry
-   */
-  getFlow(name: string): FlowRegistry[keyof FlowRegistry] | undefined {
-    return this.flowRegistry[name as keyof FlowRegistry];
+  getFlow(name: string): FlowDef<any> | undefined {
+    return this.registry.get(name);
   }
 
-  /**
-   * Get all flows
-   */
-  getFlows(): Array<FlowRegistry[keyof FlowRegistry]> {
-    return Object.values(this.flowRegistry);
+  getFlows(): FlowDef<any>[] {
+    return Array.from(this.registry.values());
   }
 
-  /**
-   * Returns flows for the given flow names, skipping unknown names
-   */
-  getSlice(names: string[]): Array<FlowRegistry[keyof FlowRegistry]> {
-    return names
-      .map((name) => this.flowRegistry[name as keyof FlowRegistry])
-      .filter((flow): flow is FlowRegistry[keyof FlowRegistry] => flow !== undefined);
+  getSlice(names: string[]): FlowDef<any>[] {
+    return names.flatMap((name) => {
+      const def = this.registry.get(name);
+      return def ? [def] : [];
+    });
   }
 
-  /**
-   * Get a schema agent by flow name
-   */
   getSchemaAgent(flowName: string): StoredAgenticLoopSchema | undefined {
     return this.agenticLoopSchemas.get(flowName);
   }
 
-  /**
-   * Returns flows as XML. If flowNames is provided, only returns those flows.
-   * Otherwise returns all flows. Also includes schema agents from database.
-   */
   getFlowsAsXml(flowNames?: string[]): string {
-    // Filter flows if flowNames is provided
-    const flowsToReturn = flowNames ? this.getSlice(flowNames) : Object.values(this.flowRegistry);
-
+    const defs = flowNames ? this.getSlice(flowNames) : this.getFlows();
     const lines = ['<available_agents>'];
 
-    // Add built-in flows
-    for (const flow of flowsToReturn) {
+    for (const def of defs) {
       lines.push('  <agent>');
-      lines.push(`    <name>${escapeXml(flow.name)}</name>`);
-      lines.push(`    <description>${escapeXml(flow.description)}</description>`);
+      lines.push(`    <name>${escapeXml(def.name)}</name>`);
+      lines.push(`    <description>${escapeXml(def.description)}</description>`);
       lines.push('  </agent>');
     }
 
-    // Add schema agents from database
     const schemas = this.getAgenticLoopSchemas();
     if (schemas.length > 0) {
       lines.push('  <schema_agents>');
@@ -151,22 +119,117 @@ export class Flows {
     }
 
     lines.push('</available_agents>');
-
     return lines.join('\n');
   }
 
   /**
-   * Type-safe run method with full parameter inference
+   * Run a flow by name. Looks up built-in flows first, then schema-based agents.
+   * Use when you only have the name as a string (e.g. scheduled tasks, LLM-driven calls).
    */
-  async runFlow<K extends keyof FlowRegistry>(
-    name: K,
-    context: FlowContext,
-    parameters: Parameters<FlowRegistry[K]['run']>[2],
-  ): Promise<Awaited<ReturnType<FlowRegistry[K]['run']>>> {
-    const flow = this.getFlow(name);
-    if (!flow) {
-      throw new Error(`Flow '${String(name)}' not found`);
+  async runFlow(name: string, context: FlowContext, parameters: { message: string }): Promise<FlowHandle> {
+    const builtin = this.registry.get(name);
+    if (builtin) {
+      return this._run(builtin, name, context, parameters);
     }
-    return flow.run(this.app, context as never, parameters as never);
+
+    const schema = this.agenticLoopSchemas.get(name);
+    if (schema) {
+      return this.runSchemaFlow(schema, context, parameters);
+    }
+
+    const available = [...this.registry.keys(), ...this.agenticLoopSchemas.keys()].join(', ');
+    throw new Error(`Flow '${name}' not found. Available: ${available || 'none'}`);
+  }
+
+  /**
+   * Type-safe run for built-in flows. Parameters are inferred from the def's schema.
+   * Use when you have the FlowDef in hand (e.g. inside tools).
+   *
+   * @example
+   *   const handle = await flows.runBuiltinFlow(fillTemplateFlow, ctx, { message, template });
+   */
+  async runBuiltinFlow<TSchema extends TObject>(
+    def: FlowDef<TSchema>,
+    context: FlowContext,
+    parameters: Static<TSchema>,
+  ): Promise<FlowHandle> {
+    return this._run(def, def.name, context, parameters);
+  }
+
+  /**
+   * Run a schema-based agentic loop flow.
+   *
+   * @example
+   *   const handle = await flows.runSchemaFlow(schema, ctx, { message });
+   */
+  async runSchemaFlow(
+    schema: StoredAgenticLoopSchema,
+    context: FlowContext,
+    parameters: { message: string },
+  ): Promise<FlowHandle> {
+    return this._run(agenticLoopFlow, schema.flowName, context, { schema, message: parameters.message });
+  }
+
+  private async _run(def: FlowDef<any>, name: string, context: FlowContext, parameters: unknown): Promise<FlowHandle> {
+    const { flow, session, promise } = await def.run(this.app, context, parameters);
+
+    const run = await this.app.data.flowRunRepository.createRun({
+      flowName: name,
+      sessionId: session.id,
+      userId: context.user.id,
+      parentSessionId: context.parent?.id,
+    });
+
+    const { bus } = this.app.infra;
+
+    session.hooks.onStatusChange = async (s, from, to) => {
+      bus.emit('session:statusChange', { sessionId: s.id, flowName: name, userId: s.userId, from, to });
+    };
+    session.hooks.onMessage = async (s) => {
+      bus.emit('session:message:update', { sessionId: s.id, flowName: name, userId: s.userId });
+    };
+
+    flow.onPause = async () => {
+      await this.app.data.flowRunRepository.updateStatus(run.id, 'paused');
+      bus.emit('flow:pause', { runId: run.id, sessionId: session.id, flowName: name });
+    };
+    flow.onResume = async () => {
+      await this.app.data.flowRunRepository.updateStatus(run.id, 'running');
+      bus.emit('flow:resume', { runId: run.id, sessionId: session.id, flowName: name });
+    };
+    flow.onExit = async () => {
+      await this.app.data.flowRunRepository.updateStatus(run.id, 'completed');
+      bus.emit('flow:exit', { runId: run.id, sessionId: session.id, flowName: name });
+    };
+    flow.onError = async () => {
+      await this.app.data.flowRunRepository.updateStatus(run.id, 'failed');
+      bus.emit('flow:error', { runId: run.id, sessionId: session.id, flowName: name });
+    };
+
+    const trackedPromise = promise.finally(async () => {
+      this.activeFlows.delete(session.id);
+      const existingRun = await this.app.data.flowRunRepository.getRunBySessionId(session.id);
+      if (existingRun && existingRun.status === 'running') {
+        await this.app.data.flowRunRepository.updateStatus(run.id, 'failed');
+      }
+    });
+
+    const handle: FlowHandle = { flow, session, promise: trackedPromise };
+    this.activeFlows.set(session.id, handle);
+    return handle;
+  }
+
+  // ─── Observable queries ──────────────────────────────────────────────────
+
+  getActiveFlows(): Map<string, FlowHandle> {
+    return this.activeFlows;
+  }
+
+  getFlowHandle(sessionId: string): FlowHandle | undefined {
+    return this.activeFlows.get(sessionId);
+  }
+
+  async getFlowRunHistory(userId: string): Promise<FlowRunRecord[]> {
+    return this.app.data.flowRunRepository.getRunsByUser(userId);
   }
 }

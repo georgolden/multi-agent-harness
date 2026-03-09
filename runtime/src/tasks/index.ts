@@ -13,47 +13,20 @@ async function reminder(app: App, { userId, message }: { userId: string; message
 
 /**
  * RunAgentFlow task handler
- * Runs a specified agent flow (builtin or schema-based) with the provided message
- *
- * Note: Scheduled task execution does not yet support user context, which is required
- * for flow execution. This is a placeholder that validates the agent exists and logs
- * execution intent. Future implementation should store and pass user context.
+ * Runs a specified agent flow (builtin or schema-based) with the provided message.
  */
 async function runAgentFlow(
   app: App,
-  { agentType, flowName, userId: _userId, message: _message }: { agentType: string; flowName: string; userId: string; message: string },
+  { flowName, userId, message }: { flowName: string; userId: string; message: string },
 ) {
   try {
-    if (agentType === 'builtin') {
-      // Find and validate built-in flow
-      const allFlows = app.flows.getFlows();
-      const flow = allFlows.find((f) => f.name === flowName);
-
-      if (!flow) {
-        const availableFlows = allFlows.map((f) => f.name);
-        console.error(
-          `[runAgentFlow] Built-in flow "${flowName}" not found. Available: ${availableFlows.join(', ') || 'none'}`,
-        );
-        return;
-      }
-
-      console.log(`[runAgentFlow] Executing builtin flow: ${flowName}`);
-    } else if (agentType === 'schema') {
-      // Run schema-based agentic loop
-      const schema = app.flows.getSchemaAgent(flowName);
-
-      if (!schema) {
-        const availableSchemas = app.flows.getAgenticLoopSchemas();
-        console.error(
-          `[runAgentFlow] Schema agent "${flowName}" not found. Available: ${availableSchemas.map((s) => s.flowName).join(', ') || 'none'}`,
-        );
-        return;
-      }
-
-      console.log(`[runAgentFlow] Executing schema agent: ${flowName}`);
-    } else {
-      console.error(`[runAgentFlow] Invalid agentType: "${agentType}". Must be "builtin" or "schema"`);
+    const user = await app.data.userRepository.getUser(userId);
+    if (!user) {
+      console.error(`[runAgentFlow] User "${userId}" not found`);
+      return;
     }
+    const handle = await app.flows.runFlow(flowName, { user }, { message });
+    await handle.promise;
   } catch (error) {
     console.error(`[runAgentFlow] Error running agent flow "${flowName}":`, error);
   }
@@ -82,11 +55,7 @@ const TASK_REGISTRY: Record<string, Task> = {
     name: 'runAgentFlow',
     description: 'Used to run a specific agentic flow - either builtin or schema-based',
     parameters: Type.Object({
-      agentType: Type.String({
-        enum: ['builtin', 'schema'],
-        description: 'Type of agent: "builtin" for predefined flows, "schema" for stored schema agents',
-      }),
-      flowName: Type.String({ description: 'Name of the agent flow or schema to execute' }),
+      flowName: Type.String({ description: 'Name of the agent flow or schema agent to execute' }),
       userId: Type.String({ description: 'ID of the user requesting the flow' }),
       message: Type.String({ description: 'Input message to send to the agent flow' }),
     }),
