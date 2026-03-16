@@ -56,7 +56,7 @@ export class PrepareInput extends Node<App, AgenticLoopContext, string, { defaul
       message = (result as any).data ?? message;
     }
     console.log(`[PrepareInput.prep] Adding user message to session '${session.id}'`);
-    await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
+    await session.addUserMessage(new UserMessage(message));
     return packet({
       data: session,
       context: p.context,
@@ -184,7 +184,7 @@ export class UserResponse extends Node<App, AgenticLoopContext, string, { defaul
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session!;
     const message = p.data;
-    await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
+    await session.addUserMessage(new UserMessage(message));
     await session.resume();
     return packet({
       data: session,

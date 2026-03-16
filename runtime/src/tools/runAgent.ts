@@ -2,7 +2,7 @@ import type { AgentTool } from '../types.js';
 import { Type, type Static } from '@sinclair/typebox';
 import { ToolResultMessage } from '../utils/message.js';
 import { App } from '../app.js';
-import type { FlowContext } from '../flows/index.js';
+import type { ToolCallContext } from './index.js';
 import type { Packet } from '../utils/agent/flow.js';
 
 export const runAgentSchema = Type.Object({
@@ -17,7 +17,7 @@ export interface RunAgentDetails {
   command: string;
 }
 
-export function createRunAgentTool(): AgentTool<typeof runAgentSchema, RunAgentDetails | undefined, FlowContext> {
+export function createRunAgentTool(): AgentTool<typeof runAgentSchema, RunAgentDetails | undefined, ToolCallContext> {
   return {
     name: 'runAgent',
     label: 'runAgent',
@@ -27,7 +27,7 @@ Returns the agent's response.`,
     parameters: runAgentSchema,
     execute: async (
       app: App,
-      context: FlowContext,
+      context: ToolCallContext,
       { flowName, message }: RunAgentInput,
       { toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
     ) => {

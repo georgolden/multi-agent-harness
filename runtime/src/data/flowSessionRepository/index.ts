@@ -66,6 +66,9 @@ export class SessionDataRepository {
         call_llm_options JSONB NOT NULL DEFAULT '{}',
         agent_loop_config JSONB NOT NULL DEFAULT '{}',
 
+        -- Temporary files (stored as JSONB)
+        temp_files JSONB NOT NULL DEFAULT '[]',
+
         -- Execution logs (stored as JSONB)
         tool_logs JSONB NOT NULL DEFAULT '[]',
         skill_logs JSONB NOT NULL DEFAULT '[]',
@@ -139,6 +142,7 @@ export class SessionDataRepository {
       contextFoldersInfos: row.context_folders_infos || [],
       toolSchemas: row.tool_schemas || [],
       skillSchemas: row.skill_schemas || [],
+      tempFiles: row.temp_files || [],
       callLlmOptions: row.call_llm_options || {},
       agentLoopConfig: row.agent_loop_config || {},
       toolLogs: row.tool_logs || [],
@@ -384,6 +388,35 @@ export class SessionDataRepository {
 
     console.log(`[SessionDataRepository] Added ${skills.length} skills to session '${sessionId}'`);
     return allSkills;
+  }
+
+  /**
+   * Write (upsert) a temporary file in the session.
+   * If a file with the same name exists it is replaced; otherwise it is appended.
+   * Returns the full updated tempFiles array.
+   */
+  async writeTempFile(
+    sessionId: string,
+    file: { name: string; content: string },
+  ): Promise<Array<{ name: string; content: string }>> {
+    const session = await this.getSession(sessionId);
+    if (!session) {
+      throw new Error(`Session '${sessionId}' not found`);
+    }
+
+    const existing = session.tempFiles ?? [];
+    const idx = existing.findIndex((f) => f.name === file.name);
+    const tempFiles = idx >= 0 ? existing.map((f, i) => (i === idx ? file : f)) : [...existing, file];
+
+    await this.pool.query(`UPDATE flow_sessions SET temp_files = $2 WHERE id = $1`, [
+      sessionId,
+      JSON.stringify(tempFiles),
+    ]);
+
+    this.app.infra.bus.emit('flowSession:tempFileWritten', { sessionId, file, tempFiles });
+
+    console.log(`[SessionDataRepository] Wrote temp file '${file.name}' to session '${sessionId}'`);
+    return tempFiles;
   }
 
   /**

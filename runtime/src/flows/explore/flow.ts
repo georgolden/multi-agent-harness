@@ -65,10 +65,8 @@ async function createSession(app: App, user: User, parent: Session | undefined, 
 
   session.addAgentTools(AGENT_TOOLS as any);
 
-  await session.addMessages([
-    { message: new SystemMessage(systemPrompt).toJSON() },
-    { message: new UserMessage(userPrompt).toJSON() },
-  ]);
+  await session.addMessages([{ message: new SystemMessage(systemPrompt).toJSON() }]);
+  await session.addUserMessage(new UserMessage(userPrompt));
 
   return session;
 }

@@ -60,7 +60,7 @@ async function createSession(app: App, user: User, message: string): Promise<Ses
     systemPrompt,
   });
 
-  await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
+  await session.addUserMessage(new UserMessage(message));
 
   return session;
 }

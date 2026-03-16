@@ -91,6 +91,12 @@ export interface SessionData {
   toolSchemas: ToolSchema[];
   skillSchemas: SkillSchema[];
 
+  // temporary files
+  tempFiles: Array<{
+    name: string;
+    content: string;
+  }>;
+
   callLlmOptions?: CallLlmOptions;
   agentLoopConfig?: AgentLoopConfig;
 

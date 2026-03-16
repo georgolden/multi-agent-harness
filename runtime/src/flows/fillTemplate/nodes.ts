@@ -11,7 +11,7 @@
 import { Node, packet, exit, pause } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import { TOOLS } from './tools.js';
-import { UserMessage, AssistantMessage, SystemMessage } from '../../utils/message.js';
+import { AssistantMessage, SystemMessage, UserMessage } from '../../utils/message.js';
 import type { FillTemplateContext, FillTemplateInput } from './types.js';
 import type { App } from '../../app.js';
 import { Session } from '../../services/sessionService/session.js';
@@ -117,7 +117,7 @@ export class UserResponse extends Node<App, FillTemplateContext, string, { defau
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
     const message = p.data;
-    await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
+    await session.addUserMessage(new UserMessage(message));
     await session.resume();
     return packet({
       data: session,

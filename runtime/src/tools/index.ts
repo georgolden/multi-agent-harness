@@ -82,6 +82,13 @@ export {
   runAgentSchema,
   runAgentTool,
 } from './runAgent.js';
+export {
+  createWriteTempFileTool,
+  type WriteTempFileInput,
+  type WriteTempFileDetails,
+  writeTempFileSchema,
+  writeTempFileTool,
+} from './writeTempFile.js';
 
 import type { AgentTool } from '../types.js';
 import { type BashToolOptions, bashTool, createBashTool } from './bash.js';
@@ -93,9 +100,18 @@ import { createReadTool, type ReadToolOptions, readTool } from './read.js';
 import { createTreeTool, treeTool } from './tree.js';
 import { createWriteTool, writeTool } from './write.js';
 import { createRunAgentTool, runAgentTool } from './runAgent.js';
+import { createWriteTempFileTool } from './writeTempFile.js';
+import { User } from '../data/userRepository/types.js';
+import { Session } from '../services/sessionService/session.js';
 
 /** Tool type (AgentTool from pi-ai) */
 export type Tool = AgentTool<any>;
+
+export type ToolCallContext = {
+  user: User;
+  parent?: Session;
+  session: Session;
+};
 
 // Tool schema - matches real tool format
 export interface ToolSchema {
@@ -192,6 +208,7 @@ export class Tools {
       ...this.readonlyToolsMap,
       ...this.codingToolsMap,
       runAgent: createRunAgentTool(),
+      writeTempFile: createWriteTempFileTool(),
     };
   }
 

@@ -63,7 +63,7 @@ async function createSession(
     systemPrompt,
   });
 
-  await session.addMessages([{ message: new UserMessage(message).toJSON() }]);
+  await session.addUserMessage(new UserMessage(message));
 
   return session;
 }

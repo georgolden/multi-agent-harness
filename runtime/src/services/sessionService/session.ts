@@ -15,6 +15,7 @@ import type {
   ToolSchema,
 } from './types.js';
 import { User } from '../../data/userRepository/types.js';
+import { UserMessage } from '../../utils/message.js';
 
 /**
  * Session — a live, self-updating object backed by the SessionDataRepository.
@@ -89,6 +90,9 @@ export class Session {
   get skillSchemas(): SkillSchema[] {
     return this.sessionData.skillSchemas;
   }
+  get tempFiles(): SessionData['tempFiles'] {
+    return this.sessionData.tempFiles;
+  }
   get callLlmOptions(): SessionData['callLlmOptions'] {
     return this.sessionData.callLlmOptions;
   }
@@ -131,6 +135,25 @@ export class Session {
     return this;
   }
 
+  /**
+   * Add a user message, prepending any existing temp files as formatted XML before the content.
+   * Temp files are only attached when tempFiles is non-empty.
+   */
+  async addUserMessage(message: UserMessage): Promise<this> {
+    const content = message.toJSON().content as string;
+    const tempFiles = this.sessionData.tempFiles;
+    let fullContent = content;
+
+    if (tempFiles && tempFiles.length > 0) {
+      const filesXml = tempFiles
+        .map((f) => `  <file>\n    <name>${f.name}</name>\n    <content>${f.content}</content>\n  </file>`)
+        .join('\n');
+      fullContent = `<temp_files>\n${filesXml}\n</temp_files>\n\n${content}`;
+    }
+
+    return this.addMessages([{ message: new UserMessage(fullContent).toJSON() }]);
+  }
+
   // ─── Context / schema mutations ───────────────────────────────────────────
 
   async addContextFiles(files: FileInfo[]): Promise<this> {
@@ -157,6 +180,12 @@ export class Session {
   async addSkills(skills: SkillSchema[]): Promise<this> {
     const skillSchemas = await this.app.data.flowSessionRepository.addSkills(this.sessionData.id, skills);
     this.sessionData.skillSchemas = skillSchemas;
+    return this;
+  }
+
+  async writeTempFile(file: { name: string; content: string }): Promise<this> {
+    const tempFiles = await this.app.data.flowSessionRepository.writeTempFile(this.sessionData.id, file);
+    this.sessionData.tempFiles = tempFiles;
     return this;
   }
 
