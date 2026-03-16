@@ -1,20 +1,22 @@
 /**
- * New flow nodes for the fillTemplate flow.
+ * Nodes for the fillTemplate flow.
  *
  * Flow graph:
- *   PrepareInput → DecideAction ─┬─ ask_user      → AskUser        (ends run; session stays running)
- *                                └─ submit_template → SubmitTemplate (ends run; session completed)
+ *   PrepareInput → DecideAction ─┬─ write_temp_file → WriteTempFile → DecideAction (loop)
+ *                                ├─ ask_user        → AskUser        (pause; session stays running)
+ *                                └─ submit_template → SubmitTemplate (exit; session completed)
  *
- * Each user reply re-enters the flow via PrepareInput with the existing sessionId,
- * which resumes the conversation and feeds DecideAction again.
+ * The LLM is instructed to call write_temp_file after every partial update,
+ * keeping the best current version of the template saved before asking the user.
  */
 import { Node, packet, exit, pause } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import { TOOLS } from './tools.js';
-import { AssistantMessage, SystemMessage, UserMessage } from '../../utils/message.js';
+import { AssistantMessage, SystemMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
 import type { FillTemplateContext, FillTemplateInput } from './types.js';
 import type { App } from '../../app.js';
 import { Session } from '../../services/sessionService/session.js';
+import type { LLMToolCall } from '../../utils/message.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
@@ -36,18 +38,18 @@ export class PrepareInput extends Node<App, FillTemplateContext, FillTemplateInp
 // ─── DecideAction ─────────────────────────────────────────────────────────────
 
 /**
- * DecideAction: LLM decides whether to ask the user another question or to
- * submit the completed template via the submit_template tool.
+ * DecideAction: LLM decides what to do next.
  *
  * Routes:
- *   'ask_user'       — LLM replied with text (question for the user)
- *   'submit_template' — LLM called submit_template tool (template is ready)
+ *   'write_temp_file' — LLM is saving current template progress (loops back via WriteTempFile)
+ *   'ask_user'        — LLM replied with a question for the user
+ *   'submit_template' — LLM is done and submits the final template
  */
 export class DecideAction extends Node<
   App,
   FillTemplateContext,
   Session,
-  { ask_user: string; submit_template: string }
+  { write_temp_file: LLMToolCall; ask_user: string; submit_template: string }
 > {
   constructor() {
     super({ maxRunTries: 3, wait: 1000 });
@@ -67,16 +69,30 @@ export class DecideAction extends Node<
     await session.addMessages([{ message: assistantMsg.toJSON() }]);
 
     if ('toolCalls' in assistantMsg && assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0) {
-      console.log(`[DecideAction.run] Tool calls detected, routing to submit_template`);
-      return packet({
-        data: assistantMsg.toolCalls[0].args.filled_template as string,
-        context: p.context,
-        branch: 'submit_template',
-        deps: p.deps,
-      });
+      const toolCall = assistantMsg.toolCalls[0];
+
+      if (toolCall.name === 'write_temp_file') {
+        console.log(`[DecideAction.run] write_temp_file called, routing to WriteTempFile`);
+        return packet({
+          data: toolCall,
+          context: p.context,
+          branch: 'write_temp_file',
+          deps: p.deps,
+        });
+      }
+
+      if (toolCall.name === 'submit_template') {
+        console.log(`[DecideAction.run] submit_template called, routing to SubmitTemplate`);
+        return packet({
+          data: toolCall.args.filled_template as string,
+          context: p.context,
+          branch: 'submit_template',
+          deps: p.deps,
+        });
+      }
     }
 
-    // Text response — ask user
+    // Plain text response — ask user
     const text = assistantMsg.toJSON().content || '';
     console.log(`[DecideAction.run] Text response, routing to ask_user`);
     return packet({
@@ -88,11 +104,47 @@ export class DecideAction extends Node<
   }
 }
 
+// ─── WriteTempFile ─────────────────────────────────────────────────────────────
+
+/**
+ * WriteTempFile: Persist the current best version of the filled template to the session's
+ * temp files, then add the tool result to the conversation and loop back to DecideAction.
+ */
+export class WriteTempFile extends Node<App, FillTemplateContext, LLMToolCall, { default: Session }> {
+  async run(p: this['In']): Promise<this['Out']> {
+    const session = p.context.session;
+    const toolCall = p.data;
+    const { name, content } = toolCall.args as { name: string; content: string };
+
+    console.log(
+      `[WriteTempFile.run] Writing temp file '${name}' (${content.length} chars) for session '${session.id}'`,
+    );
+
+    await session.writeTempFile({ name, content });
+
+    // Feed the tool result back so the LLM knows the write succeeded
+    await session.addMessages([
+      {
+        message: new ToolResultMessage({
+          toolCallId: toolCall.id,
+          content: JSON.stringify({ success: true, name, contentLength: content.length }),
+        }).toJSON(),
+      },
+    ]);
+
+    return packet({
+      data: session,
+      context: p.context,
+      deps: p.deps,
+    });
+  }
+}
+
 // ─── AskUser ──────────────────────────────────────────────────────────────────
 
 /**
- * AskUser: Send the question to the user and keep session running.
- * Does NOT mark session as completed — that happens when SubmitTemplate is reached.
+ * AskUser: Send the question to the user and pause.
+ * Session stays running until the user replies.
  */
 export class AskUser extends Node<App, FillTemplateContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
@@ -113,6 +165,8 @@ export class AskUser extends Node<App, FillTemplateContext, string, { default: v
   }
 }
 
+// ─── UserResponse ─────────────────────────────────────────────────────────────
+
 export class UserResponse extends Node<App, FillTemplateContext, string, { default: Session }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
@@ -130,17 +184,22 @@ export class UserResponse extends Node<App, FillTemplateContext, string, { defau
 // ─── SubmitTemplate ───────────────────────────────────────────────────────────
 
 /**
- * SubmitTemplate: Mark session as completed. The LLM already called the tool in DecideAction.
+ * SubmitTemplate: Mark session as completed and exit with the final filled template.
+ * If the LLM submitted without a prior write_temp_file, we still persist it now.
  */
 export class SubmitTemplate extends Node<App, FillTemplateContext, string, { default: string }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session } = p.context;
+    const filledTemplate = p.data;
+
+    // Ensure the final version is always persisted in temp files
+    await session.writeTempFile({ name: 'filled_template.md', content: filledTemplate });
 
     console.log(`[SubmitTemplate.run] Marking session '${session.id}' as completed`);
     await session.complete();
 
     return exit({
-      data: p.data,
+      data: filledTemplate,
       context: p.context,
       deps: p.deps,
     });
