@@ -89,6 +89,13 @@ export {
   writeTempFileSchema,
   writeTempFileTool,
 } from './writeTempFile.js';
+export {
+  createSpawnAgentTool,
+  type SpawnAgentInput,
+  type SpawnAgentDetails,
+  spawnAgentSchema,
+  spawnAgentTool,
+} from './spawnAgent.js';
 
 import type { AgentTool } from '../types.js';
 import { type BashToolOptions, bashTool, createBashTool } from './bash.js';
@@ -101,6 +108,7 @@ import { createTreeTool, treeTool } from './tree.js';
 import { createWriteTool, writeTool } from './write.js';
 import { createRunAgentTool, runAgentTool } from './runAgent.js';
 import { createWriteTempFileTool } from './writeTempFile.js';
+import { createSpawnAgentTool } from './spawnAgent.js';
 import { User } from '../data/userRepository/types.js';
 import { Session } from '../services/sessionService/session.js';
 
@@ -209,6 +217,7 @@ export class Tools {
       ...this.codingToolsMap,
       runAgent: createRunAgentTool(),
       writeTempFile: createWriteTempFileTool(),
+      spawnAgent: createSpawnAgentTool(),
     };
   }
 

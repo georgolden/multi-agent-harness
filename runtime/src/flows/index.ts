@@ -3,6 +3,8 @@ import { taskSchedulerFlow } from './taskScheduler/flow.js';
 import { fillTemplateFlow } from './fillTemplate/flow.js';
 import { exploreFlow } from './explore/flow.js';
 import { agenticLoopFlow } from './agentictLoop/flow.js';
+import { agentBuilderFlow } from './agentBuilder/flow.js';
+import { orchestratorFlow } from './orchestrator/flow.js';
 import { User } from '../data/userRepository/types.js';
 import { Session } from '../services/sessionService/index.js';
 import type { StoredAgenticLoopSchema } from '../data/agenticLoopSchemaRepository/types.js';
@@ -39,6 +41,8 @@ export class Flows {
     [fillTemplateFlow.name, fillTemplateFlow],
     [exploreFlow.name, exploreFlow],
     [agenticLoopFlow.name, agenticLoopFlow],
+    [agentBuilderFlow.name, agentBuilderFlow],
+    [orchestratorFlow.name, orchestratorFlow],
   ]);
 
   app: App;
