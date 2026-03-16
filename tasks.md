@@ -25,14 +25,14 @@
   - [x] make own version of a pocketflow that works nice with stack trace, respects options and that works with not shared store but with result state as well
 
 - [ ] Finish agentic app
-  - agent flows must be used as skills or tools with similar schema and syntax
-  - for schema based agents they must be executed with a schema
-  - execute agent flow tool
-  - user's channel to runtime
-  - dashboard of agents that hold all running agents (and history probably) it could or could not communicate with orchestrator agent, but it uses async messaging to comminucate with users and used by UI to show all the running agents and their statuses.
-  - orchestrator agent
+  - [x] agent flows must be used as skills or tools with similar schema and syntax
+  - [x] for schema based agents they must be executed with a schema
+  - [x] execute agent flow tool
+  - [x] user's channel to runtime
+  - [x] dashboard of agents that hold all running agents (and history probably) it could or could not communicate with orchestrator agent, but it uses async messaging to comminucate with users and used by UI to show all the running agents and their statuses.
+  - [x] orchestrator agent
   - 1st application - just executable that glues and runs everything
-  - agent builder of agents
+  - [x] agent builder of agents
   - build secretary agent/agents
   - execute skill tool
   - UI
