@@ -5,6 +5,7 @@ import { Services } from './services/index.js';
 import { Skills } from './skills/index.js';
 import { Tasks } from './tasks/index.js';
 import { Tools } from './tools/index.js';
+import { AppServer } from './server/index.js';
 
 export class App {
   services: Services;
@@ -14,6 +15,7 @@ export class App {
   skills: Skills;
   tasks: Tasks;
   tools: Tools;
+  server: AppServer;
 
   constructor() {
     const cwd = process.cwd();
@@ -24,20 +26,23 @@ export class App {
     this.skills = new Skills(cwd);
     this.tasks = new Tasks(this);
     this.tools = new Tools(cwd);
+    this.server = new AppServer(this);
   }
 
   async start() {
-    return Promise.all([
+    await Promise.all([
       this.services.start(),
       this.infra.start(),
       this.data.start(),
       this.skills.start(),
       this.flows.start(),
     ]);
+    await this.server.start();
   }
 
   async stop() {
     try {
+      await this.server.stop();
       await Promise.all([this.services.stop(), this.infra.stop(), this.data.stop(), this.skills.stop()]);
     } catch (error) {
       console.error(error);
