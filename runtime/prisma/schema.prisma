@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id       String  @id @db.VarChar(255)
+  name     String? @db.VarChar(255)
+  timezone String  @default("UTC") @db.VarChar(50)
+
+  tasks Task[]
+
+  @@map("users")
+}
+
+model Task {
+  id            String    @id @db.VarChar(16)
+  userId        String    @map("user_id") @db.VarChar(255)
+  chatId        String    @map("chat_id") @db.VarChar(255)
+  taskName      String    @map("task_name")
+  parameters    Json
+  scheduleType  String    @map("schedule_type") @db.VarChar(10)
+  scheduleValue String    @map("schedule_value")
+  startDate     DateTime? @map("start_date")
+  endDate       DateTime? @map("end_date")
+  timezone      String    @db.VarChar(50)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  active        Boolean   @default(true)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, active], name: "idx_tasks_user_active")
+  @@map("tasks")
+}
+
+model FlowSession {
+  id                 String       @id @db.VarChar(16)
+  userId             String       @map("user_id") @db.VarChar(255)
+  flowName           String       @map("flow_name") @db.VarChar(255)
+  systemPrompt       String       @map("system_prompt")
+  userPromptTemplate String?      @map("user_prompt_template")
+  status             String       @db.VarChar(20)
+  parentSessionId    String?      @map("parent_session_id") @db.VarChar(16)
+  messages           Json         @default("[]")
+  activeMessages     Json         @default("[]") @map("active_messages")
+  messageWindowConfig Json        @map("message_window_config")
+  contextFiles       Json         @default("[]") @map("context_files")
+  contextFoldersInfos Json        @default("[]") @map("context_folders_infos")
+  toolSchemas        Json         @default("[]") @map("tool_schemas")
+  skillSchemas       Json         @default("[]") @map("skill_schemas")
+  callLlmOptions     Json         @default("{}") @map("call_llm_options")
+  agentLoopConfig    Json         @default("{}") @map("agent_loop_config")
+  tempFiles          Json         @default("[]") @map("temp_files")
+  toolLogs           Json         @default("[]") @map("tool_logs")
+  skillLogs          Json         @default("[]") @map("skill_logs")
+  startedAt          DateTime     @default(now()) @map("started_at")
+  endedAt            DateTime?    @map("ended_at")
+
+  parent   FlowSession?  @relation("SessionTree", fields: [parentSessionId], references: [id], onDelete: SetNull)
+  children FlowSession[] @relation("SessionTree")
+
+  @@index([userId], name: "idx_flow_sessions_user_id")
+  @@index([parentSessionId], name: "idx_flow_sessions_parent_id")
+  @@index([status], name: "idx_flow_sessions_status")
+  @@index([userId, status], name: "idx_flow_sessions_user_status")
+  @@index([parentSessionId, startedAt], name: "idx_flow_sessions_tree")
+  @@map("flow_sessions")
+}
+
+model FlowRun {
+  id              String    @id @db.VarChar(32)
+  flowName        String    @map("flow_name") @db.VarChar(255)
+  sessionId       String    @map("session_id") @db.VarChar(255)
+  userId          String    @map("user_id") @db.VarChar(255)
+  status          String    @default("running") @db.VarChar(32)
+  startedAt       DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  endedAt         DateTime? @map("ended_at") @db.Timestamptz
+  parentSessionId String?   @map("parent_session_id") @db.VarChar(255)
+
+  @@index([userId], name: "flow_runs_user_id_idx")
+  @@index([sessionId], name: "flow_runs_session_id_idx")
+  @@index([status], name: "flow_runs_status_idx")
+  @@map("flow_runs")
+}
+
+model AgenticLoopSchema {
+  flowName            String  @id @map("flow_name") @db.VarChar(255)
+  userId              String? @map("user_id") @db.VarChar(255)
+  description         String
+  userPromptTemplate  String? @map("user_prompt_template")
+  systemPrompt        String  @map("system_prompt")
+  toolNames           String[] @map("tool_names")
+  skillNames          String[] @map("skill_names")
+  contextPaths        Json    @map("context_paths")
+  callLlmOptions      Json    @map("call_llm_options")
+  messageWindowConfig Json    @map("message_window_config")
+  agentLoopConfig     Json    @map("agent_loop_config")
+
+  @@index([userId], name: "idx_agentic_loop_schemas_user")
+  @@map("agentic_loop_schemas")
+}

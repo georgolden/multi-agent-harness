@@ -12,5 +12,5 @@
     "esModuleInterop": true,
     "skipLibCheck": true
   },
-  "exclude": ["node_modules", "vitest.config.mts", "dist", "ui"]
+  "exclude": ["node_modules", "vitest.config.mts", "dist", "ui", "prisma.config.ts"]
 }

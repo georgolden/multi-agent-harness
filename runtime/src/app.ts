@@ -19,8 +19,8 @@ export class App {
 
   constructor() {
     const cwd = process.cwd();
-    this.services = new Services(this);
     this.infra = new Infra(this);
+    this.services = new Services(this);
     this.data = new Data(this);
     this.flows = new Flows(this);
     this.skills = new Skills(cwd);

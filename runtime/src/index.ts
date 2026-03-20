@@ -1,4 +1,8 @@
-import { App } from './app.js';
+import { loadEnv } from './utils/dotenv.js';
+
+await loadEnv();
+
+const { App } = await import('./app.js');
 
 const app = new App();
 
