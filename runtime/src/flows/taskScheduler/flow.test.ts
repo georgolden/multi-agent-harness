@@ -90,6 +90,10 @@ function setupTestApp() {
         session.status = 'running';
         return session;
       },
+      async addUserMessage(message: any) {
+        const content = typeof message.toJSON === 'function' ? message.toJSON().content : message;
+        return session.addMessages([{ message: { role: 'user', content } }]);
+      },
       addAgentTools(_tools: any[]) {
         // No-op for tests
       },
