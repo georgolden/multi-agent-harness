@@ -1,4 +1,4 @@
-import { Flow, packet, error } from '../../utils/agent/flow.js';
+import { Flow, type FlowSchema, error } from '../../utils/agent/flow.js';
 import { App } from '../../app.js';
 import { MessageWindowConfig } from '../../services/sessionService/types.js';
 import { User } from '../../data/userRepository/types.js';
@@ -34,14 +34,28 @@ export type AgentLoopConfig = {
   useKnowledgeBase: boolean;
 };
 
-// ─── AgenticLoopFlow ──────────────────────────────────────────────────────
+export const agenticLoopSchema: FlowSchema = {
+  startNode: 'PrepareInput',
+  nodes: {
+    PrepareInput:  'DecideAction',
+    DecideAction:  { ask_user: 'AskUser', tool_calls: 'ToolCalls', submit_answer: 'SubmitAnswer', loop: 'DecideAction' },
+    AskUser:       { pause: 'UserResponse' },
+    UserResponse:  'DecideAction',
+    ToolCalls:     { default: 'DecideAction', ask_user: 'AskUser' },
+    SubmitAnswer:  null,
+  },
+};
+
+// ─── AgenticLoopFlow ──────────────────────────────────────────────────────────
 
 /**
- * Flow subclass that handles loop-exceeded errors (maxLoopEntering) via fallback.
- * If loopExit is 'bestAnswer', delegates to BestAnswer node to make final LLM call.
+ * Flow subclass that handles loop-exceeded errors via fallback.
+ * If loopExit is 'bestAnswer', delegates to BestAnswer node for a final LLM call.
  * Otherwise fails the session.
  */
-class AgenticLoopFlow extends Flow<App, AgenticLoopContext, string> {
+export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, string> {
+  nodeConstructors = { PrepareInput, DecideAction, AskUser, UserResponse, ToolCalls, SubmitAnswer };
+
   private bestAnswerNode = new BestAnswer();
 
   async fallback(p: this['InError'], err: Error): Promise<this['Out']> {
@@ -53,49 +67,15 @@ class AgenticLoopFlow extends Flow<App, AgenticLoopContext, string> {
 
     if (isLoopExceeded && loopExit === 'bestAnswer') {
       try {
-        // Delegate to BestAnswer node
         return await this.bestAnswerNode.run({ data: err, context: p.context, deps: p.deps });
       } catch (bestAnswerErr) {
         console.error('[AgenticLoopFlow.fallback] bestAnswer call failed:', bestAnswerErr);
-        // Fall through to failure
       }
     }
 
-    // failure or non-loop error or bestAnswer fallback
     await session.fail().catch(() => {});
     return error({ data: err, context: p.context, deps: p.deps });
   }
-}
-
-export function createAgenticLoopFlow({ maxLoopEntering }: { maxLoopEntering?: number } = {}) {
-  const prepareInput = new PrepareInput();
-  const decideAction = new DecideAction({ maxLoopEntering });
-  const askUser = new AskUser();
-  const userResponse = new UserResponse();
-  const toolCalls = new ToolCalls();
-  const submitAnswer = new SubmitAnswer();
-
-  // PrepareInput runs once, then goes to DecideAction
-  prepareInput.next(decideAction);
-
-  // DecideAction routes to different actions
-  decideAction.branch('ask_user', askUser);
-  decideAction.branch('tool_calls', toolCalls);
-  decideAction.branch('submit_answer', submitAnswer);
-  decideAction.branch('loop', decideAction);
-
-  // AskUser pauses and resumes with UserResponse
-  askUser.branch('pause', userResponse);
-  userResponse.next(decideAction);
-
-  // ToolCalls loops back to DecideAction
-  toolCalls.next(decideAction);
-  // ToolCalls can also route to AskUser on error
-  toolCalls.branch('ask_user', askUser);
-
-  // Create flow starting with PrepareInput
-  const flow = new AgenticLoopFlow(prepareInput);
-  return flow;
 }
 
 export const agentFlowParametersSchema = Type.Object({
@@ -141,7 +121,7 @@ export const agenticLoopFlow = {
   name: 'Agentic Loop',
   description: 'Universal agentic flow that runs with schema',
   parameters: agentFlowParametersSchema,
-  create: createAgenticLoopFlow,
+  create: (schema: FlowSchema = agenticLoopSchema) => new AgenticLoopFlow(schema),
   run: async (
     app: App,
     context: { user: User; parent?: Session },
@@ -183,7 +163,7 @@ export const agenticLoopFlow = {
       agentLoopConfig,
     });
 
-    const flow = createAgenticLoopFlow(agentLoopConfig);
+    const flow = new AgenticLoopFlow(agenticLoopSchema);
     const promise = flow.run({ data: message, context: { session, user, tools, skills }, deps: app });
     return { flow, session, promise };
   },

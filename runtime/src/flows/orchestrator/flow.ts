@@ -1,23 +1,5 @@
-/**
- * Orchestrator flow.
- *
- * Flow graph:
- *   PrepareInput → DecideAction ─┬─ tool_calls    → ToolCalls ─┐
- *                                │                               └→ DecideAction (loop)
- *                                ├─ loop          ──────────────→ DecideAction (loop)
- *                                ├─ ask_user      → AskUser (pause)
- *                                │                      └→ UserResponse → DecideAction
- *                                └─ submit_result → SubmitResult (exit)
- */
-import { Flow, packet } from '../../utils/agent/flow.js';
-import {
-  PrepareInput,
-  DecideAction,
-  ToolCalls,
-  AskUser,
-  UserResponse,
-  SubmitResult,
-} from './nodes.js';
+import { Flow, type FlowSchema, packet } from '../../utils/agent/flow.js';
+import { PrepareInput, DecideAction, ToolCalls, AskUser, UserResponse, SubmitResult } from './nodes.js';
 import { AGENT_TOOLS } from './tools.js';
 import { orchestratorInputSchema, type OrchestratorContext } from './types.js';
 import { App } from '../../app.js';
@@ -26,31 +8,23 @@ import { Session } from '../../services/sessionService/session.js';
 import { UserMessage } from '../../utils/message.js';
 import { createSystemPrompt } from './prompts/index.js';
 
-export type OrchestratorFlow = Flow<App, OrchestratorContext>;
+export const orchestratorSchema: FlowSchema = {
+  startNode: 'PrepareInput',
+  nodes: {
+    PrepareInput:  'DecideAction',
+    DecideAction:  { tool_calls: 'ToolCalls', loop: 'DecideAction', ask_user: 'AskUser', submit_result: 'SubmitResult' },
+    ToolCalls:     'DecideAction',
+    AskUser:       { pause: 'UserResponse' },
+    UserResponse:  'DecideAction',
+    SubmitResult:  null,
+  },
+};
 
-export function createOrchestratorFlow(): OrchestratorFlow {
-  const prepareInput = new PrepareInput();
-  const decideAction = new DecideAction();
-  const toolCalls = new ToolCalls();
-  const askUser = new AskUser();
-  const userResponse = new UserResponse();
-  const submitResult = new SubmitResult();
-
-  prepareInput.next(decideAction);
-
-  decideAction.branch('tool_calls', toolCalls);
-  toolCalls.next(decideAction);
-
-  decideAction.branch('loop', decideAction);
-
-  decideAction.branch('ask_user', askUser);
-  askUser.branch('pause', userResponse);
-  userResponse.next(decideAction);
-
-  decideAction.branch('submit_result', submitResult);
-
-  return new Flow(prepareInput);
+export class OrchestratorFlow extends Flow<App, OrchestratorContext> {
+  nodeConstructors = { PrepareInput, DecideAction, ToolCalls, AskUser, UserResponse, SubmitResult };
 }
+
+export type OrchestratorFlowType = OrchestratorFlow;
 
 async function createSession(
   app: App,
@@ -82,12 +56,12 @@ export const orchestratorFlow = {
   description:
     'Orchestrator flow — understands the user\'s request, breaks it into tasks, and dispatches the right agents. Routes simple tasks directly to spawn_agent, uses run_agent when output is needed for subsequent steps, and asks the user only when ambiguity would cause the wrong outcome.',
   parameters: orchestratorInputSchema,
-  create: createOrchestratorFlow,
+  create: (schema: FlowSchema = orchestratorSchema) => new OrchestratorFlow(schema),
   run: async (app: App, context: { user: User; parent?: Session }, parameters: { message: string }) => {
     const { user, parent } = context;
     const { message } = parameters;
     const session = await createSession(app, user, parent, message);
-    const flow = createOrchestratorFlow();
+    const flow = new OrchestratorFlow(orchestratorSchema);
     const promise = flow.run(
       packet({
         data: { message },

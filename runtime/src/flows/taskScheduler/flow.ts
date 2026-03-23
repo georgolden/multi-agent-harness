@@ -1,9 +1,5 @@
-/**
- * Flow for the taskScheduler agent.
- * Connects all nodes in a clear, directed graph.
- */
 import type { Session } from '../../services/sessionService/index.js';
-import { Flow } from '../../utils/agent/flow.js';
+import { Flow, type FlowSchema } from '../../utils/agent/flow.js';
 import { PrepareInput, DecideAction, AskUser, ToolCalls, Response, UserResponse } from './nodes.js';
 import { taskSchedulerInputSchema, type TaskSchedulerContext } from './types.js';
 import { App } from '../../app.js';
@@ -11,37 +7,20 @@ import { User } from '../../data/userRepository/types.js';
 import { createSystemPrompt } from './prompts/index.js';
 import { UserMessage } from '../../utils/message.js';
 
-export type TaskSchedulerFlow = Flow<any, TaskSchedulerContext>;
+export const taskSchedulerSchema: FlowSchema = {
+  startNode: 'PrepareInput',
+  nodes: {
+    PrepareInput: 'DecideAction',
+    DecideAction: { ask_user: 'AskUser', tool_calls: 'ToolCalls', response: 'Response' },
+    AskUser: { pause: 'UserResponse' },
+    UserResponse: 'DecideAction',
+    ToolCalls: 'DecideAction',
+    Response: null,
+  },
+};
 
-/**
- * Create and return the taskScheduler agent flow
- */
-export function createTaskSchedulerFlow(): TaskSchedulerFlow {
-  // Create nodes
-  const prepareInput = new PrepareInput();
-  const decideAction = new DecideAction();
-  const askUser = new AskUser();
-  const userResponse = new UserResponse();
-  const response = new Response();
-  const toolCalls = new ToolCalls();
-
-  // PrepareInput runs once, then goes to DecideAction
-  prepareInput.next(decideAction);
-
-  // DecideAction routes to different actions
-  decideAction.branch('ask_user', askUser);
-  decideAction.branch('tool_calls', toolCalls);
-  decideAction.branch('response', response);
-
-  askUser.branch('pause', userResponse);
-
-  userResponse.next(decideAction);
-
-  // ToolCalls loops back to DecideAction
-  toolCalls.next(decideAction);
-
-  // Create flow starting with PrepareInput
-  return new Flow(prepareInput);
+export class TaskSchedulerFlow extends Flow<App, TaskSchedulerContext> {
+  nodeConstructors = { PrepareInput, DecideAction, AskUser, ToolCalls, Response, UserResponse };
 }
 
 async function createSession(app: App, user: User, message: string): Promise<Session> {
@@ -70,12 +49,12 @@ export const taskSchedulerFlow = {
   description:
     'TaskScheduler agent flow that allows users to schedule tasks. It helps to:\n• Schedule one-time reminders and agent flows\n• Set up recurring reminders and agent flows\n• List your active tasks\n• Cancel tasks',
   parameters: taskSchedulerInputSchema,
-  create: createTaskSchedulerFlow,
+  create: (schema: FlowSchema = taskSchedulerSchema) => new TaskSchedulerFlow(schema),
   run: async (app: App, context: { user: User; parent?: Session }, parameters: { message: string }) => {
     const { user, parent } = context;
     const { message } = parameters;
     const session = await createSession(app, user, message);
-    const flow = createTaskSchedulerFlow();
+    const flow = new TaskSchedulerFlow(taskSchedulerSchema);
     const promise = flow.run({ deps: app, context: { user, parent, session }, data: message });
     return { flow, session, promise };
   },

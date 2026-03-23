@@ -23,6 +23,60 @@ export type NodeOptions = {
 };
 
 // ============================================================
+// Schema
+// ============================================================
+
+/**
+ * Wiring descriptor for a single node inside a flow. Three forms:
+ *
+ * - `'NextNode'`                  — always advance to NextNode (sugar for `{ default: 'NextNode' }`)
+ * - `{ branch: 'Target', ... }`  — route by branch name emitted from `run()`
+ * - `null`                        — explicit terminal node; the flow exits when this node finishes
+ */
+export type NodeWiring =
+  | string                      // shorthand: always go to this constructor name
+  | Record<string, string>      // branch name → target constructor name
+  | null;                       // terminal — flow exits after this node
+
+/**
+ * Serializable, database-storable description of a flow graph.
+ *
+ * `nodes` is a flat map where:
+ *   - each *key*   is a constructor name present in the flow's `nodeConstructors`
+ *   - each *value* is a `NodeWiring` describing outgoing edges
+ *
+ * The entry-point node is identified by `startNode` (a constructor name).
+ * `options` are applied to the Flow itself (retry, timeout, loop-guard).
+ *
+ * @example
+ * ```ts
+ * const schema: FlowSchema = {
+ *   startNode: 'PrepareInput',
+ *   nodes: {
+ *     PrepareInput:  'DecideAction',
+ *     DecideAction:  { ask_user: 'AskUser', tool_calls: 'ToolCalls', response: 'Response' },
+ *     AskUser:       { pause: 'UserResponse' },
+ *     UserResponse:  'DecideAction',
+ *     ToolCalls:     'DecideAction',
+ *     Response:      null,
+ *   },
+ * };
+ * ```
+ */
+export type FlowSchema = {
+  /** Constructor name of the first node to execute when the flow starts. */
+  startNode: string;
+  /**
+   * Flat map of every node in the graph.
+   * Key   = constructor name (must match an entry in `nodeConstructors`).
+   * Value = outgoing branch wiring for that node.
+   */
+  nodes: Record<string, NodeWiring>;
+  /** Options applied to the Flow node itself (retry, timeout, loop-guard). */
+  options?: NodeOptions;
+};
+
+// ============================================================
 // Packet types
 // ============================================================
 
@@ -169,7 +223,7 @@ export const error = <TData = undefined, TDeps = unknown, TContext = unknown>(op
  * Pause the containing Flow. The flow suspends until `node.resume(packet)` or
  * `flow.resume(packet)` is called with a packet to pass to the next node.
  *
- * The next node is determined by `node.branch('pause', nextNode)` wiring.
+ * The next node is determined by the 'pause' branch wiring in the FlowSchema.
  *
  * @example
  *   return pause({ data: { waiting: true }, context: p.context, deps: p.deps });
@@ -187,6 +241,9 @@ export const pause = <TData = undefined, TDeps = unknown, TContext = unknown>(op
 /**
  * Abstract base class for all pipeline nodes.
  *
+ * Nodes are pure execution units — they have no knowledge of graph topology.
+ * All routing is owned exclusively by the containing Flow via its FlowSchema.
+ *
  * **Generic parameters** (write once on the class declaration):
  *   - `TDeps`     — external services / dependencies (injected, treated as immutable)
  *   - `TContext`  — mutable flow state that travels between nodes
@@ -194,45 +251,20 @@ export const pause = <TData = undefined, TDeps = unknown, TContext = unknown>(op
  *   - `TBranches` — map of `{ branchName: dataType }` describing per-branch output types
  *
  * **Phantom type aliases** — use in method signatures to avoid repeating generics:
- *   - `this['Deps']`         → `TDeps` — use to compose custom packet types
- *   - `this['Ctx']`          → `TContext` — use to compose custom packet types
+ *   - `this['Deps']`         → `TDeps`
+ *   - `this['Ctx']`          → `TContext`
  *   - `this['In']`           → `SinglePacket<TInput, TDeps, TContext>`
  *   - `this['InBatch']`      → `BatchPacket<TInput, TDeps, TContext>`
  *   - `this['InError']`      → `ErrorPacket<Error, TDeps, TContext>`
  *   - `this['InBatchError']` → `BatchErrorPacket<TInput, TDeps, TContext>`
- *   - `this['Out']`          → `BranchPacket<TBranches, TDeps, TContext>` — permissive union of all branch types
- *
- * For intermediate types (preprocess output, run output when it differs from node output),
- * compose custom packet types using `this['Deps']` and `this['Ctx']`:
- *   `SinglePacket<MyRunOutput, this['Deps'], this['Ctx']>`
- *   `BatchPacket<MyRunOutput, this['Deps'], this['Ctx']>`
+ *   - `this['Out']`          → `BranchPacket<TBranches, TDeps, TContext>`
  *
  * @example
  * ```ts
  * export class MyNode extends Node<MyDeps, MyCtx, MyInput, { done: MyOutput; retry: void }> {
  *   async run(p: this['In']): Promise<this['Out']> {
- *     const result = await p.deps!.myService.doWork(p.data!);
+ *     const result = await p.deps.myService.doWork(p.data);
  *     return packet({ data: result, branch: 'done', context: p.context, deps: p.deps });
- *   }
- *
- *   // Switch to batch mode in preprocess (custom intermediate type):
- *   async preprocess(p: this['In']): Promise<BatchPacket<PrepItem, this['Deps'], this['Ctx']>> {
- *     return batch({ data: p.data!.items, deps: p.deps, context: p.context });
- *   }
- *
- *   // Collapse batch results in postprocess (custom run output as input):
- *   async postprocess(p: BatchPacket<RunResult, this['Deps'], this['Ctx']>): Promise<this['Out']> {
- *     return packet({ data: p.data, branch: 'done', deps: p.deps, context: p.context });
- *   }
- *
- *   // Handle errors:
- *   async fallback(p: this['In'] | this['InError'] | this['InBatchError'], err: Error | AggregateError): Promise<this['Out']> {
- *     if (err instanceof AggregateError) {
- *       console.error('batch failures', err.error, 'successes', p.data);
- *     } else {
- *       console.error('error', err);
- *     }
- *     return exit({ context: p.context });
  *   }
  * }
  * ```
@@ -244,21 +276,14 @@ export abstract class Node<
   TBranches extends Record<string, unknown> = Record<string, unknown>,
 > {
   // ---- Phantom type aliases (zero runtime cost — never instantiate) ----
-  /** Use to compose custom packet types: `SinglePacket<MyType, this['Deps'], this['Ctx']>` */
   declare readonly Deps: TDeps;
-  /** Use to compose custom packet types: `SinglePacket<MyType, this['Deps'], this['Ctx']>` */
   declare readonly Ctx: TContext;
-
   declare readonly In: SinglePacket<TInput, TDeps, TContext>;
   declare readonly InBatch: BatchPacket<TInput, TDeps, TContext>;
   declare readonly InError: ErrorPacket<Error, TDeps, TContext>;
   declare readonly InBatchError: BatchErrorPacket<TInput, TDeps, TContext>;
-
   /** Permissive output — union of all branch data types, void, and batch. */
   declare readonly Out: BranchPacket<TBranches, TDeps, TContext>;
-
-  /** Downstream nodes keyed by branch name */
-  readonly branches = new Map<string, Node<TDeps, TContext, any, any>>();
 
   readonly options: {
     readonly maxRunTries: number;
@@ -279,19 +304,6 @@ export abstract class Node<
     };
   }
 
-  /** Connect a named branch to a downstream node. Type-safe when branch name is in TBranches. */
-  branch<K extends string & keyof TBranches>(name: K, node: Node<TDeps, TContext, TBranches[K], any>): this;
-  branch(name: string, node: Node<TDeps, TContext, any, any>): this;
-  branch(name: string, node: Node<TDeps, TContext, any, any>): this {
-    this.branches.set(name, node);
-    return this;
-  }
-
-  /** Shorthand: `branch('default', node)` */
-  next(node: Node<TDeps, TContext, any, any>): this {
-    return this.branch('default', node);
-  }
-
   /**
    * Resume this node if it is currently paused (idempotent).
    * Calling when not paused is silently ignored.
@@ -300,7 +312,7 @@ export abstract class Node<
    *   node.resume(packet({ data: response, context: p.context, deps: p.deps }));
    */
   resume(p: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>): void {
-    if (!this._resumeCallback) return; // silently ignore if not paused
+    if (!this._resumeCallback) return;
     this._resumeCallback(p);
     this._resumeCallback = null;
   }
@@ -314,39 +326,19 @@ export abstract class Node<
 
   /**
    * Optional. Transform the incoming packet before `run()`.
-   *
-   * Override with specific types using `this['Deps']` and `this['Ctx']`:
-   *   `async preprocess(p: this['In']): Promise<BatchPacket<MyType, this['Deps'], this['Ctx']>>`
-   *
    * Return a `BatchPacket` to switch into parallel batch execution.
-   * If omitted, the packet passes through unchanged.
    */
   preprocess?(
     packet: this['In'] | this['InBatch'] | SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>,
   ): Promise<SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>>;
 
-  /**
-   * Required. Core logic. Always receives a single-item packet.
-   *
-   * **Input type:** When `preprocess` is defined, the input type is whatever `preprocess` outputs.
-   * Otherwise, it's `this['In']`. You can override the parameter type:
-   *   `async run(p: SinglePacket<MyPreOutput, this['Deps'], this['Ctx']>): Promise<...>`
-   *
-   * **Return type:** When `postprocess` is defined, return intermediate data
-   * (e.g., `SinglePacket<IntermediateType, this['Deps'], this['Ctx']>`).
-   * Without postprocess, return `this['Out']` (branch-aware output).
-   * You can override the return type to match your needs.
-   */
+  /** Required. Core logic. Always receives a single-item packet. */
   abstract run(
     packet: SinglePacket<any, TDeps, TContext> | this['In'],
   ): Promise<SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext> | this['Out']>;
 
   /**
    * Optional. Receives the assembled result after all `run()` calls complete successfully.
-   *
-   * Override with the actual run output type:
-   *   `async postprocess(p: BatchPacket<RunOut, this['Deps'], this['Ctx']>): Promise<this['Out']>`
-   *
    * Not called when batch has any failures — those go to `fallback`.
    */
   postprocess?(
@@ -358,7 +350,6 @@ export abstract class Node<
    *
    * - Single error: `p` is `this['In']` and `this['InError']`, `err` is a plain `Error`
    * - Batch partial/full failure: `p` is `this['InBatchError']`, `err` is `AggregateError`
-   *   — `p.data` holds all successful results, `p.error` wraps all individual failures
    */
   fallback?(
     packet: this['In'] | this['InError'] | this['InBatchError'],
@@ -406,15 +397,10 @@ export abstract class Node<
         // If every failure is an AbortError, propagate as abort
         if (failures.length > 0 && failures.every((e) => e instanceof DOMException && e.name === 'AbortError')) {
           if (this.onAbort) await this.onAbort(inPacket as this['In'] | this['InBatch']).catch(() => {});
-          return { branch: 'abort', deps: preprocessed.deps, context: preprocessed.context } as SinglePacket<
-            any,
-            TDeps,
-            TContext
-          >;
+          return { branch: 'abort', deps: preprocessed.deps, context: preprocessed.context } as SinglePacket<any, TDeps, TContext>;
         }
 
         if (failures.length > 0) {
-          // Any failure → BatchErrorPacket → fallback, postprocess skipped
           const batchErr: BatchErrorPacket<any, TDeps, TContext> = {
             type: 'batch',
             branch: 'error',
@@ -448,19 +434,13 @@ export abstract class Node<
 
       // 3. Postprocess (only reached on full success)
       if (this.postprocess) {
-        return (await this.postprocess(result)) as
-          | SinglePacket<any, TDeps, TContext>
-          | BatchPacket<any, TDeps, TContext>;
+        return (await this.postprocess(result)) as SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>;
       }
       return result;
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         if (this.onAbort) await this.onAbort(inPacket as this['In'] | this['InBatch']).catch(() => {});
-        return { branch: 'abort', deps: inPacket.deps, context: inPacket.context } as SinglePacket<
-          any,
-          TDeps,
-          TContext
-        >;
+        return { branch: 'abort', deps: inPacket.deps, context: inPacket.context } as SinglePacket<any, TDeps, TContext>;
       }
       const safeErr = ensureError(err);
       if (this.fallback) return this.fallback(inPacket as this['In'], safeErr) as Promise<any>;
@@ -517,15 +497,26 @@ export type FlowCheckpoint<TDeps = unknown, TContext = unknown> = {
 };
 
 /**
- * A Flow is fully Node-compatible — it extends Node and can be nested inside
- * another Flow. Batching, retries, and pre/postprocessing all work identically.
+ * Abstract base class for all flow definitions.
  *
- * `run()` traverses the internal graph and resolves only when:
- *   - A node returns `exit(...)` — or `flow.exit()` is called.
- *   - A node returns `error(...)` and no handler absorbs it — or `flow.error()`.
- *   - `flow.abort()` is called (or a linked external signal fires).
+ * A concrete Flow subclass declares its `nodeConstructors` map and is instantiated
+ * with a `FlowSchema` that describes the wiring. Nodes have no knowledge of graph
+ * topology — the Flow owns all routing via the schema.
  *
- * While **paused**, `run()` stays pending. Call `flow.resume(packet?)` to continue.
+ * Storing a `FlowSchema` in a database and passing it to `new MyFlow(schema)` is
+ * sufficient to fully restore any flow at runtime.
+ *
+ * @example
+ * ```ts
+ * export class TaskSchedulerFlow extends Flow<App, TaskSchedulerContext> {
+ *   nodeConstructors = { PrepareInput, DecideAction, AskUser, ToolCalls, Response, UserResponse };
+ * }
+ *
+ * // Create from schema (schema can come from a database):
+ * const flow = new TaskSchedulerFlow(schema);
+ * ```
+ *
+ * **`toSchema()`** returns the FlowSchema this instance was constructed with.
  *
  * **Action methods:**
  *   - `flow.pause()`        — pause after current node finishes
@@ -540,36 +531,95 @@ export type FlowCheckpoint<TDeps = unknown, TContext = unknown> = {
  *   - `onExit(packet)`   — flow terminated successfully
  *   - `onError(packet)`  — flow terminated with unhandled error
  *   - `onAbort(packet)`  — flow aborted
- *
- * **Error chain for `'error'` branch:**
- *   1. Route to node connected to `'error'` branch (if present).
- *   2. Call `flow.fallback()` (if defined).
- *   3. Call `flow.onError()` hook and terminate.
  */
-export class Flow<
+export abstract class Flow<
   TDeps = unknown,
   TContext = unknown,
   TInput = unknown,
   TBranches extends Record<string, unknown> = Record<string, unknown>,
 > extends Node<TDeps, TContext, TInput, TBranches> {
-  private readonly _start: Node<TDeps, TContext, TInput, any>;
-  private readonly _controller = new AbortController();
+  /**
+   * Map of constructor name → Node class for every node this flow can use.
+   * Must be defined on the concrete subclass. The Flow instantiates nodes from
+   * this map when building its routing table from the schema.
+   *
+   * @example
+   * ```ts
+   * nodeConstructors = { PrepareInput, DecideAction, AskUser, ToolCalls, Response, UserResponse };
+   * ```
+   */
+  abstract nodeConstructors: Record<string, new (...args: any[]) => Node<any, any, any, any>>;
 
+  private readonly _schema: FlowSchema;
+  /** node name → Node instance, built lazily on first run */
+  private _nodes!: Map<string, Node<TDeps, TContext, any, any>>;
+  /** node name → (branch name → target node name) */
+  private _wiring!: Map<string, Map<string, string>>;
+  private _start!: Node<TDeps, TContext, TInput, any>;
+
+  private readonly _controller = new AbortController();
   private _pausePending = false;
   private _checkpoint: FlowCheckpoint<TDeps, TContext> | null = null;
-  private _resumeResolve: ((p: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>) => void) | null =
-    null;
-
+  private _resumeResolve: ((p: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>) => void) | null = null;
   private _exitPending = false;
   private _errorPending: { data: unknown } | null = null;
 
-  constructor(start: Node<TDeps, TContext, TInput, any>, options?: NodeOptions) {
-    super(options);
-    this._start = start;
-    if (options?.signal) {
-      if (options.signal.aborted) this._controller.abort();
-      else options.signal.addEventListener('abort', () => this.abort(), { once: true });
+  constructor(schema: FlowSchema, options?: NodeOptions) {
+    // options arg takes precedence; fall back to schema.options
+    super(options ?? schema.options ?? {});
+    this._schema = schema;
+    const sig = (options ?? schema.options)?.signal;
+    if (sig) {
+      if (sig.aborted) this._controller.abort();
+      else sig.addEventListener('abort', () => this.abort(), { once: true });
     }
+    // _buildRouting() is deferred to first run() because nodeConstructors is
+    // a property on the subclass instance and not yet assigned when super() runs.
+  }
+
+  /** Returns the FlowSchema this instance was constructed with. */
+  toSchema(): FlowSchema {
+    return this._schema;
+  }
+
+  // ---- Routing --------------------------------------------------------
+
+  private _ensureRouting(): void {
+    if (this._nodes) return;
+
+    const { nodes, startNode } = this._schema;
+    const ctors = this.nodeConstructors;
+
+    this._nodes = new Map();
+    this._wiring = new Map();
+
+    for (const name of Object.keys(nodes)) {
+      const Ctor = ctors[name];
+      if (!Ctor) throw new Error(`Flow "${this.constructor.name}": no constructor for node "${name}"`);
+      this._nodes.set(name, new Ctor());
+      const wiring = nodes[name];
+      const entries: [string, string][] =
+        wiring === null    ? [] :
+        typeof wiring === 'string' ? [['default', wiring]] :
+        Object.entries(wiring);
+      this._wiring.set(name, new Map(entries));
+    }
+
+    const start = this._nodes.get(startNode);
+    if (!start) throw new Error(`Flow "${this.constructor.name}": startNode "${startNode}" not found in nodes`);
+    this._start = start as Node<TDeps, TContext, TInput, any>;
+  }
+
+  private _nextNode(currentName: string, branch: string): Node<TDeps, TContext, any, any> | undefined {
+    const targetName = this._wiring.get(currentName)?.get(branch);
+    return targetName ? this._nodes.get(targetName) : undefined;
+  }
+
+  private _nodeName(node: Node<any, any, any, any>): string {
+    for (const [name, n] of this._nodes) {
+      if (n === node) return name;
+    }
+    return node.constructor.name;
   }
 
   // ---- Action methods ------------------------------------------------
@@ -618,12 +668,10 @@ export class Flow<
   private _checkLoopGuard(node: Node<TDeps, TContext, any, any>, enters: number): void {
     const { maxLoopEntering } = node.options;
     if (maxLoopEntering !== undefined && enters > maxLoopEntering) {
-      throw new Error(`Node exceeded maxLoopEntering of ${maxLoopEntering} in this flow run`);
+      throw new Error(`Node "${this._nodeName(node)}" exceeded maxLoopEntering of ${maxLoopEntering}`);
     }
     if (node === this._start && this.options.maxLoopEntering !== undefined && enters > this.options.maxLoopEntering) {
-      throw new Error(
-        `Flow exceeded maxLoopEntering of ${this.options.maxLoopEntering} (start node entered ${enters} times)`,
-      );
+      throw new Error(`Flow "${this.constructor.name}" exceeded maxLoopEntering of ${this.options.maxLoopEntering}`);
     }
   }
 
@@ -638,7 +686,6 @@ export class Flow<
     const resumed = await new Promise<SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>>(
       (resolve) => {
         this._resumeResolve = resolve;
-        // Subscribe the pausing node to the same resolve callback
         if (pausingNode) pausingNode._subscribeResume(resolve);
       },
     );
@@ -655,6 +702,8 @@ export class Flow<
   async run(
     inPacket: SinglePacket<any, TDeps, TContext> | this['In'],
   ): Promise<SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext> | this['Out']> {
+    this._ensureRouting();
+
     const { signal } = this._controller;
     const enterCount = new Map<Node, number>();
     let currentNode: Node<TDeps, TContext, any, any> = this._start;
@@ -693,7 +742,7 @@ export class Flow<
             deps: inPacket.deps,
             context: currentPacket.context,
           };
-          const errorHandler = currentNode.branches.get('error');
+          const errorHandler = this._nextNode(this._nodeName(currentNode), 'error');
           if (errorHandler) {
             currentNode = errorHandler;
             currentPacket = { ...errPacket, signal };
@@ -724,7 +773,7 @@ export class Flow<
         }
 
         if (result.branch === 'error') {
-          const errorHandler = currentNode.branches.get('error');
+          const errorHandler = this._nextNode(this._nodeName(currentNode), 'error');
           if (errorHandler) {
             currentNode = errorHandler;
             currentPacket = { ...result, signal };
@@ -739,20 +788,17 @@ export class Flow<
 
         // ── Pause (reserved branch) ────────────────────────────────────
         if (result.branch === 'pause') {
-          const pauseHandler = currentNode.branches.get('pause');
-          if (!pauseHandler) return result; // no continuation wired — bubble up
+          const pauseHandler = this._nextNode(this._nodeName(currentNode), 'pause');
+          if (!pauseHandler) return result;
 
-          // Clear any pending external pause
           this._pausePending = false;
-
-          // Suspend: resume packet → input to pauseHandler
           const resumed = await this._suspendUntilResumed({ ...result, signal }, pauseHandler, currentNode);
           currentNode = pauseHandler;
           currentPacket = { ...resumed, signal };
           continue;
         }
 
-        const nextNode = currentNode.branches.get(result.branch ?? 'default');
+        const nextNode = this._nextNode(this._nodeName(currentNode), result.branch ?? 'default');
         if (!nextNode) return result;
 
         // ── Pause ─────────────────────────────────────────────────────
