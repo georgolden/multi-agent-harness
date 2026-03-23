@@ -1,11 +1,10 @@
 /**
  * Flow for the explore agent.
- * Connects all nodes in a clear, directed graph.
  *
  * Flow graph:
- *   PrepareInput → DecideAction ─┬─ ask_user       → AskUser        (pause; session stays running)
+ *   PrepareInput → DecideAction ─┬─ ask_user       → AskUser        (pause)
  *                                ├─ tool_calls     → ToolCalls      (loops back to DecideAction)
- *                                └─ submit_result  → SubmitResult    (exit; session completed)
+ *                                └─ submit_result  → SubmitResult    (exit)
  */
 import { Flow } from '../../utils/agent/flow.js';
 import { PrepareInput, DecideAction, AskUser, UserResponse, ToolCalls, SubmitResult } from './nodes.js';
@@ -13,18 +12,15 @@ import { exploreInputSchema } from './types.js';
 import type { ExploreContext, ExploreInput, ExploreResult } from './types.js';
 import { App } from '../../app.js';
 import { Session } from '../../services/sessionService/session.js';
-import { User } from '../../data/userRepository/types.js';
 import { createSystemPrompt, wrapUserPrompt } from './prompts/index.js';
 import { SystemMessage, UserMessage } from '../../utils/message.js';
 import { AGENT_TOOLS } from './tools.js';
+import { FlowRunner } from '../../utils/agent/flowRunner.js';
+import type { FlowContext } from '../index.js';
 
 export type ExploreFlow = Flow<App, ExploreContext, ExploreInput, { exit: ExploreResult; loop: void }>;
 
-/**
- * Create and return the explore agent flow
- */
 export function createExploreFlow(): ExploreFlow {
-  // Create nodes
   const prepareInput = new PrepareInput();
   const decideAction = new DecideAction();
   const askUser = new AskUser();
@@ -32,56 +28,64 @@ export function createExploreFlow(): ExploreFlow {
   const toolCalls = new ToolCalls();
   const submitResult = new SubmitResult();
 
-  // PrepareInput runs once, then goes to DecideAction
   prepareInput.next(decideAction);
 
-  // DecideAction routes to different actions
   decideAction.branch('ask_user', askUser);
   decideAction.branch('tool_calls', toolCalls);
   decideAction.branch('submit_result', submitResult);
   decideAction.branch('loop', decideAction);
 
-  // AskUser pauses and resumes with UserResponse
   askUser.branch('pause', userResponse);
   userResponse.next(decideAction);
 
-  // ToolCalls loops back to DecideAction
   toolCalls.next(decideAction);
 
-  // Create flow starting with PrepareInput
   return new Flow(prepareInput);
 }
 
-async function createSession(app: App, user: User, parent: Session | undefined, message: string): Promise<Session> {
-  const systemPrompt = createSystemPrompt();
-  const userPrompt = wrapUserPrompt(message);
+export class ExploreRunner extends FlowRunner<ExploreContext, ExploreInput> {
+  readonly flowName = 'explore';
+  readonly description =
+    'Explore agent flow that allows users to explore and understand a codebase or problem domain. It helps to:\n• Map out project structure\n• Understand key files and their relationships\n• Identify modification targets and dependencies\n• Gather context for downstream agents';
+  readonly parameters = exploreInputSchema;
 
-  const session = await app.services.sessionService.create({
-    parentSessionId: parent?.id,
-    userId: user.id,
-    flowName: 'explore',
-    systemPrompt,
-  });
+  async createSession(app: App, flowContext: FlowContext, params: ExploreInput): Promise<Session> {
+    const systemPrompt = createSystemPrompt();
+    const userPrompt = wrapUserPrompt(params.message);
 
-  session.addAgentTools(AGENT_TOOLS as any);
+    const session = await app.services.sessionService.create({
+      parentSessionId: flowContext.parent?.id,
+      userId: flowContext.user.id,
+      flowName: 'explore',
+      systemPrompt,
+    });
 
-  await session.addMessages([{ message: new SystemMessage(systemPrompt).toJSON() }]);
-  await session.addUserMessage(new UserMessage(userPrompt));
+    session.addAgentTools(AGENT_TOOLS as any);
 
-  return session;
+    await session.addMessages([{ message: new SystemMessage(systemPrompt).toJSON() }]);
+    await session.addUserMessage(new UserMessage(userPrompt));
+
+    return session;
+  }
+
+  async createContext(
+    _app: App,
+    flowContext: FlowContext,
+    session: Session,
+    params: ExploreInput,
+  ): Promise<ExploreContext> {
+    // On restore, re-register agent tools so session.getAgentTool() works
+    if (session.tools.length === 0) {
+      session.addAgentTools(AGENT_TOOLS as any);
+    }
+    return { parent: flowContext.parent, user: flowContext.user, message: params.message ?? '', session };
+  }
+
+  createFlow(): ExploreFlow {
+    return createExploreFlow();
+  }
+
+  protected _buildStartPacket(params: ExploreInput, context: ExploreContext, app: App) {
+    return { data: params.message, context, deps: app };
+  }
 }
-
-export const exploreFlow = {
-  name: 'explore',
-  description:
-    'Explore agent flow that allows users to explore and understand a codebase or problem domain. It helps to:\n• Map out project structure\n• Understand key files and their relationships\n• Identify modification targets and dependencies\n• Gather context for downstream agents',
-  parameters: exploreInputSchema,
-  create: createExploreFlow,
-  run: async (app: App, { parent, user }: { parent?: Session; user: User }, { message }: { message: string }) => {
-    const session = await createSession(app, user, parent, message);
-    const flow = createExploreFlow();
-    const context: ExploreContext = { parent, user, message, session };
-    const promise = flow.run({ context, deps: app, data: message });
-    return { flow, session, promise };
-  },
-};

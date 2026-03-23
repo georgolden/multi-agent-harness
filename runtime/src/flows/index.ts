@@ -1,15 +1,15 @@
 import { App } from '../app.js';
-import { taskSchedulerFlow } from './taskScheduler/flow.js';
-import { fillTemplateFlow } from './fillTemplate/flow.js';
-import { exploreFlow } from './explore/flow.js';
-import { agenticLoopFlow } from './agentictLoop/flow.js';
-import { agentBuilderFlow } from './agentBuilder/flow.js';
-import { orchestratorFlow } from './orchestrator/flow.js';
+import { TaskSchedulerRunner } from './taskScheduler/flow.js';
+import { FillTemplateRunner } from './fillTemplate/flow.js';
+import { ExploreRunner } from './explore/flow.js';
+import { AgenticLoopRunner } from './agentictLoop/flow.js';
+import { AgentBuilderRunner } from './agentBuilder/flow.js';
+import { OrchestratorRunner } from './orchestrator/flow.js';
 import { User } from '../data/userRepository/types.js';
 import { Session } from '../services/sessionService/index.js';
 import type { StoredAgenticLoopSchema } from '../data/agenticLoopSchemaRepository/types.js';
-import type { TObject, Static } from '@sinclair/typebox';
-import type { FlowDef, FlowHandle, FlowRunRecord } from './types.js';
+import type { FlowHandle, FlowRunRecord } from './types.js';
+import type { FlowRunner } from '../utils/agent/flowRunner.js';
 
 /**
  * Common context passed to all flow run functions
@@ -31,18 +31,18 @@ function escapeXml(str: string): string {
 /**
  * Flows manager. All flow execution is centralized here.
  *
- * runFlow(name, context, { message }) looks up the flow by name — checking
- * built-in flows first, then schema-based agents — and runs it with full
+ * runFlow(name, context, { message }) looks up the runner by name — checking
+ * built-in runners first, then schema-based agents — and runs it with full
  * observability (DB record, bus events, activeFlows tracking).
  */
 export class Flows {
-  private registry = new Map<string, FlowDef<any>>([
-    [taskSchedulerFlow.name, taskSchedulerFlow],
-    [fillTemplateFlow.name, fillTemplateFlow],
-    [exploreFlow.name, exploreFlow],
-    [agenticLoopFlow.name, agenticLoopFlow],
-    [agentBuilderFlow.name, agentBuilderFlow],
-    [orchestratorFlow.name, orchestratorFlow],
+  private registry = new Map<string, FlowRunner<any, any>>([
+    ['taskScheduler', new TaskSchedulerRunner()],
+    ['fillTemplate', new FillTemplateRunner()],
+    ['explore', new ExploreRunner()],
+    ['agenticLoop', new AgenticLoopRunner()],
+    ['agentBuilder', new AgentBuilderRunner()],
+    ['orchestrator', new OrchestratorRunner()],
   ]);
 
   app: App;
@@ -74,24 +74,57 @@ export class Flows {
         console.log(`[Flows] Schema deleted: ${flowName}`);
       },
     });
+
+    await this._restoreActiveFlows();
   }
 
-  getAgenticLoopSchemas(): StoredAgenticLoopSchema[] {
-    return Array.from(this.agenticLoopSchemas.values());
+  private async _restoreActiveFlows(): Promise<void> {
+    const interrupted = await this.app.data.flowRunRepository.getActiveRuns();
+    if (interrupted.length === 0) return;
+
+    console.log(`[Flows] Found ${interrupted.length} interrupted flow run(s) to restore`);
+
+    for (const run of interrupted) {
+      const sessionData = await this.app.data.flowSessionRepository.getSession(run.sessionId);
+      if (!sessionData || !sessionData.currentNodeName) continue;
+
+      const user = await this.app.data.userRepository.getUser(sessionData.userId);
+      if (!user) continue;
+
+      const runner = this.registry.get(run.flowName);
+      if (!runner) {
+        console.warn(`[Flows] No runner registered for flow '${run.flowName}', skipping restore`);
+        continue;
+      }
+
+      const session = await this.app.services.sessionService.get(sessionData.id);
+      if (!session) continue;
+
+      console.log(`[Flows] Restoring flow '${run.flowName}' session '${run.sessionId}'`);
+      runner.restore(this.app, session, user).then(() => {
+        this._wireFlowHooks(runner, run.id, run.flowName, session);
+        const trackedPromise = runner.promise.finally(() => {
+          this.activeFlows.delete(session.id);
+        });
+        this.activeFlows.set(session.id, { flow: runner.flow, session, promise: trackedPromise });
+      }).catch((err) => {
+        console.error(`[Flows] Failed to restore session '${run.sessionId}':`, err);
+      });
+    }
   }
 
-  getFlow(name: string): FlowDef<any> | undefined {
+  getRunner(name: string): FlowRunner<any, any> | undefined {
     return this.registry.get(name);
   }
 
-  getFlows(): FlowDef<any>[] {
+  getRunners(): FlowRunner<any, any>[] {
     return Array.from(this.registry.values());
   }
 
-  getSlice(names: string[]): FlowDef<any>[] {
+  getSlice(names: string[]): FlowRunner<any, any>[] {
     return names.flatMap((name) => {
-      const def = this.registry.get(name);
-      return def ? [def] : [];
+      const runner = this.registry.get(name);
+      return runner ? [runner] : [];
     });
   }
 
@@ -99,14 +132,18 @@ export class Flows {
     return this.agenticLoopSchemas.get(flowName);
   }
 
+  getAgenticLoopSchemas(): StoredAgenticLoopSchema[] {
+    return Array.from(this.agenticLoopSchemas.values());
+  }
+
   getFlowsAsXml(flowNames?: string[]): string {
-    const defs = flowNames ? this.getSlice(flowNames) : this.getFlows();
+    const runners = flowNames ? this.getSlice(flowNames) : this.getRunners();
     const lines = ['<available_agents>'];
 
-    for (const def of defs) {
+    for (const runner of runners) {
       lines.push('  <agent>');
-      lines.push(`    <name>${escapeXml(def.name)}</name>`);
-      lines.push(`    <description>${escapeXml(def.description)}</description>`);
+      lines.push(`    <name>${escapeXml(runner.flowName)}</name>`);
+      lines.push(`    <description>${escapeXml(runner.description)}</description>`);
       lines.push('  </agent>');
     }
 
@@ -127,13 +164,12 @@ export class Flows {
   }
 
   /**
-   * Run a flow by name. Looks up built-in flows first, then schema-based agents.
-   * Use when you only have the name as a string (e.g. scheduled tasks, LLM-driven calls).
+   * Run a flow by name. Looks up built-in runners first, then schema-based agents.
    */
   async runFlow(name: string, context: FlowContext, parameters: { message: string }): Promise<FlowHandle> {
-    const builtin = this.registry.get(name);
-    if (builtin) {
-      return this._run(builtin, name, context, parameters);
+    const runner = this.registry.get(name);
+    if (runner) {
+      return this._run(runner, name, context, parameters);
     }
 
     const schema = this.agenticLoopSchemas.get(name);
@@ -146,80 +182,94 @@ export class Flows {
   }
 
   /**
-   * Type-safe run for built-in flows. Parameters are inferred from the def's schema.
-   * Use when you have the FlowDef in hand (e.g. inside tools).
-   *
-   * @example
-   *   const handle = await flows.runBuiltinFlow(fillTemplateFlow, ctx, { message, template });
+   * Type-safe run for built-in runners.
    */
-  async runBuiltinFlow<TSchema extends TObject>(
-    def: FlowDef<TSchema>,
+  async runBuiltinFlow<TParams>(
+    runner: FlowRunner<any, TParams>,
     context: FlowContext,
-    parameters: Static<TSchema>,
+    parameters: TParams,
   ): Promise<FlowHandle> {
-    return this._run(def, def.name, context, parameters);
+    return this._run(runner, runner.flowName, context, parameters);
   }
 
   /**
    * Run a schema-based agentic loop flow.
-   *
-   * @example
-   *   const handle = await flows.runSchemaFlow(schema, ctx, { message });
    */
   async runSchemaFlow(
     schema: StoredAgenticLoopSchema,
     context: FlowContext,
     parameters: { message: string },
   ): Promise<FlowHandle> {
-    return this._run(agenticLoopFlow, schema.flowName, context, { schema, message: parameters.message });
+    const runner = this.registry.get('agenticLoop')!;
+    return this._run(runner, schema.flowName, context, { schema, message: parameters.message });
   }
 
-  private async _run(def: FlowDef<any>, name: string, context: FlowContext, parameters: unknown): Promise<FlowHandle> {
-    const { flow, session, promise } = await def.run(this.app, context, parameters);
+  private _wireFlowHooks(
+    runner: FlowRunner<any, any>,
+    runId: string,
+    flowName: string,
+    session: Session,
+  ): void {
+    const { bus } = this.app.infra;
+    const { flow } = runner;
+
+    session.hooks.onStatusChange = async (s, from, to) => {
+      bus.emit('session:statusChange', { sessionId: s.id, flowName, userId: s.userId, from, to });
+    };
+    session.hooks.onMessage = async (s) => {
+      bus.emit('session:message:update', { sessionId: s.id, flowName, userId: s.userId });
+    };
+
+    flow.onBeforeNode = async (_nodeName, _packet) => {
+      await session.beginNodeTransaction();
+    };
+
+    flow.onAfterNode = async (nodeName, result) => {
+      const serialized = runner.serializePacketData(nodeName, (result as any).data);
+      await session.commitNodeTransaction(nodeName, serialized);
+    };
+
+    flow.onPause = async () => {
+      await this.app.data.flowRunRepository.updateStatus(runId, 'paused');
+      bus.emit('flow:pause', { runId, sessionId: session.id, flowName });
+    };
+    flow.onResume = async () => {
+      await this.app.data.flowRunRepository.updateStatus(runId, 'running');
+      bus.emit('flow:resume', { runId, sessionId: session.id, flowName });
+    };
+    flow.onExit = async () => {
+      await this.app.data.flowRunRepository.updateStatus(runId, 'completed');
+      bus.emit('flow:exit', { runId, sessionId: session.id, flowName });
+    };
+    flow.onError = async () => {
+      await session.rollbackNodeTransaction().catch(() => {});
+      await this.app.data.flowRunRepository.updateStatus(runId, 'failed');
+      bus.emit('flow:error', { runId, sessionId: session.id, flowName });
+    };
+  }
+
+  private async _run(runner: FlowRunner<any, any>, name: string, context: FlowContext, parameters: unknown): Promise<FlowHandle> {
+    await runner.start(this.app, context, parameters as any);
 
     const run = await this.app.data.flowRunRepository.createRun({
       flowName: name,
-      sessionId: session.id,
+      sessionId: runner.session.id,
       userId: context.user.id,
       parentSessionId: context.parent?.id,
     });
 
-    const { bus } = this.app.infra;
+    this._wireFlowHooks(runner, run.id, name, runner.session);
 
-    session.hooks.onStatusChange = async (s, from, to) => {
-      bus.emit('session:statusChange', { sessionId: s.id, flowName: name, userId: s.userId, from, to });
-    };
-    session.hooks.onMessage = async (s) => {
-      bus.emit('session:message:update', { sessionId: s.id, flowName: name, userId: s.userId });
-    };
-
-    flow.onPause = async () => {
-      await this.app.data.flowRunRepository.updateStatus(run.id, 'paused');
-      bus.emit('flow:pause', { runId: run.id, sessionId: session.id, flowName: name });
-    };
-    flow.onResume = async () => {
-      await this.app.data.flowRunRepository.updateStatus(run.id, 'running');
-      bus.emit('flow:resume', { runId: run.id, sessionId: session.id, flowName: name });
-    };
-    flow.onExit = async () => {
-      await this.app.data.flowRunRepository.updateStatus(run.id, 'completed');
-      bus.emit('flow:exit', { runId: run.id, sessionId: session.id, flowName: name });
-    };
-    flow.onError = async () => {
-      await this.app.data.flowRunRepository.updateStatus(run.id, 'failed');
-      bus.emit('flow:error', { runId: run.id, sessionId: session.id, flowName: name });
-    };
-
-    const trackedPromise = promise.finally(async () => {
-      this.activeFlows.delete(session.id);
-      const existingRun = await this.app.data.flowRunRepository.getRunBySessionId(session.id);
+    const trackedPromise = runner.promise.finally(async () => {
+      this.activeFlows.delete(runner.session.id);
+      const existingRun = await this.app.data.flowRunRepository.getRunBySessionId(runner.session.id);
       if (existingRun && existingRun.status === 'running') {
         await this.app.data.flowRunRepository.updateStatus(run.id, 'failed');
       }
     });
 
-    const handle: FlowHandle = { flow, session, promise: trackedPromise };
-    this.activeFlows.set(session.id, handle);
+    const handle: FlowHandle = { flow: runner.flow, session: runner.session, promise: trackedPromise };
+    this.activeFlows.set(runner.session.id, handle);
     return handle;
   }
 

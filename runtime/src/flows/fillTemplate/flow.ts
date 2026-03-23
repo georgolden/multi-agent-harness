@@ -1,25 +1,23 @@
 /**
  * PocketFlow flow for the fillTemplate agent.
  *
- * Graph (reverse of taskScheduler — ask_user loops, submit_template exits):
- *
- *   PrepareInput
- *       │
- *   DecideAction ──── ask_user ──────► AskUser        (ends run; session stays running)
- *       │
- *       └─────────── submit_template ► SubmitTemplate (ends run; session completed)
- *
- * When the user replies, the flow is re-entered with the sessionId so
- * PrepareInput resumes the existing session and DecideAction runs again.
+ * Graph:
+ *   PrepareInput → DecideAction ─┬─ write_temp_file → WriteTempFile → DecideAction (loop)
+ *                                ├─ ask_user        → AskUser (pause) → UserResponse → DecideAction
+ *                                └─ submit_template → SubmitTemplate (exit)
  */
 import { Flow, packet } from '../../utils/agent/flow.js';
 import { PrepareInput, DecideAction, AskUser, SubmitTemplate, UserResponse, WriteTempFile } from './nodes.js';
 import { fillTemplateInputSchema, type FillTemplateContext } from './types.js';
+import { type Static } from '@sinclair/typebox';
+
+type FillTemplateParams = Static<typeof fillTemplateInputSchema>;
 import { App } from '../../app.js';
-import { User } from '../../data/userRepository/types.js';
 import { Session } from '../../services/sessionService/session.js';
 import { createSystemPrompt } from './prompts/index.js';
 import { UserMessage } from '../../utils/message.js';
+import { FlowRunner } from '../../utils/agent/flowRunner.js';
+import type { FlowContext } from '../index.js';
 
 export type FillTemplateFlow = Flow<App, FillTemplateContext>;
 
@@ -31,10 +29,8 @@ export function createFillTemplateFlow(): FillTemplateFlow {
   const userResponse = new UserResponse();
   const submitTemplate = new SubmitTemplate();
 
-  // PrepareInput runs once, then goes to DecideAction
   prepareInput.next(decideAction);
 
-  // DecideAction routes based on LLM response
   decideAction.branch('write_temp_file', writeTempFile);
   writeTempFile.next(decideAction);
   decideAction.branch('ask_user', askUser);
@@ -42,57 +38,49 @@ export function createFillTemplateFlow(): FillTemplateFlow {
   userResponse.next(decideAction);
   decideAction.branch('submit_template', submitTemplate);
 
-  // AskUser ends the flow run (no successor); session stays 'running'
-  // SubmitTemplate ends the flow run (no successor); session marked 'completed'
-
   return new Flow(prepareInput);
 }
 
-async function createSession(
-  app: App,
-  user: User,
-  parent: Session | undefined,
-  message: string,
-  template: string,
-): Promise<Session> {
-  const timezone = await app.data.taskRepository.getUserTimezone(user.id);
-  const currentDate = new Date().toISOString();
-  const systemPrompt = createSystemPrompt(currentDate, timezone, template);
+export class FillTemplateRunner extends FlowRunner<FillTemplateContext, FillTemplateParams> {
+  readonly flowName = 'fillTemplate';
+  readonly description =
+    'FillTemplate agent flow that guides users through filling a template conversationally. It helps to:\n• Collect information step by step\n• Fill all template sections and variables\n• Submit the completed template';
+  readonly parameters = fillTemplateInputSchema;
 
-  const session = await app.services.sessionService.create({
-    parentSessionId: parent?.id,
-    userId: user.id,
-    flowName: 'fillTemplate',
-    systemPrompt,
-  });
+  async createSession(app: App, flowContext: FlowContext, params: FillTemplateParams): Promise<Session> {
+    const timezone = await app.data.taskRepository.getUserTimezone(flowContext.user.id);
+    const currentDate = new Date().toISOString();
+    const systemPrompt = createSystemPrompt(currentDate, timezone, params.template);
 
-  await session.addUserMessage(new UserMessage(message));
+    const session = await app.services.sessionService.create({
+      parentSessionId: flowContext.parent?.id,
+      userId: flowContext.user.id,
+      flowName: 'fillTemplate',
+      systemPrompt,
+    });
 
-  return session;
+    await session.addUserMessage(new UserMessage(params.message));
+    return session;
+  }
+
+  async createContext(
+    _app: App,
+    flowContext: FlowContext,
+    session: Session,
+    _params: FillTemplateParams,
+  ): Promise<FillTemplateContext> {
+    return { user: flowContext.user, parent: flowContext.parent, session };
+  }
+
+  createFlow(): FillTemplateFlow {
+    return createFillTemplateFlow();
+  }
+
+  protected sessionCarryingNodes(): string[] {
+    return ['PrepareInput', 'DecideAction', 'WriteTempFile'];
+  }
+
+  protected _buildStartPacket(params: FillTemplateParams, context: FillTemplateContext, app: App) {
+    return packet({ data: params, context, deps: app });
+  }
 }
-
-export const fillTemplateFlow = {
-  name: 'fillTemplate',
-  description:
-    'FillTemplate agent flow that guides users through filling a template conversationally. It helps to:\n• Collect information step by step\n• Fill all template sections and variables\n• Submit the completed template',
-  parameters: fillTemplateInputSchema,
-  create: createFillTemplateFlow,
-  run: async (
-    app: App,
-    context: { user: User; parent?: Session },
-    parameters: { message: string; template: string },
-  ) => {
-    const { message, template } = parameters;
-    const { user, parent } = context;
-    const session = await createSession(app, user, parent, message, template);
-    const flow = createFillTemplateFlow();
-    const promise = flow.run(
-      packet({
-        data: { message, template },
-        context: { user, parent, session },
-        deps: app,
-      }),
-    );
-    return { flow, session, promise };
-  },
-};

@@ -12,10 +12,12 @@ import { Flow, packet } from '../../utils/agent/flow.js';
 import { PrepareInput, DecideAction, WriteTempFile, AskUser, UserResponse, SubmitAnswer } from './nodes.js';
 import { agentBuilderInputSchema, type AgentBuilderContext } from './types.js';
 import { App } from '../../app.js';
-import { User } from '../../data/userRepository/types.js';
 import { Session } from '../../services/sessionService/session.js';
 import { UserMessage } from '../../utils/message.js';
 import { createSystemPrompt } from './prompts/index.js';
+import { FlowRunner } from '../../utils/agent/flowRunner.js';
+import type { FlowContext } from '../index.js';
+import { type Static } from '@sinclair/typebox';
 
 export type AgentBuilderFlow = Flow<App, AgentBuilderContext>;
 
@@ -41,39 +43,44 @@ export function createAgentBuilderFlow(): AgentBuilderFlow {
   return new Flow(prepareInput);
 }
 
-async function createSession(app: App, user: User, parent: Session | undefined, message: string): Promise<Session> {
-  const systemPrompt = createSystemPrompt();
+export type AgentBuilderParams = Static<typeof agentBuilderInputSchema>;
 
-  const session = await app.services.sessionService.create({
-    parentSessionId: parent?.id,
-    userId: user.id,
-    flowName: 'agentBuilder',
-    systemPrompt,
-  });
+export class AgentBuilderRunner extends FlowRunner<AgentBuilderContext, AgentBuilderParams> {
+  readonly flowName = 'agentBuilder';
+  readonly description =
+    'Agent Builder flow — guides the user through designing a complete AI agent by collaboratively filling the Agent Flow Schema, system prompt, and optional user prompt template. Produces a ready-to-use AgenticLoopSchema.';
+  readonly parameters = agentBuilderInputSchema;
 
-  await session.addUserMessage(new UserMessage(message));
+  async createSession(app: App, flowContext: FlowContext, params: AgentBuilderParams): Promise<Session> {
+    const systemPrompt = createSystemPrompt();
+    const session = await app.services.sessionService.create({
+      parentSessionId: flowContext.parent?.id,
+      userId: flowContext.user.id,
+      flowName: 'agentBuilder',
+      systemPrompt,
+    });
+    await session.addUserMessage(new UserMessage(params.message));
+    return session;
+  }
 
-  return session;
+  async createContext(
+    _app: App,
+    flowContext: FlowContext,
+    session: Session,
+    _params: AgentBuilderParams,
+  ): Promise<AgentBuilderContext> {
+    return { user: flowContext.user, parent: flowContext.parent, session };
+  }
+
+  createFlow(): AgentBuilderFlow {
+    return createAgentBuilderFlow();
+  }
+
+  protected sessionCarryingNodes(): string[] {
+    return ['PrepareInput', 'DecideAction', 'WriteTempFile'];
+  }
+
+  protected _buildStartPacket(params: AgentBuilderParams, context: AgentBuilderContext, app: App) {
+    return packet({ data: params, context, deps: app });
+  }
 }
-
-export const agentBuilderFlow = {
-  name: 'agentBuilder',
-  description:
-    'Agent Builder flow — guides the user through designing a complete AI agent by collaboratively filling the Agent Flow Schema, system prompt, and optional user prompt template. Produces a ready-to-use AgenticLoopSchema.',
-  parameters: agentBuilderInputSchema,
-  create: createAgentBuilderFlow,
-  run: async (app: App, context: { user: User; parent?: Session }, parameters: { message: string }) => {
-    const { user, parent } = context;
-    const { message } = parameters;
-    const session = await createSession(app, user, parent, message);
-    const flow = createAgentBuilderFlow();
-    const promise = flow.run(
-      packet({
-        data: { message },
-        context: { user, parent, session },
-        deps: app,
-      }),
-    );
-    return { flow, session, promise };
-  },
-};

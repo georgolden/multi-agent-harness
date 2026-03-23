@@ -21,12 +21,16 @@ import {
 import { AGENT_TOOLS } from './tools.js';
 import { orchestratorInputSchema, type OrchestratorContext } from './types.js';
 import { App } from '../../app.js';
-import { User } from '../../data/userRepository/types.js';
 import { Session } from '../../services/sessionService/session.js';
 import { UserMessage } from '../../utils/message.js';
 import { createSystemPrompt } from './prompts/index.js';
+import { FlowRunner } from '../../utils/agent/flowRunner.js';
+import type { FlowContext } from '../index.js';
+import { type Static } from '@sinclair/typebox';
 
 export type OrchestratorFlow = Flow<App, OrchestratorContext>;
+
+type OrchestratorParams = Static<typeof orchestratorInputSchema>;
 
 export function createOrchestratorFlow(): OrchestratorFlow {
   const prepareInput = new PrepareInput();
@@ -52,49 +56,53 @@ export function createOrchestratorFlow(): OrchestratorFlow {
   return new Flow(prepareInput);
 }
 
-async function createSession(
-  app: App,
-  user: User,
-  parent: Session | undefined,
-  message: string,
-): Promise<Session> {
-  const timezone = await app.data.taskRepository.getUserTimezone(user.id);
-  const currentDate = new Date().toISOString();
-  const flows = app.flows.getFlowsAsXml();
-  const systemPrompt = createSystemPrompt(currentDate, timezone, user.name ?? user.id, flows);
+export class OrchestratorRunner extends FlowRunner<OrchestratorContext, OrchestratorParams> {
+  readonly flowName = 'orchestrator';
+  readonly description =
+    'Orchestrator flow — understands the user\'s request, breaks it into tasks, and dispatches the right agents. Routes simple tasks directly to spawn_agent, uses run_agent when output is needed for subsequent steps, and asks the user only when ambiguity would cause the wrong outcome.';
+  readonly parameters = orchestratorInputSchema;
 
-  const session = await app.services.sessionService.create({
-    parentSessionId: parent?.id,
-    userId: user.id,
-    flowName: 'orchestrator',
-    systemPrompt,
-  });
+  async createSession(app: App, flowContext: FlowContext, params: OrchestratorParams): Promise<Session> {
+    const timezone = await app.data.taskRepository.getUserTimezone(flowContext.user.id);
+    const currentDate = new Date().toISOString();
+    const flows = app.flows.getFlowsAsXml();
+    const systemPrompt = createSystemPrompt(currentDate, timezone, flowContext.user.name ?? flowContext.user.id, flows);
 
-  session.addAgentTools(AGENT_TOOLS as any);
+    const session = await app.services.sessionService.create({
+      parentSessionId: flowContext.parent?.id,
+      userId: flowContext.user.id,
+      flowName: 'orchestrator',
+      systemPrompt,
+    });
 
-  await session.addUserMessage(new UserMessage(message));
+    session.addAgentTools(AGENT_TOOLS as any);
+    await session.addUserMessage(new UserMessage(params.message));
 
-  return session;
+    return session;
+  }
+
+  async createContext(
+    _app: App,
+    flowContext: FlowContext,
+    session: Session,
+    _params: OrchestratorParams,
+  ): Promise<OrchestratorContext> {
+    // On restore, re-register agent tools
+    if (session.tools.length === 0) {
+      session.addAgentTools(AGENT_TOOLS as any);
+    }
+    return { user: flowContext.user, parent: flowContext.parent, session };
+  }
+
+  createFlow(): OrchestratorFlow {
+    return createOrchestratorFlow();
+  }
+
+  protected sessionCarryingNodes(): string[] {
+    return ['PrepareInput', 'DecideAction'];
+  }
+
+  protected _buildStartPacket(params: OrchestratorParams, context: OrchestratorContext, app: App) {
+    return packet({ data: { message: params.message }, context, deps: app });
+  }
 }
-
-export const orchestratorFlow = {
-  name: 'orchestrator',
-  description:
-    'Orchestrator flow — understands the user\'s request, breaks it into tasks, and dispatches the right agents. Routes simple tasks directly to spawn_agent, uses run_agent when output is needed for subsequent steps, and asks the user only when ambiguity would cause the wrong outcome.',
-  parameters: orchestratorInputSchema,
-  create: createOrchestratorFlow,
-  run: async (app: App, context: { user: User; parent?: Session }, parameters: { message: string }) => {
-    const { user, parent } = context;
-    const { message } = parameters;
-    const session = await createSession(app, user, parent, message);
-    const flow = createOrchestratorFlow();
-    const promise = flow.run(
-      packet({
-        data: { message },
-        context: { user, parent, session },
-        deps: app,
-      }),
-    );
-    return { flow, session, promise };
-  },
-};

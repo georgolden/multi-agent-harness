@@ -1,13 +1,14 @@
-import { Flow, packet, error } from '../../utils/agent/flow.js';
+import { Flow, error } from '../../utils/agent/flow.js';
 import { App } from '../../app.js';
 import { MessageWindowConfig } from '../../services/sessionService/types.js';
-import { User } from '../../data/userRepository/types.js';
 import { CallLlmOptions } from '../../utils/callLlm.js';
 import { fillSystemPrompt, readFilesWithLimit, readFoldersInfos } from './utils.js';
 import { PrepareInput, DecideAction, AskUser, UserResponse, ToolCalls, SubmitAnswer, BestAnswer } from './nodes.js';
 import type { AgenticLoopContext } from './types.js';
 import { Session } from '../../services/sessionService/session.js';
 import { Type, type Static } from '@sinclair/typebox';
+import { FlowRunner } from '../../utils/agent/flowRunner.js';
+import type { FlowContext } from '../index.js';
 
 export interface AgenticLoopSchema {
   flowName: string;
@@ -53,15 +54,12 @@ class AgenticLoopFlow extends Flow<App, AgenticLoopContext, string> {
 
     if (isLoopExceeded && loopExit === 'bestAnswer') {
       try {
-        // Delegate to BestAnswer node
         return await this.bestAnswerNode.run({ data: err, context: p.context, deps: p.deps });
       } catch (bestAnswerErr) {
         console.error('[AgenticLoopFlow.fallback] bestAnswer call failed:', bestAnswerErr);
-        // Fall through to failure
       }
     }
 
-    // failure or non-loop error or bestAnswer fallback
     await session.fail().catch(() => {});
     return error({ data: err, context: p.context, deps: p.deps });
   }
@@ -75,25 +73,19 @@ export function createAgenticLoopFlow({ maxLoopEntering }: { maxLoopEntering?: n
   const toolCalls = new ToolCalls();
   const submitAnswer = new SubmitAnswer();
 
-  // PrepareInput runs once, then goes to DecideAction
   prepareInput.next(decideAction);
 
-  // DecideAction routes to different actions
   decideAction.branch('ask_user', askUser);
   decideAction.branch('tool_calls', toolCalls);
   decideAction.branch('submit_answer', submitAnswer);
   decideAction.branch('loop', decideAction);
 
-  // AskUser pauses and resumes with UserResponse
   askUser.branch('pause', userResponse);
   userResponse.next(decideAction);
 
-  // ToolCalls loops back to DecideAction
   toolCalls.next(decideAction);
-  // ToolCalls can also route to AskUser on error
   toolCalls.branch('ask_user', askUser);
 
-  // Create flow starting with PrepareInput
   const flow = new AgenticLoopFlow(prepareInput);
   return flow;
 }
@@ -137,18 +129,14 @@ export const agentFlowParametersSchema = Type.Object({
 
 export type AgentFlowParameters = Static<typeof agentFlowParametersSchema>;
 
-export const agenticLoopFlow = {
-  name: 'Agentic Loop',
-  description: 'Universal agentic flow that runs with schema',
-  parameters: agentFlowParametersSchema,
-  create: createAgenticLoopFlow,
-  run: async (
-    app: App,
-    context: { user: User; parent?: Session },
-    parameters: { schema: AgenticLoopSchema; message: string },
-  ) => {
-    const { user, parent } = context;
-    const { schema, message } = parameters;
+export class AgenticLoopRunner extends FlowRunner<AgenticLoopContext, AgentFlowParameters> {
+  readonly flowName = 'agenticLoop';
+  readonly description = 'Universal agentic flow that runs with schema';
+  readonly parameters = agentFlowParametersSchema;
+
+  async createSession(app: App, flowContext: FlowContext, params: AgentFlowParameters): Promise<Session> {
+    const { schema } = params;
+    const { user, parent } = flowContext;
     const {
       flowName,
       systemPrompt,
@@ -162,19 +150,18 @@ export const agenticLoopFlow = {
     } = schema;
 
     const filledSystemPrompt = fillSystemPrompt(systemPrompt, user);
-
     const tools = app.tools.getSlice(toolNames);
     const skills = app.skills.getSlice(skillNames);
-
     const contextFiles = await readFilesWithLimit(contextPaths.files);
     const contextFoldersInfos = await readFoldersInfos(contextPaths.folders);
 
     const session = await app.services.sessionService.create({
       flowName,
       systemPrompt: filledSystemPrompt,
-      userPromptTemplate: userPromptTemplate,
+      userPromptTemplate,
       userId: user.id,
-      messageWindowConfig,
+      parentSessionId: parent?.id,
+      messageWindowConfig: messageWindowConfig as any,
       tools,
       skills,
       contextFiles,
@@ -183,8 +170,34 @@ export const agenticLoopFlow = {
       agentLoopConfig,
     });
 
-    const flow = createAgenticLoopFlow(agentLoopConfig);
-    const promise = flow.run({ data: message, context: { session, user, tools, skills }, deps: app });
-    return { flow, session, promise };
-  },
-};
+    return session;
+  }
+
+  async createContext(
+    app: App,
+    flowContext: FlowContext,
+    session: Session,
+    _params: AgentFlowParameters,
+  ): Promise<AgenticLoopContext> {
+    // Reconstruct tools and skills from session schemas on restore
+    const toolNames = session.toolSchemas.map((t) => t.name);
+    const skillNames = session.skillSchemas.map((s) => s.name);
+    const tools = app.tools.getSlice(toolNames);
+    const skills = app.skills.getSlice(skillNames);
+    return { user: flowContext.user, parent: flowContext.parent, session, tools, skills };
+  }
+
+  createFlow(): AgenticLoopFlow {
+    return createAgenticLoopFlow(
+      // maxLoopEntering will be read from session.agentLoopConfig at runtime
+    );
+  }
+
+  protected sessionCarryingNodes(): string[] {
+    return ['PrepareInput', 'DecideAction'];
+  }
+
+  protected _buildStartPacket(params: AgentFlowParameters, context: AgenticLoopContext, app: App) {
+    return { data: params.message, context, deps: app };
+  }
+}

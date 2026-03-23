@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import 'dotenv/config';
-import { taskSchedulerFlow } from './flow.js';
+import { TaskSchedulerRunner } from './flow.js';
 import { App } from '../../app.js';
 import { Task } from '../../data/taskRepository/types.js';
 import { Tasks } from '../../tasks/index.js';
@@ -156,11 +156,12 @@ function setupTestApp() {
     active: true,
   }));
 
-  // Helper: run the flow the same way taskSchedulerFlow.run does
+  // Helper: run the flow using TaskSchedulerRunner
   async function runFlow(message: string) {
     const user = { id: 'user-123' } as any;
-    const { flow, promise } = await taskSchedulerFlow.run(app, { user }, { message });
-    await promise;
+    const runner = new TaskSchedulerRunner();
+    await runner.start(app, { user }, { message });
+    await runner.promise;
   }
 
   return { app, mockStorage, mockScheduler, mockBus, mockSessionService, runFlow };
