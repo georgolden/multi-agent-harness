@@ -1,4 +1,3 @@
-import { on } from 'node:events';
 import { z } from 'zod';
 import { router, publicProcedure } from './trpc.js';
 import type { Bus } from '../../infra/bus.js';
@@ -85,7 +84,7 @@ export const appRouter = router({
   // ─── Queries ──────────────────────────────────────────────────────────────
 
   listFlows: publicProcedure.query(({ ctx }) => {
-    const builtin = ctx.app.flows.getFlows().map((f) => ({ name: f.name, description: f.description }));
+    const builtin = ctx.app.flows.getRunners().map((r) => ({ name: r.flowName, description: r.description }));
     const schemas = ctx.app.flows
       .getAgenticLoopSchemas()
       .map((s) => ({ name: s.flowName, description: s.description }));
@@ -131,7 +130,9 @@ export const appRouter = router({
       const session = await ctx.app.data.flowSessionRepository.getSession(input.sessionId);
       if (!session) throw new Error(`Session '${input.sessionId}' not found`);
       ctx.webChannel.markUserActive(ctx.userId);
-      ctx.app.infra.bus.emit(`user:message:${ctx.userId}:${input.sessionId}`, {
+      const eventName = `user:message:${ctx.userId}:${input.sessionId}`;
+      console.log(`[sendMessage] emitting '${eventName}', listenerCount=${ctx.app.infra.bus.listenerCount(eventName)}`);
+      ctx.app.infra.bus.emit(eventName, {
         session,
         message: input.message,
         user,
