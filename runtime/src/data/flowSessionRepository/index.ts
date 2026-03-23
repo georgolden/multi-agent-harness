@@ -17,13 +17,84 @@ import { DEFAULT_MESSAGE_WINDOW_CONFIG } from '../../services/sessionService/typ
 import { App } from '../../app.js';
 import { computeActiveWindow } from './messageWindow.js';
 
+/** Any Prisma client or interactive-transaction client */
+type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
+
+/** Per-session transaction state managed internally by the repository */
+interface SessionTxState {
+  tx: TxClient;
+  commit: () => void;
+  rollback: (err: unknown) => void;
+}
+
 export class SessionDataRepository {
   private prisma: PrismaClient;
   app: App;
 
+  /** Active node transactions keyed by sessionId */
+  private _txMap = new Map<string, SessionTxState>();
+
   constructor(app: App) {
     this.app = app;
     this.prisma = app.infra.prisma.client;
+  }
+
+  private _client(sessionId: string): TxClient | PrismaClient {
+    return (this._txMap.get(sessionId)?.tx ?? this.prisma) as any;
+  }
+
+  // ─── Node transaction ─────────────────────────────────────────────────────
+
+  /**
+   * Open a Prisma interactive transaction for the given session.
+   * All subsequent mutations for this session will be routed through it
+   * until commitNodeTransaction or rollbackNodeTransaction is called.
+   */
+  async beginNodeTransaction(sessionId: string): Promise<void> {
+    if (this._txMap.has(sessionId)) return; // already open
+    await new Promise<void>((outerResolve, outerReject) => {
+      this.prisma
+        .$transaction((tx) => {
+          this._txMap.set(sessionId, {
+            tx: tx as TxClient,
+            commit: null!,
+            rollback: null!,
+          });
+          outerResolve();
+          return new Promise<void>((commit, rollback) => {
+            const state = this._txMap.get(sessionId)!;
+            state.commit = commit;
+            state.rollback = rollback;
+          });
+        })
+        .catch((err) => {
+          this._txMap.delete(sessionId);
+          outerReject(err);
+        });
+    });
+  }
+
+  /**
+   * Atomically write the checkpoint fields and commit the open transaction.
+   */
+  async commitNodeTransaction(sessionId: string, nodeName: string, packetData: unknown): Promise<void> {
+    const state = this._txMap.get(sessionId);
+    if (!state) return;
+    await (state.tx as any).flowSession.update({
+      where: { id: sessionId },
+      data: { currentNodeName: nodeName, currentPacketData: packetData as any },
+    });
+    console.log(`[SessionDataRepository] Checkpoint set for session '${sessionId}' at node '${nodeName}'`);
+    this._txMap.delete(sessionId);
+    state.commit();
+  }
+
+  /** Roll back the open transaction (no-op if none is open). */
+  async rollbackNodeTransaction(sessionId: string): Promise<void> {
+    const state = this._txMap.get(sessionId);
+    if (!state) return;
+    this._txMap.delete(sessionId);
+    state.rollback(new Error('Node transaction rolled back'));
   }
 
   async start(): Promise<void> {
@@ -59,6 +130,8 @@ export class SessionDataRepository {
       skillLogs: (row.skillLogs as SkillLog[]) || [],
       startedAt: row.startedAt,
       endedAt: row.endedAt ?? undefined,
+      currentNodeName: row.currentNodeName ?? undefined,
+      currentPacketData: row.currentPacketData ?? undefined,
     };
   }
 
@@ -105,7 +178,8 @@ export class SessionDataRepository {
   }
 
   async updateStatus(sessionId: string, status: SessionStatus): Promise<void> {
-    await this.prisma.flowSession.update({
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({
       where: { id: sessionId },
       data: {
         status,
@@ -116,7 +190,10 @@ export class SessionDataRepository {
     console.log(`[SessionDataRepository] Updated session '${sessionId}' status to '${status}'`);
   }
 
-  async addMessages(sessionId: string, messages: Omit<SessionMessage, 'timestamp'>[]): Promise<SessionMessage[]> {
+  async addMessages(
+    sessionId: string,
+    messages: Omit<SessionMessage, 'timestamp'>[],
+  ): Promise<SessionMessage[]> {
     const session = await this.getSession(sessionId);
     if (!session) throw new Error(`Session '${sessionId}' not found`);
 
@@ -124,7 +201,8 @@ export class SessionDataRepository {
     const allMessages = [...session.messages, ...fullMessages];
     const activeMessages = computeActiveWindow(allMessages, session.messageWindowConfig);
 
-    await this.prisma.flowSession.update({
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({
       where: { id: sessionId },
       data: { messages: allMessages as any, activeMessages: activeMessages as any },
     });
@@ -139,7 +217,8 @@ export class SessionDataRepository {
     if (!session) throw new Error(`Session '${sessionId}' not found`);
 
     const contextFiles = [...session.contextFiles, ...files];
-    await this.prisma.flowSession.update({ where: { id: sessionId }, data: { contextFiles: contextFiles as any } });
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({ where: { id: sessionId }, data: { contextFiles: contextFiles as any } });
     this.app.infra.bus.emit('flowSession:contextFilesAdded', { sessionId, contextFiles });
     console.log(`[SessionDataRepository] Added ${files.length} context files to session '${sessionId}'`);
     return contextFiles;
@@ -150,7 +229,8 @@ export class SessionDataRepository {
     if (!session) throw new Error(`Session '${sessionId}' not found`);
 
     const contextFoldersInfos = [...session.contextFoldersInfos, ...folders];
-    await this.prisma.flowSession.update({
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({
       where: { id: sessionId },
       data: { contextFoldersInfos: contextFoldersInfos as any },
     });
@@ -164,7 +244,8 @@ export class SessionDataRepository {
     if (!session) throw new Error(`Session '${sessionId}' not found`);
 
     const allTools = [...session.toolSchemas, ...tools];
-    await this.prisma.flowSession.update({ where: { id: sessionId }, data: { toolSchemas: allTools as any } });
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({ where: { id: sessionId }, data: { toolSchemas: allTools as any } });
     this.app.infra.bus.emit('flowSession:toolsAdded', { sessionId, tools: allTools });
     console.log(`[SessionDataRepository] Added ${tools.length} tools to session '${sessionId}'`);
     return allTools;
@@ -175,7 +256,8 @@ export class SessionDataRepository {
     if (!session) throw new Error(`Session '${sessionId}' not found`);
 
     const allSkills = [...session.skillSchemas, ...skills];
-    await this.prisma.flowSession.update({ where: { id: sessionId }, data: { skillSchemas: allSkills as any } });
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({ where: { id: sessionId }, data: { skillSchemas: allSkills as any } });
     this.app.infra.bus.emit('flowSession:skillsAdded', { sessionId, skills: allSkills });
     console.log(`[SessionDataRepository] Added ${skills.length} skills to session '${sessionId}'`);
     return allSkills;
@@ -192,7 +274,8 @@ export class SessionDataRepository {
     const idx = existing.findIndex((f) => f.name === file.name);
     const tempFiles = idx >= 0 ? existing.map((f, i) => (i === idx ? file : f)) : [...existing, file];
 
-    await this.prisma.flowSession.update({ where: { id: sessionId }, data: { tempFiles: tempFiles as any } });
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({ where: { id: sessionId }, data: { tempFiles: tempFiles as any } });
     this.app.infra.bus.emit('flowSession:tempFileWritten', { sessionId, file, tempFiles });
     console.log(`[SessionDataRepository] Wrote temp file '${file.name}' to session '${sessionId}'`);
     return tempFiles;
@@ -203,7 +286,8 @@ export class SessionDataRepository {
     if (!session) throw new Error(`Session '${sessionId}' not found`);
 
     const toolLogs = [...session.toolLogs, log];
-    await this.prisma.flowSession.update({ where: { id: sessionId }, data: { toolLogs: toolLogs as any } });
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({ where: { id: sessionId }, data: { toolLogs: toolLogs as any } });
 
     const durationMs = log.endedAt.getTime() - log.startedAt.getTime();
     this.app.infra.bus.emit('flowSession:toolExecuted', { sessionId, log, durationMs, allLogs: toolLogs });
@@ -215,7 +299,8 @@ export class SessionDataRepository {
     if (!session) throw new Error(`Session '${sessionId}' not found`);
 
     const skillLogs = [...session.skillLogs, log];
-    await this.prisma.flowSession.update({ where: { id: sessionId }, data: { skillLogs: skillLogs as any } });
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({ where: { id: sessionId }, data: { skillLogs: skillLogs as any } });
 
     const durationMs = log.endedAt.getTime() - log.startedAt.getTime();
     this.app.infra.bus.emit('flowSession:skillExecuted', { sessionId, log, durationMs, allLogs: skillLogs });

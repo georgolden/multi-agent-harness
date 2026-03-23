@@ -125,6 +125,22 @@ export class Session {
     return this.tools.find((t) => t.name === name);
   }
 
+  // ─── Node transaction ─────────────────────────────────────────────────────
+
+  async beginNodeTransaction(): Promise<void> {
+    await this.app.data.flowSessionRepository.beginNodeTransaction(this.sessionData.id);
+  }
+
+  async commitNodeTransaction(nodeName: string, packetData: unknown): Promise<void> {
+    await this.app.data.flowSessionRepository.commitNodeTransaction(this.sessionData.id, nodeName, packetData);
+    this.sessionData.currentNodeName = nodeName;
+    this.sessionData.currentPacketData = packetData;
+  }
+
+  async rollbackNodeTransaction(): Promise<void> {
+    await this.app.data.flowSessionRepository.rollbackNodeTransaction(this.sessionData.id);
+  }
+
   // ─── Message mutations ────────────────────────────────────────────────────
 
   /** Add messages; refreshes the active window and fires onMessage hook. */
@@ -235,8 +251,10 @@ export class Session {
   }
 
   onUserMessage(cb: ({ session, message, user }: { session: SessionData; message: string; user: User }) => void) {
-    const eventName = `session:user:${this.userId}:${this.id}`;
+    const eventName = `user:message:${this.userId}:${this.id}`;
+    console.log(`[Session.onUserMessage] registering listener on '${eventName}'`);
     this.app.infra.bus.once(eventName, ({ session, message, user }) => {
+      console.log(`[Session.onUserMessage] fired for '${eventName}'`);
       return cb({ session, message, user });
     });
     return this;

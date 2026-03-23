@@ -107,6 +107,10 @@ export interface SessionData {
   // Timestamps - simple
   startedAt: Date;
   endedAt?: Date;
+
+  // Flow checkpoint — set transactionally after each node completes
+  currentNodeName?: string;
+  currentPacketData?: unknown;
 }
 
 export interface SessionDataTreeNode {
