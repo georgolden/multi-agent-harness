@@ -267,15 +267,23 @@ export abstract class Node<
     readonly maxLoopEntering?: number;
   };
 
+  /** Stable name for this node — used for checkpointing */
+  readonly nodeName: string;
+
   /** @internal Callback for resuming a paused node (set by Flow) */
   private _resumeCallback: ((p: any) => void) | null = null;
 
-  constructor(options: NodeOptions = {}) {
+  constructor(nodeName: string, options?: NodeOptions);
+  constructor(options?: NodeOptions);
+  constructor(nodeNameOrOptions?: string | NodeOptions, options?: NodeOptions) {
+    const name = typeof nodeNameOrOptions === 'string' ? nodeNameOrOptions : this.constructor.name;
+    const opts = typeof nodeNameOrOptions === 'string' ? (options ?? {}) : (nodeNameOrOptions ?? {});
+    this.nodeName = name;
     this.options = {
-      maxRunTries: options.maxRunTries ?? 1,
-      wait: options.wait ?? 0,
-      timeout: options.timeout,
-      maxLoopEntering: options.maxLoopEntering,
+      maxRunTries: opts.maxRunTries ?? 1,
+      wait: opts.wait ?? 0,
+      timeout: opts.timeout,
+      maxLoopEntering: opts.maxLoopEntering,
     };
   }
 
@@ -564,7 +572,7 @@ export class Flow<
   private _errorPending: { data: unknown } | null = null;
 
   constructor(start: Node<TDeps, TContext, TInput, any>, options?: NodeOptions) {
-    super(options);
+    super(options ?? {});
     this._start = start;
     if (options?.signal) {
       if (options.signal.aborted) this._controller.abort();
@@ -612,6 +620,10 @@ export class Flow<
   onResume?(packet: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>): Promise<void>;
   onExit?(packet: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>): Promise<void>;
   onError?(packet: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>): Promise<void>;
+  /** Called before each node executes. Errors are swallowed. */
+  onBeforeNode?(nodeName: string, packet: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>): Promise<void>;
+  /** Called after each node executes successfully. Errors are swallowed. */
+  onAfterNode?(nodeName: string, result: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>): Promise<void>;
 
   // ---- Traversal helpers ---------------------------------------------
 
@@ -650,112 +662,93 @@ export class Flow<
     return resumed;
   }
 
+  // ---- Node lookup ---------------------------------------------------
+
+  /**
+   * Walk all reachable nodes recursively and return the one whose
+   * `nodeName` matches. Used during flow restore.
+   */
+  getNodeByName(name: string): Node<TDeps, TContext, any, any> | undefined {
+    const visited = new Set<Node>();
+    const queue: Node<TDeps, TContext, any, any>[] = [this._start];
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      if (visited.has(node)) continue;
+      visited.add(node);
+      if (node.nodeName === name) return node;
+      for (const child of node.branches.values()) queue.push(child);
+    }
+    return undefined;
+  }
+
   // ---- Traversal -----------------------------------------------------
 
-  async run(
-    inPacket: SinglePacket<any, TDeps, TContext> | this['In'],
+  /**
+   * Resume traversal from an arbitrary node with a given packet.
+   * Same logic as `run()` but bypasses the start node.
+   */
+  async runFrom(
+    startNode: Node<TDeps, TContext, any, any>,
+    packet: SinglePacket<any, TDeps, TContext>,
   ): Promise<SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext> | this['Out']> {
     const { signal } = this._controller;
     const enterCount = new Map<Node, number>();
-    let currentNode: Node<TDeps, TContext, any, any> = this._start;
-    let currentPacket: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext> = { ...inPacket, signal };
+    let currentNode: Node<TDeps, TContext, any, any> = startNode;
+    let currentPacket: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext> = { ...packet, signal };
 
     try {
       for (;;) {
-        // ── Abort ─────────────────────────────────────────────────────
         if (signal.aborted) {
           if (currentNode.onAbort) await currentNode.onAbort(currentPacket).catch(() => {});
           if (this.onAbort) await this.onAbort(currentPacket).catch(() => {});
-          return { branch: 'abort', deps: inPacket.deps, context: currentPacket.context } as this['Out'];
+          return { branch: 'abort', deps: packet.deps, context: currentPacket.context } as this['Out'];
         }
-
-        // ── Forced exit ───────────────────────────────────────────────
         if (this._exitPending) {
           this._exitPending = false;
-          const exitPacket: SinglePacket<any, TDeps, TContext> = {
-            branch: 'exit',
-            deps: inPacket.deps,
-            context: currentPacket.context,
-            data: undefined,
-          };
+          const exitPacket: SinglePacket<any, TDeps, TContext> = { branch: 'exit', deps: packet.deps, context: currentPacket.context, data: undefined };
           if (this.onExit) await this.onExit(exitPacket).catch(() => {});
           return exitPacket;
         }
-
-        // ── Forced error ──────────────────────────────────────────────
         const pendingError = this._errorPending;
         if (pendingError) {
           this._errorPending = null;
           const errData = ensureError(pendingError.data);
-          const errPacket: ErrorPacket<Error, TDeps, TContext> = {
-            data: errData,
-            branch: 'error',
-            deps: inPacket.deps,
-            context: currentPacket.context,
-          };
+          const errPacket: ErrorPacket<Error, TDeps, TContext> = { data: errData, branch: 'error', deps: packet.deps, context: currentPacket.context };
           const errorHandler = currentNode.branches.get('error');
-          if (errorHandler) {
-            currentNode = errorHandler;
-            currentPacket = { ...errPacket, signal };
-            continue;
-          }
+          if (errorHandler) { currentNode = errorHandler; currentPacket = { ...errPacket, signal }; continue; }
           if (this.onError) await this.onError(errPacket).catch(() => {});
-          if (this.fallback) return this.fallback(inPacket, errData);
+          if (this.fallback) return this.fallback(packet as any, errData);
           return errPacket;
         }
-
-        // ── Loop guards ───────────────────────────────────────────────
         const enters = (enterCount.get(currentNode) ?? 0) + 1;
         enterCount.set(currentNode, enters);
         this._checkLoopGuard(currentNode, enters);
 
-        // ── Execute ───────────────────────────────────────────────────
+        if (this.onBeforeNode) await this.onBeforeNode(currentNode.nodeName, currentPacket).catch(() => {});
         const result = await currentNode._exec(currentPacket);
+        if (this.onAfterNode) await this.onAfterNode(currentNode.nodeName, result).catch(() => {});
 
-        // ── Branch routing ────────────────────────────────────────────
-        if (result.branch === 'exit') {
-          if (this.onExit) await this.onExit(result as SinglePacket<any, TDeps, TContext>).catch(() => {});
-          return result;
-        }
-
-        if (result.branch === 'abort') {
-          if (this.onAbort) await this.onAbort(currentPacket as any).catch(() => {});
-          return result;
-        }
-
+        if (result.branch === 'exit') { if (this.onExit) await this.onExit(result as SinglePacket<any, TDeps, TContext>).catch(() => {}); return result; }
+        if (result.branch === 'abort') { if (this.onAbort) await this.onAbort(currentPacket as any).catch(() => {}); return result; }
         if (result.branch === 'error') {
           const errorHandler = currentNode.branches.get('error');
-          if (errorHandler) {
-            currentNode = errorHandler;
-            currentPacket = { ...result, signal };
-            continue;
-          }
+          if (errorHandler) { currentNode = errorHandler; currentPacket = { ...result, signal }; continue; }
           const errVal = (result as SinglePacket<any>).data;
           if (this.onError) await this.onError(result).catch(() => {});
-          if (this.fallback)
-            return this.fallback(inPacket, errVal instanceof Error ? errVal : new Error(String(errVal)));
+          if (this.fallback) return this.fallback(packet as any, errVal instanceof Error ? errVal : new Error(String(errVal)));
           return result;
         }
-
-        // ── Pause (reserved branch) ────────────────────────────────────
         if (result.branch === 'pause') {
           const pauseHandler = currentNode.branches.get('pause');
-          if (!pauseHandler) return result; // no continuation wired — bubble up
-
-          // Clear any pending external pause
+          if (!pauseHandler) return result;
           this._pausePending = false;
-
-          // Suspend: resume packet → input to pauseHandler
           const resumed = await this._suspendUntilResumed({ ...result, signal }, pauseHandler, currentNode);
           currentNode = pauseHandler;
           currentPacket = { ...resumed, signal };
           continue;
         }
-
         const nextNode = currentNode.branches.get(result.branch ?? 'default');
         if (!nextNode) return result;
-
-        // ── Pause ─────────────────────────────────────────────────────
         if (this._pausePending) {
           this._pausePending = false;
           const resumed = await this._suspendUntilResumed({ ...result, signal }, nextNode);
@@ -763,22 +756,22 @@ export class Flow<
           currentPacket = { ...resumed, signal };
           continue;
         }
-
-        // ── Advance ───────────────────────────────────────────────────
         currentNode = nextNode;
         currentPacket = { ...result, signal };
       }
     } catch (err) {
       const safeErr = ensureError(err);
-      const errPacket = {
-        data: safeErr,
-        branch: 'error',
-        deps: inPacket.deps,
-        context: inPacket.context,
-      } as ErrorPacket<Error, TDeps, TContext>;
+      const errPacket = { data: safeErr, branch: 'error', deps: packet.deps, context: packet.context } as ErrorPacket<Error, TDeps, TContext>;
       if (this.fallback) return this.fallback(errPacket, safeErr);
       if (this.onError) await this.onError(errPacket).catch(() => {});
       return errPacket;
     }
   }
+
+  async run(
+    inPacket: SinglePacket<any, TDeps, TContext> | this['In'],
+  ): Promise<SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext> | this['Out']> {
+    return this.runFrom(this._start, inPacket as SinglePacket<any, TDeps, TContext>);
+  }
+
 }

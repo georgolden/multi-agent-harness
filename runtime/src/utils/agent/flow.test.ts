@@ -52,6 +52,8 @@ function makeFlow(
     onError?: (p: SinglePacket<any>) => Promise<void>;
     onAbort?: (p: SinglePacket<any> | BatchPacket<any>) => Promise<void>;
     fallback?: (p: SinglePacket<any> | BatchPacket<any>, err: Error | AggregateError) => Promise<SinglePacket<any>>;
+    onBeforeNode?: (nodeName: string, p: SinglePacket<any> | BatchPacket<any>) => Promise<void>;
+    onAfterNode?: (nodeName: string, result: SinglePacket<any> | BatchPacket<any>) => Promise<void>;
   },
   options?: NodeOptions,
 ) {
@@ -62,6 +64,8 @@ function makeFlow(
     onError = hooks?.onError;
     onAbort = hooks?.onAbort;
     fallback = hooks?.fallback;
+    onBeforeNode = hooks?.onBeforeNode;
+    onAfterNode = hooks?.onAfterNode;
   }
   return new TestFlow(start, options);
 }
@@ -1288,5 +1292,295 @@ describe('Edge Cases & Additional Coverage', () => {
     const result = await node._exec({ ...packet({ data: 'x', deps: {}, context: {} }), signal: ctrl.signal });
     expect(result.branch).toBe('abort');
     expect(runFn).not.toHaveBeenCalled();
+  });
+});
+
+// ─── 16. Node — named constructor ────────────────────────────────────────────
+
+describe('Node — named constructor', () => {
+  it('nodeName defaults to class name when no name arg given', () => {
+    const node = makeNode(async (p) => p);
+    expect(node.nodeName).toBe('TestNode');
+  });
+
+  it('nodeName is set when string is passed as first arg', () => {
+    class NamedNode extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        return p;
+      }
+    }
+    const node = new NamedNode('myCustomName');
+    expect(node.nodeName).toBe('myCustomName');
+  });
+
+  it('options are still respected when name is provided', () => {
+    class NamedNode extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        return p;
+      }
+    }
+    const node = new NamedNode('namedNode', { maxRunTries: 5, wait: 100, timeout: 200 });
+    expect(node.nodeName).toBe('namedNode');
+    expect(node.options.maxRunTries).toBe(5);
+    expect(node.options.wait).toBe(100);
+    expect(node.options.timeout).toBe(200);
+  });
+
+  it('nodeName without string arg — options still applied', () => {
+    class NamedNode extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        return p;
+      }
+    }
+    const node = new NamedNode({ maxRunTries: 3 });
+    expect(node.nodeName).toBe('NamedNode');
+    expect(node.options.maxRunTries).toBe(3);
+  });
+});
+
+// ─── 17. Flow — onBeforeNode / onAfterNode hooks ─────────────────────────────
+
+describe('Flow — onBeforeNode / onAfterNode hooks', () => {
+  it('onBeforeNode is called before each node with its name and packet', async () => {
+    const calls: Array<{ name: string; data: unknown }> = [];
+    class NodeA extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        return packet({ data: 'a-result', deps: p.deps, context: p.context });
+      }
+    }
+    class NodeB extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        return exit({ data: 'done', deps: p.deps, context: p.context });
+      }
+    }
+    const a = new NodeA('nodeA');
+    const b = new NodeB('nodeB');
+    a.next(b);
+    const flow = makeFlow(a, {
+      onBeforeNode: async (name, p) => {
+        calls.push({ name, data: p.data });
+      },
+    });
+    await flow.run(packet({ data: 'start', deps: {}, context: {} }));
+    expect(calls).toEqual([
+      { name: 'nodeA', data: 'start' },
+      { name: 'nodeB', data: 'a-result' },
+    ]);
+  });
+
+  it('onAfterNode is called after each node with its name and result', async () => {
+    const calls: Array<{ name: string; data: unknown }> = [];
+    class NodeA extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        return packet({ data: 'a-result', deps: p.deps, context: p.context });
+      }
+    }
+    class NodeB extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        return exit({ data: 'b-result', deps: p.deps, context: p.context });
+      }
+    }
+    const a = new NodeA('nodeA');
+    const b = new NodeB('nodeB');
+    a.next(b);
+    const flow = makeFlow(a, {
+      onAfterNode: async (name, result) => {
+        calls.push({ name, data: result.data });
+      },
+    });
+    await flow.run(packet({ data: 'start', deps: {}, context: {} }));
+    expect(calls).toEqual([
+      { name: 'nodeA', data: 'a-result' },
+      { name: 'nodeB', data: 'b-result' },
+    ]);
+  });
+
+  it('onBeforeNode and onAfterNode are called in order around each node', async () => {
+    const order: string[] = [];
+    class MyNode extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        order.push('run');
+        return exit({ data: 'done', deps: p.deps, context: p.context });
+      }
+    }
+    const node = new MyNode('myNode');
+    const flow = makeFlow(node, {
+      onBeforeNode: async () => { order.push('before'); },
+      onAfterNode: async () => { order.push('after'); },
+    });
+    await flow.run(packet({ data: 'x', deps: {}, context: {} }));
+    expect(order).toEqual(['before', 'run', 'after']);
+  });
+
+  it('errors in onBeforeNode are swallowed and flow continues', async () => {
+    const node = makeNode(async (p) => exit({ data: 'ok', deps: p.deps, context: p.context }));
+    const flow = makeFlow(node, {
+      onBeforeNode: async () => { throw new Error('before-hook boom'); },
+    });
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
+    expect(out.branch).toBe('exit');
+    expect(out.data).toBe('ok');
+  });
+
+  it('errors in onAfterNode are swallowed and flow continues', async () => {
+    const a = makeNode(async (p) => packet({ data: 'intermediate', deps: p.deps, context: p.context }));
+    const b = makeNode(async (p) => exit({ data: 'final', deps: p.deps, context: p.context }));
+    a.next(b);
+    const flow = makeFlow(a, {
+      onAfterNode: async () => { throw new Error('after-hook boom'); },
+    });
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
+    expect(out.branch).toBe('exit');
+    expect(out.data).toBe('final');
+  });
+});
+
+// ─── 18. Flow — getNodeByName ─────────────────────────────────────────────────
+
+describe('Flow — getNodeByName', () => {
+  it('finds the start node by name', () => {
+    class StartNode extends Node<any, any, any, any> {
+      async run(p: this['In']) { return exit({ data: 'done', deps: p.deps, context: p.context }); }
+    }
+    const start = new StartNode('startNode');
+    const flow = makeFlow(start);
+    expect(flow.getNodeByName('startNode')).toBe(start);
+  });
+
+  it('finds a downstream node by name', () => {
+    class NodeA extends Node<any, any, any, any> {
+      async run(p: this['In']) { return packet({ data: 'a', deps: p.deps, context: p.context }); }
+    }
+    class NodeB extends Node<any, any, any, any> {
+      async run(p: this['In']) { return exit({ data: 'done', deps: p.deps, context: p.context }); }
+    }
+    const a = new NodeA('nodeA');
+    const b = new NodeB('nodeB');
+    a.next(b);
+    const flow = makeFlow(a);
+    expect(flow.getNodeByName('nodeB')).toBe(b);
+  });
+
+  it('returns undefined for a name that does not exist', () => {
+    const node = makeNode(async (p) => exit({ data: 'done', deps: p.deps, context: p.context }));
+    const flow = makeFlow(node);
+    expect(flow.getNodeByName('nonExistent')).toBeUndefined();
+  });
+
+  it('handles cycles in the graph without infinite loop', () => {
+    class NodeA extends Node<any, any, any, any> {
+      async run(p: this['In']) { return packet({ data: p.data, deps: p.deps, context: p.context }); }
+    }
+    class NodeB extends Node<any, any, any, any> {
+      async run(p: this['In']) { return exit({ data: 'done', deps: p.deps, context: p.context }); }
+    }
+    const a = new NodeA('nodeA');
+    const b = new NodeB('nodeB');
+    a.next(b);
+    b.branch('loop', a); // cycle: b → a
+    const flow = makeFlow(a);
+    expect(flow.getNodeByName('nodeB')).toBe(b);
+    expect(flow.getNodeByName('missing')).toBeUndefined();
+  });
+
+  it('finds nodes reachable through multiple branches', () => {
+    class NodeA extends Node<any, any, any, any> {
+      async run(p: this['In']) { return packet({ data: p.data, deps: p.deps, context: p.context }); }
+    }
+    class NodeB extends Node<any, any, any, any> {
+      async run(p: this['In']) { return exit({ data: 'done', deps: p.deps, context: p.context }); }
+    }
+    class NodeC extends Node<any, any, any, any> {
+      async run(p: this['In']) { return exit({ data: 'done', deps: p.deps, context: p.context }); }
+    }
+    const a = new NodeA('nodeA');
+    const b = new NodeB('nodeB');
+    const c = new NodeC('nodeC');
+    a.branch('left', b).branch('right', c);
+    const flow = makeFlow(a);
+    expect(flow.getNodeByName('nodeC')).toBe(c);
+  });
+});
+
+// ─── 19. Flow — runFrom ───────────────────────────────────────────────────────
+
+describe('Flow — runFrom', () => {
+  it('starts traversal from the given node, skipping earlier nodes', async () => {
+    const visited: string[] = [];
+    class NodeA extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        visited.push('A');
+        return packet({ data: p.data, deps: p.deps, context: p.context });
+      }
+    }
+    class NodeB extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        visited.push('B');
+        return exit({ data: 'done', deps: p.deps, context: p.context });
+      }
+    }
+    const a = new NodeA('nodeA');
+    const b = new NodeB('nodeB');
+    a.next(b);
+    const flow = makeFlow(a);
+    const out = await flow.runFrom(b, packet({ data: 'start-from-b', deps: {}, context: {} }));
+    expect(visited).toEqual(['B']);
+    expect(out.branch).toBe('exit');
+  });
+
+  it('runFrom respects flow abort signal', async () => {
+    class NodeA extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        return exit({ data: 'done', deps: p.deps, context: p.context });
+      }
+    }
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const a = new NodeA('nodeA');
+    const flow = makeFlow(a, {}, { signal: ctrl.signal });
+    const out = await flow.runFrom(a, packet({ data: 'x', deps: {}, context: {} }));
+    expect(out.branch).toBe('abort');
+  });
+
+  it('runFrom propagates onBeforeNode / onAfterNode hooks', async () => {
+    const calls: string[] = [];
+    class NodeB extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        return exit({ data: 'done', deps: p.deps, context: p.context });
+      }
+    }
+    const b = new NodeB('nodeB');
+    const flow = makeFlow(b, {
+      onBeforeNode: async (name) => { calls.push(`before:${name}`); },
+      onAfterNode: async (name) => { calls.push(`after:${name}`); },
+    });
+    await flow.runFrom(b, packet({ data: 'x', deps: {}, context: {} }));
+    expect(calls).toEqual(['before:nodeB', 'after:nodeB']);
+  });
+
+  it('runFrom combined with getNodeByName restores from checkpoint', async () => {
+    const visited: string[] = [];
+    class NodeA extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        visited.push('A');
+        return packet({ data: p.data, deps: p.deps, context: p.context });
+      }
+    }
+    class NodeB extends Node<any, any, any, any> {
+      async run(p: this['In']) {
+        visited.push('B');
+        return exit({ data: 'done', deps: p.deps, context: p.context });
+      }
+    }
+    const a = new NodeA('nodeA');
+    const b = new NodeB('nodeB');
+    a.next(b);
+    const flow = makeFlow(a);
+    const resumeNode = flow.getNodeByName('nodeB')!;
+    expect(resumeNode).toBe(b);
+    const out = await flow.runFrom(resumeNode, packet({ data: 'restored', deps: {}, context: {} }));
+    expect(visited).toEqual(['B']);
+    expect(out.branch).toBe('exit');
+    expect(out.data).toBe('done');
   });
 });
