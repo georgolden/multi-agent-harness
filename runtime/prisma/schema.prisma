@@ -44,6 +44,7 @@ model FlowSession {
   userPromptTemplate String?      @map("user_prompt_template")
   status             String       @db.VarChar(20)
   parentSessionId    String?      @map("parent_session_id") @db.VarChar(16)
+  agentSessionId     String?      @map("agent_session_id") @db.VarChar(16)
   messages           Json         @default("[]")
   activeMessages     Json         @default("[]") @map("active_messages")
   messageWindowConfig Json        @map("message_window_config")
@@ -56,36 +57,42 @@ model FlowSession {
   tempFiles          Json         @default("[]") @map("temp_files")
   toolLogs           Json         @default("[]") @map("tool_logs")
   skillLogs          Json         @default("[]") @map("skill_logs")
+  flowSchema         Json?        @map("flow_schema")
   currentNodeName    String?      @map("current_node_name") @db.VarChar(255)
   currentPacketData  Json?        @map("current_packet_data")
   startedAt          DateTime     @default(now()) @map("started_at")
   endedAt            DateTime?    @map("ended_at")
 
-  parent   FlowSession?  @relation("SessionTree", fields: [parentSessionId], references: [id], onDelete: SetNull)
-  children FlowSession[] @relation("SessionTree")
+  parent       FlowSession?  @relation("SessionTree", fields: [parentSessionId], references: [id], onDelete: SetNull)
+  children     FlowSession[] @relation("SessionTree")
+  agentSession AgentSession? @relation(fields: [agentSessionId], references: [id], onDelete: SetNull)
 
   @@index([userId], name: "idx_flow_sessions_user_id")
   @@index([parentSessionId], name: "idx_flow_sessions_parent_id")
+  @@index([agentSessionId], name: "idx_flow_sessions_agent_session_id")
   @@index([status], name: "idx_flow_sessions_status")
   @@index([userId, status], name: "idx_flow_sessions_user_status")
   @@index([parentSessionId, startedAt], name: "idx_flow_sessions_tree")
   @@map("flow_sessions")
 }
 
-model FlowRun {
-  id              String    @id @db.VarChar(32)
-  flowName        String    @map("flow_name") @db.VarChar(255)
-  sessionId       String    @map("session_id") @db.VarChar(255)
-  userId          String    @map("user_id") @db.VarChar(255)
-  status          String    @default("running") @db.VarChar(32)
-  startedAt       DateTime  @default(now()) @map("started_at") @db.Timestamptz
-  endedAt         DateTime? @map("ended_at") @db.Timestamptz
-  parentSessionId String?   @map("parent_session_id") @db.VarChar(255)
+model AgentSession {
+  id               String    @id @db.VarChar(16)
+  userId           String    @map("user_id") @db.VarChar(255)
+  agentName        String    @map("agent_name") @db.VarChar(255)
+  agentSchema      Json      @map("agent_schema")
+  status           String    @default("running") @db.VarChar(20)
+  currentFlowName  String?   @map("current_flow_name") @db.VarChar(255)
+  currentFlowInput Json?     @map("current_flow_input")
+  startedAt        DateTime  @default(now()) @map("started_at")
+  endedAt          DateTime? @map("ended_at")
 
-  @@index([userId], name: "flow_runs_user_id_idx")
-  @@index([sessionId], name: "flow_runs_session_id_idx")
-  @@index([status], name: "flow_runs_status_idx")
-  @@map("flow_runs")
+  flowSessions FlowSession[]
+
+  @@index([userId], name: "idx_agent_sessions_user_id")
+  @@index([status], name: "idx_agent_sessions_status")
+  @@index([userId, status], name: "idx_agent_sessions_user_status")
+  @@map("agent_sessions")
 }
 
 model AgenticLoopSchema {

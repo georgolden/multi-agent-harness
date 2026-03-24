@@ -97,6 +97,14 @@ export class SessionDataRepository {
     state.rollback(new Error('Node transaction rolled back'));
   }
 
+  async setFlowSchema(sessionId: string, schema: unknown): Promise<void> {
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({
+      where: { id: sessionId },
+      data: { flowSchema: schema as any },
+    });
+  }
+
   async start(): Promise<void> {
     console.log('[SessionDataRepository] Ready');
   }
@@ -130,8 +138,10 @@ export class SessionDataRepository {
       skillLogs: (row.skillLogs as SkillLog[]) || [],
       startedAt: row.startedAt,
       endedAt: row.endedAt ?? undefined,
+      flowSchema: row.flowSchema ?? undefined,
       currentNodeName: row.currentNodeName ?? undefined,
       currentPacketData: row.currentPacketData ?? undefined,
+      agentSessionId: row.agentSessionId ?? undefined,
     };
   }
 
@@ -155,6 +165,7 @@ export class SessionDataRepository {
         contextFoldersInfos: (params.contextFoldersInfos ?? []) as any,
         callLlmOptions: params.callLlmOptions as any,
         agentLoopConfig: params.agentLoopConfig as any,
+        agentSessionId: params.agentSessionId,
       },
     });
 

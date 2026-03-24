@@ -51,6 +51,7 @@ export interface CreateSessionParams {
   contextFoldersInfos?: FolderInfo[];
   callLlmOptions?: CallLlmOptions;
   agentLoopConfig?: AgentLoopConfig;
+  agentSessionId?: string;
 }
 
 // Lightweight session info for tree traversal
@@ -108,9 +109,15 @@ export interface SessionData {
   startedAt: Date;
   endedAt?: Date;
 
+  // Flow schema — stored so the flow can be reconstructed from DB on restore
+  flowSchema?: unknown;
+
   // Flow checkpoint — set transactionally after each node completes
   currentNodeName?: string;
   currentPacketData?: unknown;
+
+  // Agent session this flow belongs to
+  agentSessionId?: string;
 }
 
 export interface SessionDataTreeNode {

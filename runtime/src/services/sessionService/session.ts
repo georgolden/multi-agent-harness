@@ -141,6 +141,12 @@ export class Session {
     await this.app.data.flowSessionRepository.rollbackNodeTransaction(this.sessionData.id);
   }
 
+  async setFlowSchema(schema: unknown): Promise<this> {
+    await this.app.data.flowSessionRepository.setFlowSchema(this.sessionData.id, schema);
+    this.sessionData.flowSchema = schema;
+    return this;
+  }
+
   // ─── Message mutations ────────────────────────────────────────────────────
 
   /** Add messages; refreshes the active window and fires onMessage hook. */
