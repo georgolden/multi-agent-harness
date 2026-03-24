@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import 'dotenv/config';
-import { taskSchedulerFlow } from './flow.js';
+import { TaskSchedulerFlow } from './flow.js';
 import { App } from '../../app.js';
 import { Task } from '../../data/taskRepository/types.js';
 import { Tasks } from '../../tasks/index.js';
@@ -103,6 +103,9 @@ function setupTestApp() {
         });
         return session;
       },
+      async setFlowSchema(_schema: any) {
+        return session;
+      },
     };
     return session;
   }
@@ -159,7 +162,9 @@ function setupTestApp() {
   // Helper: run the flow the same way taskSchedulerFlow.run does
   async function runFlow(message: string) {
     const user = { id: 'user-123' } as any;
-    const { flow, promise } = await taskSchedulerFlow.run(app, { user }, { message });
+    const flow = new TaskSchedulerFlow();
+    const session = await flow.createSession(app, user, undefined, { message });
+    const promise = flow.run({ deps: app, context: { user, session }, data: message });
     await promise;
   }
 

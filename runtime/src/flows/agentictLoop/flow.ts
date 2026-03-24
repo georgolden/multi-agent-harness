@@ -29,54 +29,9 @@ export type AgentLoopConfig = {
   onError: 'askUser' | 'retry';
   maxLoopEntering: number;
   loopExit: 'failure' | 'bestAnswer';
-
   useMemory: boolean;
   useKnowledgeBase: boolean;
 };
-
-export const agenticLoopSchema: FlowSchema = {
-  startNode: 'PrepareInput',
-  nodes: {
-    PrepareInput:  'DecideAction',
-    DecideAction:  { ask_user: 'AskUser', tool_calls: 'ToolCalls', submit_answer: 'SubmitAnswer', loop: 'DecideAction' },
-    AskUser:       { pause: 'UserResponse' },
-    UserResponse:  'DecideAction',
-    ToolCalls:     { default: 'DecideAction', ask_user: 'AskUser' },
-    SubmitAnswer:  null,
-  },
-};
-
-// ─── AgenticLoopFlow ──────────────────────────────────────────────────────────
-
-/**
- * Flow subclass that handles loop-exceeded errors via fallback.
- * If loopExit is 'bestAnswer', delegates to BestAnswer node for a final LLM call.
- * Otherwise fails the session.
- */
-export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, string> {
-  nodeConstructors = { PrepareInput, DecideAction, AskUser, UserResponse, ToolCalls, SubmitAnswer };
-
-  private bestAnswerNode = new BestAnswer();
-
-  async fallback(p: this['InError'], err: Error): Promise<this['Out']> {
-    const { session } = p.context;
-    const loopExit = session.agentLoopConfig?.loopExit ?? 'failure';
-    const isLoopExceeded = err.message.includes('maxLoopEntering') || err.message.includes('exceeded');
-
-    console.warn(`[AgenticLoopFlow.fallback] ${err.message}, loopExit: ${loopExit}`);
-
-    if (isLoopExceeded && loopExit === 'bestAnswer') {
-      try {
-        return await this.bestAnswerNode.run({ data: err, context: p.context, deps: p.deps });
-      } catch (bestAnswerErr) {
-        console.error('[AgenticLoopFlow.fallback] bestAnswer call failed:', bestAnswerErr);
-      }
-    }
-
-    await session.fail().catch(() => {});
-    return error({ data: err, context: p.context, deps: p.deps });
-  }
-}
 
 export const agentFlowParametersSchema = Type.Object({
   schema: Type.Object(
@@ -117,18 +72,37 @@ export const agentFlowParametersSchema = Type.Object({
 
 export type AgentFlowParameters = Static<typeof agentFlowParametersSchema>;
 
-export const agenticLoopFlow = {
-  name: 'Agentic Loop',
-  description: 'Universal agentic flow that runs with schema',
-  parameters: agentFlowParametersSchema,
-  create: (schema: FlowSchema = agenticLoopSchema) => new AgenticLoopFlow(schema),
-  run: async (
-    app: App,
-    context: { user: User; parent?: Session },
-    parameters: { schema: AgenticLoopSchema; message: string },
-  ) => {
-    const { user, parent } = context;
-    const { schema, message } = parameters;
+// ─── AgenticLoopFlow ──────────────────────────────────────────────────────────
+
+/**
+ * Flow subclass that handles loop-exceeded errors via fallback.
+ * If loopExit is 'bestAnswer', delegates to BestAnswer node for a final LLM call.
+ * Otherwise fails the session.
+ */
+export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowParameters>
+  {
+
+  name = 'Agentic Loop';
+  description = 'Universal agentic flow that runs with schema';
+  parameters = agentFlowParametersSchema;
+
+  schema: FlowSchema = {
+    startNode: 'PrepareInput',
+    nodes: {
+      PrepareInput:  'DecideAction',
+      DecideAction:  { ask_user: 'AskUser', tool_calls: 'ToolCalls', submit_answer: 'SubmitAnswer', loop: 'DecideAction' },
+      AskUser:       { pause: 'UserResponse' },
+      UserResponse:  'DecideAction',
+      ToolCalls:     { default: 'DecideAction', ask_user: 'AskUser' },
+      SubmitAnswer:  null,
+    },
+  };
+
+  nodeConstructors = { PrepareInput, DecideAction, AskUser, UserResponse, ToolCalls, SubmitAnswer };
+
+  private bestAnswerNode = new BestAnswer();
+
+  async createSession(app: App, user: User, _parent: Session | undefined, input: AgentFlowParameters): Promise<Session> {
     const {
       flowName,
       systemPrompt,
@@ -139,7 +113,7 @@ export const agenticLoopFlow = {
       messageWindowConfig,
       userPromptTemplate,
       agentLoopConfig,
-    } = schema;
+    } = input.schema;
 
     const filledSystemPrompt = fillSystemPrompt(systemPrompt, user);
 
@@ -152,9 +126,9 @@ export const agenticLoopFlow = {
     const session = await app.services.sessionService.create({
       flowName,
       systemPrompt: filledSystemPrompt,
-      userPromptTemplate: userPromptTemplate,
+      userPromptTemplate,
       userId: user.id,
-      messageWindowConfig,
+      messageWindowConfig: messageWindowConfig as MessageWindowConfig,
       tools,
       skills,
       contextFiles,
@@ -163,8 +137,27 @@ export const agenticLoopFlow = {
       agentLoopConfig,
     });
 
-    const flow = new AgenticLoopFlow(agenticLoopSchema);
-    const promise = flow.run({ data: message, context: { session, user, tools, skills }, deps: app });
-    return { flow, session, promise };
-  },
-};
+    await session.setFlowSchema(this.toSchema());
+
+    return session;
+  }
+
+  async fallback(p: this['InError'], err: Error): Promise<this['Out']> {
+    const { session } = p.context;
+    const loopExit = session.agentLoopConfig?.loopExit ?? 'failure';
+    const isLoopExceeded = err.message.includes('maxLoopEntering') || err.message.includes('exceeded');
+
+    console.warn(`[AgenticLoopFlow.fallback] ${err.message}, loopExit: ${loopExit}`);
+
+    if (isLoopExceeded && loopExit === 'bestAnswer') {
+      try {
+        return await this.bestAnswerNode.run({ data: err, context: p.context, deps: p.deps });
+      } catch (bestAnswerErr) {
+        console.error('[AgenticLoopFlow.fallback] bestAnswer call failed:', bestAnswerErr);
+      }
+    }
+
+    await session.fail().catch(() => {});
+    return error({ data: err, context: p.context, deps: p.deps });
+  }
+}

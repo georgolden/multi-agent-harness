@@ -20,7 +20,7 @@ export interface ExploreResult {
   contextFoldersInfos: FolderInfo[];
 }
 
-export interface ExploreContext extends ExploreInput {
+export interface ExploreContext {
   session: Session;
   parent?: Session;
   user: User;

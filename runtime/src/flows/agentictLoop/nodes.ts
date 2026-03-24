@@ -30,7 +30,7 @@ import {
   ToolResultMessage,
   type LLMToolCall,
 } from '../../utils/message.js';
-import { fillTemplateFlow } from '../fillTemplate/flow.js';
+import { FillTemplateFlow } from '../fillTemplate/flow.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
@@ -44,15 +44,16 @@ export class PrepareInput extends Node<App, AgenticLoopContext, string, { defaul
     const { session, user } = p.context;
     let message = p.data;
     if (session.userPromptTemplate) {
-      const handle = await fillTemplateFlow.run(
-        p.deps,
-        { user, parent: session },
-        {
-          message: p.data,
-          template: session.userPromptTemplate,
-        },
-      );
-      const result = await handle.promise;
+      const fillFlow = new FillTemplateFlow();
+      const fillSession = await fillFlow.createSession(p.deps, user, session, {
+        message: p.data,
+        template: session.userPromptTemplate,
+      });
+      const result = await fillFlow.run({
+        deps: p.deps,
+        context: { user, parent: session, session: fillSession },
+        data: { message: p.data, template: session.userPromptTemplate },
+      });
       message = (result as any).data ?? message;
     }
     console.log(`[PrepareInput.prep] Adding user message to session '${session.id}'`);
