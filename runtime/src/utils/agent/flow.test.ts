@@ -52,51 +52,44 @@ function makeNode(
 function makeFlow(
   schema: FlowSchema,
   nodeInstances: Record<string, Node<any, any, any, any>>,
-  hooks?: {
-    onPause?: (p: SinglePacket<any> | BatchPacket<any>) => Promise<void>;
-    onResume?: (p: SinglePacket<any> | BatchPacket<any>) => Promise<void>;
-    onExit?: (p: SinglePacket<any>) => Promise<void>;
-    onError?: (p: SinglePacket<any>) => Promise<void>;
-    onAbort?: (p: SinglePacket<any> | BatchPacket<any>) => Promise<void>;
+  opts?: {
     fallback?: (p: SinglePacket<any> | BatchPacket<any>, err: Error | AggregateError) => Promise<SinglePacket<any>>;
   },
   options?: NodeOptions,
 ) {
-  // Wrap each instance in a trivial constructor so Flow can call `new Ctor()`
-  // but immediately replace the created instance with the provided one.
   const ctors: Record<string, new () => Node<any, any, any, any>> = {};
   for (const [name, instance] of Object.entries(nodeInstances)) {
-    // We capture the instance reference; the constructor returns a fresh object
-    // but Flow stores it by name. We override this by replacing the internal map
-    // after construction via a hack — instead, we use a closure-captured singleton.
     const captured = instance;
     ctors[name] = class extends Node<any, any, any, any> {
       constructor() {
         super((captured as any).options);
-        // Copy internals from the captured instance so the flow uses the same object
-        // Routing is by name, so we just need the constructor to return a node that
-        // delegates run/preprocess/postprocess to the captured one.
         (this as any)._delegate = captured;
       }
       preprocess = (captured as any).preprocess?.bind(captured);
       postprocess = (captured as any).postprocess?.bind(captured);
       fallback = (captured as any).fallback?.bind(captured);
       onAbort = (captured as any).onAbort?.bind(captured);
-      async run(p: any) { return captured.run(p); }
-      // Forward resume callbacks to the captured node so node.resume() works
-      _subscribeResume(cb: any) { captured._subscribeResume(cb); }
-      resume(p: any) { captured.resume(p); }
+      async run(p: any) {
+        return captured.run(p);
+      }
+      _subscribeResume(cb: any) {
+        captured._subscribeResume(cb);
+      }
+      resume(p: any) {
+        captured.resume(p);
+      }
     };
   }
 
   class TestFlow extends Flow<any, any, any, any> {
+    name = 'TestFlow';
+    description = '';
+    parameters = {};
     nodeConstructors = ctors;
-    onPause = hooks?.onPause;
-    onResume = hooks?.onResume;
-    onExit = hooks?.onExit;
-    onError = hooks?.onError;
-    onAbort = hooks?.onAbort;
-    fallback = hooks?.fallback;
+    fallback = opts?.fallback;
+    async createSession(): Promise<any> {
+      return null;
+    }
   }
   return new TestFlow(schema, options);
 }
@@ -693,37 +686,31 @@ describe('Flow — traversal', () => {
 // ─── 6. Flow — reserved branches ─────────────────────────────────────────────
 
 describe('Flow — reserved branches', () => {
-  it('exit branch terminates flow and calls onExit', async () => {
-    const onExit = vi.fn(async () => {});
+  it('exit branch terminates flow', async () => {
     const node = makeNode(async (p) => exit({ data: 'done', deps: p.deps, context: p.context }));
     const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
-    const flow = makeFlow(schema, { node }, { onExit });
+    const flow = makeFlow(schema, { node });
     const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('exit');
     expect(out.data).toBe('done');
-    expect(onExit).toHaveBeenCalledOnce();
   });
 
-  it('abort branch calls onAbort and returns abort packet', async () => {
-    const onAbort = vi.fn(async () => {});
+  it('abort branch returns abort packet', async () => {
     const node = makeNode(async () => {
       throw new DOMException('Aborted', 'AbortError');
     });
     const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
-    const flow = makeFlow(schema, { node }, { onAbort });
+    const flow = makeFlow(schema, { node });
     const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('abort');
-    expect(onAbort).toHaveBeenCalled();
   });
 
   it('error branch triggers error chain (terminal if no handler)', async () => {
-    const onError = vi.fn(async () => {});
     const node = makeNode(async (p) => error({ data: 'bad', deps: p.deps, context: p.context }));
     const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
-    const flow = makeFlow(schema, { node }, { onError });
+    const flow = makeFlow(schema, { node });
     const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('error');
-    expect(onError).toHaveBeenCalledOnce();
   });
 });
 
@@ -758,13 +745,11 @@ describe('Flow — error chain', () => {
     expect(out.data).toBe('flow-fallback');
   });
 
-  it('step 3: calls onError and returns terminal error packet', async () => {
-    const onError = vi.fn(async () => {});
+  it('step 3: returns terminal error packet when no handler', async () => {
     const node = makeNode(async (p) => error({ data: 'terminal', deps: p.deps, context: p.context }));
     const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
-    const flow = makeFlow(schema, { node }, { onError });
+    const flow = makeFlow(schema, { node });
     const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
-    expect(onError).toHaveBeenCalledOnce();
     expect(out.branch).toBe('error');
   });
 
@@ -792,19 +777,7 @@ describe('Flow — error chain', () => {
     expect(out.branch).toBe('exit');
   });
 
-  it('onError hook errors are swallowed', async () => {
-    const node = makeNode(async (p) => error({ data: 'x', deps: p.deps, context: p.context }));
-    const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
-    const flow = makeFlow(schema, { node }, {
-      onError: async () => {
-        throw new Error('hook exploded');
-      },
-    });
-    await expect(flow.run(packet({ data: 'x', deps: {}, context: {} }))).resolves.toMatchObject({ branch: 'error' });
-  });
-
   it('flow.error() forced error goes through error chain', async () => {
-    const onError = vi.fn(async () => {});
     let flowRef: ReturnType<typeof makeFlow>;
     const node = makeNode(async (p) => {
       flowRef!.error('forced');
@@ -812,10 +785,9 @@ describe('Flow — error chain', () => {
     });
     const next = makeNode(async (p) => exit({ data: 'should-not-reach', deps: p.deps, context: p.context }));
     const schema: FlowSchema = { startNode: 'node', nodes: { node: { default: 'next' }, next: {} } };
-    flowRef = makeFlow(schema, { node, next }, { onError });
+    flowRef = makeFlow(schema, { node, next });
     const out = await flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('error');
-    expect(onError).toHaveBeenCalledOnce();
   });
 });
 
@@ -823,25 +795,21 @@ describe('Flow — error chain', () => {
 
 describe('Flow — loop guards', () => {
   it('per-node maxLoopEntering throws when exceeded', async () => {
-    const onError = vi.fn(async () => {});
     const node = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }), {
       nodeOptions: { maxLoopEntering: 3 },
     });
     const schema: FlowSchema = { startNode: 'node', nodes: { node: { default: 'node' } } };
-    const flow = makeFlow(schema, { node }, { onError });
+    const flow = makeFlow(schema, { node });
     const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('error');
-    expect(onError).toHaveBeenCalledOnce();
   });
 
   it('flow-level maxLoopEntering counts start node re-enterings', async () => {
-    const onError = vi.fn(async () => {});
     const node = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
     const schema: FlowSchema = { startNode: 'node', nodes: { node: { default: 'node' } } };
-    const flow = makeFlow(schema, { node }, { onError }, { maxLoopEntering: 2 });
+    const flow = makeFlow(schema, { node }, undefined, { maxLoopEntering: 2 });
     const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('error');
-    expect(onError).toHaveBeenCalledOnce();
   });
 
   it('loop guard error goes through fallback chain', async () => {
@@ -873,9 +841,8 @@ describe('Flow — abort', () => {
     expect(out.branch).toBe('abort');
   });
 
-  it('abort calls currentNode.onAbort and flow.onAbort', async () => {
+  it('abort calls currentNode.onAbort', async () => {
     const nodeOnAbort = vi.fn(async () => {});
-    const flowOnAbort = vi.fn(async () => {});
     const node = makeNode(
       async () => {
         throw new DOMException('Aborted', 'AbortError');
@@ -883,10 +850,9 @@ describe('Flow — abort', () => {
       { onAbort: nodeOnAbort },
     );
     const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
-    const flow = makeFlow(schema, { node }, { onAbort: flowOnAbort });
+    const flow = makeFlow(schema, { node });
     await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(nodeOnAbort).toHaveBeenCalled();
-    expect(flowOnAbort).toHaveBeenCalled();
   });
 
   it('external signal aborts the flow', async () => {
@@ -897,7 +863,7 @@ describe('Flow — abort', () => {
     });
     const next = makeNode(async (p) => exit({ data: 'should-not-reach', deps: p.deps, context: p.context }));
     const schema: FlowSchema = { startNode: 'node', nodes: { node: { default: 'next' }, next: {} } };
-    const flow = makeFlow(schema, { node, next }, {}, { signal: ctrl.signal });
+    const flow = makeFlow(schema, { node, next }, undefined, { signal: ctrl.signal });
     const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('abort');
   });
@@ -907,7 +873,7 @@ describe('Flow — abort', () => {
     ctrl.abort();
     const node = makeNode(async (p) => exit({ data: 'should-not-run', deps: p.deps, context: p.context }));
     const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
-    const flow = makeFlow(schema, { node }, {}, { signal: ctrl.signal });
+    const flow = makeFlow(schema, { node }, undefined, { signal: ctrl.signal });
     const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('abort');
   });
@@ -939,7 +905,9 @@ describe('Flow — pause / resume', () => {
     flowRef.pause();
     const runPromise = flowRef.run(packet({ data: 'payload', deps: {}, context: {} }));
     let resolved = false;
-    runPromise.then(() => { resolved = true; });
+    runPromise.then(() => {
+      resolved = true;
+    });
     await new Promise((r) => setTimeout(r, 20));
     expect(resolved).toBe(false);
     flowRef.resume();
@@ -949,19 +917,23 @@ describe('Flow — pause / resume', () => {
     expect(out.data).toBe('payload');
   });
 
-  it('onPause fires with checkpoint packet before suspending', async () => {
-    const onPause = vi.fn(async () => {});
+  it('pause suspends until resume is called', async () => {
     let flowRef: ReturnType<typeof makeFlow>;
     const a = makeNode(async (p) => packet({ data: p.data, context: { step: 'a' }, deps: p.deps }));
     const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
     const schema: FlowSchema = { startNode: 'A', nodes: { A: { default: 'B' }, B: {} } };
-    flowRef = makeFlow(schema, { A: a, B: b }, { onPause });
+    flowRef = makeFlow(schema, { A: a, B: b });
     flowRef.pause();
     const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
+    let resolved = false;
+    runPromise.then(() => {
+      resolved = true;
+    });
     await new Promise((r) => setTimeout(r, 10));
-    expect(onPause).toHaveBeenCalledOnce();
+    expect(resolved).toBe(false);
     flowRef.resume();
     await runPromise;
+    expect(resolved).toBe(true);
   });
 
   it('resume(packet) replaces the checkpoint packet', async () => {
@@ -992,34 +964,18 @@ describe('Flow — pause / resume', () => {
     expect(out.data).toBe('checkpoint-data');
   });
 
-  it('onResume fires only on genuine resume (not on abort wake)', async () => {
-    const onResume = vi.fn(async () => {});
+  it('abort while paused wakes and returns abort (not resume)', async () => {
     let flowRef: ReturnType<typeof makeFlow>;
     const a = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
     const b = makeNode(async (p) => exit({ data: 'ok', deps: p.deps, context: p.context }));
     const schema: FlowSchema = { startNode: 'A', nodes: { A: { default: 'B' }, B: {} } };
-    flowRef = makeFlow(schema, { A: a, B: b }, { onResume });
+    flowRef = makeFlow(schema, { A: a, B: b });
     flowRef.pause();
     const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     await new Promise((r) => setTimeout(r, 10));
     flowRef.abort();
-    await runPromise;
-    expect(onResume).not.toHaveBeenCalled();
-  });
-
-  it('onResume fires on genuine resume', async () => {
-    const onResume = vi.fn(async () => {});
-    let flowRef: ReturnType<typeof makeFlow>;
-    const a = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
-    const b = makeNode(async (p) => exit({ data: 'ok', deps: p.deps, context: p.context }));
-    const schema: FlowSchema = { startNode: 'A', nodes: { A: { default: 'B' }, B: {} } };
-    flowRef = makeFlow(schema, { A: a, B: b }, { onResume });
-    flowRef.pause();
-    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
-    await new Promise((r) => setTimeout(r, 10));
-    flowRef.resume();
-    await runPromise;
-    expect(onResume).toHaveBeenCalledOnce();
+    const out = await runPromise;
+    expect(out.branch).toBe('abort');
   });
 
   it('resume() throws if flow is not paused', () => {
@@ -1052,8 +1008,14 @@ describe('Flow — pause / resume', () => {
         return packet({ data: p.data, deps: p.deps, context: p.context });
       },
       {
-        preprocess: async (p) => { order.push('pre'); return p; },
-        postprocess: async (p) => { order.push('post'); return p; },
+        preprocess: async (p) => {
+          order.push('pre');
+          return p;
+        },
+        postprocess: async (p) => {
+          order.push('post');
+          return p;
+        },
       },
     );
     const b = makeNode(async (p) => exit({ data: 'done', deps: p.deps, context: p.context }));
@@ -1067,19 +1029,19 @@ describe('Flow — pause / resume', () => {
     await runPromise;
   });
 
-  it('pause packet: node returns pause() and flow suspends', async () => {
-    const onPause = vi.fn(async () => {});
+  it('pause packet: node returns pause() and flow suspends until resume', async () => {
     let flowRef: ReturnType<typeof makeFlow>;
     const a = makeNode(async (p) => pause({ data: 'waiting', deps: p.deps, context: p.context }));
     const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
     const schema: FlowSchema = { startNode: 'A', nodes: { A: { pause: 'B' }, B: {} } };
-    flowRef = makeFlow(schema, { A: a, B: b }, { onPause });
+    flowRef = makeFlow(schema, { A: a, B: b });
     const runPromise = flowRef.run(packet({ data: 'initial', deps: {}, context: {} }));
     let resolved = false;
-    runPromise.then(() => { resolved = true; });
+    runPromise.then(() => {
+      resolved = true;
+    });
     await new Promise((r) => setTimeout(r, 20));
     expect(resolved).toBe(false);
-    expect(onPause).toHaveBeenCalledOnce();
     flowRef.resume(packet({ data: 'resumed', deps: {}, context: {} }));
     const out = await runPromise;
     expect(resolved).toBe(true);
@@ -1157,8 +1119,7 @@ describe('Flow — pause / resume', () => {
 // ─── 11. Flow — forced exit ───────────────────────────────────────────────────
 
 describe('Flow — forced exit', () => {
-  it('flow.exit() resolves with branch: exit and calls onExit', async () => {
-    const onExit = vi.fn(async () => {});
+  it('flow.exit() resolves with branch: exit', async () => {
     let flowRef: ReturnType<typeof makeFlow>;
     const node = makeNode(async (p) => {
       flowRef!.exit();
@@ -1166,53 +1127,13 @@ describe('Flow — forced exit', () => {
     });
     const next = makeNode(async (p) => exit({ data: 'next', deps: p.deps, context: p.context }));
     const schema: FlowSchema = { startNode: 'node', nodes: { node: { default: 'next' }, next: {} } };
-    flowRef = makeFlow(schema, { node, next }, { onExit });
+    flowRef = makeFlow(schema, { node, next });
     const out = await flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
     expect(out.branch).toBe('exit');
-    expect(onExit).toHaveBeenCalledOnce();
   });
 });
 
-// ─── 12. Flow — lifecycle hooks swallow errors ──────────────────────────────
-
-describe('Flow — lifecycle hooks swallow errors', () => {
-  it('onExit error is swallowed', async () => {
-    const node = makeNode(async (p) => exit({ data: 'done', deps: p.deps, context: p.context }));
-    const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
-    const flow = makeFlow(schema, { node }, {
-      onExit: async () => { throw new Error('onExit boom'); },
-    });
-    await expect(flow.run(packet({ data: 'x', deps: {}, context: {} }))).resolves.toMatchObject({ branch: 'exit' });
-  });
-
-  it('onAbort error is swallowed', async () => {
-    const node = makeNode(async () => {
-      throw new DOMException('Aborted', 'AbortError');
-    });
-    const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
-    const flow = makeFlow(schema, { node }, {
-      onAbort: async () => { throw new Error('onAbort boom'); },
-    });
-    await expect(flow.run(packet({ data: 'x', deps: {}, context: {} }))).resolves.toMatchObject({ branch: 'abort' });
-  });
-
-  it('onPause error is swallowed', async () => {
-    let flowRef: ReturnType<typeof makeFlow>;
-    const a = makeNode(async (p) => packet({ data: p.data, deps: p.deps, context: p.context }));
-    const b = makeNode(async (p) => exit({ data: 'ok', deps: p.deps, context: p.context }));
-    const schema: FlowSchema = { startNode: 'A', nodes: { A: { default: 'B' }, B: {} } };
-    flowRef = makeFlow(schema, { A: a, B: b }, {
-      onPause: async () => { throw new Error('onPause boom'); },
-    });
-    flowRef.pause();
-    const runPromise = flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
-    await new Promise((r) => setTimeout(r, 10));
-    flowRef.resume();
-    await expect(runPromise).resolves.toMatchObject({ branch: 'exit' });
-  });
-});
-
-// ─── 13. Edge Cases & Additional Coverage ────────────────────────────────────
+// ─── 12. Edge Cases & Additional Coverage ────────────────────────────────────
 
 describe('Edge Cases & Additional Coverage', () => {
   it('handles empty batch correctly', async () => {
@@ -1245,5 +1166,200 @@ describe('Edge Cases & Additional Coverage', () => {
     const b = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
     const flow = makeFlow(schema, { A: a, B: b });
     expect(flow.toSchema()).toBe(schema);
+  });
+});
+
+// ─── 13. Flow — runFrom ───────────────────────────────────────────────────────
+
+describe('Flow — runFrom', () => {
+  it('starts from the named node, skipping earlier nodes', async () => {
+    const visited: string[] = [];
+    const a = makeNode(async (p) => {
+      visited.push('A');
+      return packet({ data: p.data, deps: p.deps, context: p.context });
+    });
+    const b = makeNode(async (p) => {
+      visited.push('B');
+      return exit({ data: p.data, deps: p.deps, context: p.context });
+    });
+    const schema: FlowSchema = { startNode: 'A', nodes: { A: { default: 'B' }, B: {} } };
+    const flow = makeFlow(schema, { A: a, B: b });
+    const out = await flow.runFrom('B', packet({ data: 'direct', deps: {}, context: {} }));
+    expect(visited).toEqual(['B']);
+    expect(out.data).toBe('direct');
+    expect(out.branch).toBe('exit');
+  });
+
+  it('traverses onward from the named node', async () => {
+    const visited: string[] = [];
+    const a = makeNode(async (p) => {
+      visited.push('A');
+      return packet({ data: p.data, deps: p.deps, context: p.context });
+    });
+    const b = makeNode(async (p) => {
+      visited.push('B');
+      return packet({ data: p.data, deps: p.deps, context: p.context });
+    });
+    const c = makeNode(async (p) => {
+      visited.push('C');
+      return exit({ data: p.data, deps: p.deps, context: p.context });
+    });
+    const schema: FlowSchema = { startNode: 'A', nodes: { A: { default: 'B' }, B: { default: 'C' }, C: {} } };
+    const flow = makeFlow(schema, { A: a, B: b, C: c });
+    await flow.runFrom('B', packet({ data: 'x', deps: {}, context: {} }));
+    expect(visited).toEqual(['B', 'C']);
+  });
+
+  it('input packet data is passed to the start node', async () => {
+    const b = makeNode(async (p) => exit({ data: (p.data as number) * 2, deps: p.deps, context: p.context }));
+    const schema: FlowSchema = { startNode: 'A', nodes: { A: {}, B: {} } };
+    const a = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
+    const flow = makeFlow(schema, { A: a, B: b });
+    const out = await flow.runFrom('B', packet({ data: 21, deps: {}, context: {} }));
+    expect(out.data).toBe(42);
+  });
+
+  it('sets runPromise on the flow instance', async () => {
+    const node = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
+    const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
+    const flow = makeFlow(schema, { node });
+    const p = flow.runFrom('node', packet({ data: 'x', deps: {}, context: {} }));
+    expect(flow.runPromise).toBe(p);
+    await p;
+  });
+
+  it('throws when node name is not in schema', () => {
+    const node = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
+    const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
+    const flow = makeFlow(schema, { node });
+    expect(() => flow.runFrom('missing', packet({ data: 'x', deps: {}, context: {} }))).toThrow('"missing"');
+  });
+
+  it('branch routing from runFrom node works normally', async () => {
+    const visited: string[] = [];
+    const b = makeNode(async (p) => {
+      visited.push('B');
+      return packet({ data: p.data, branch: 'go', deps: p.deps, context: p.context });
+    });
+    const c = makeNode(async (p) => {
+      visited.push('C');
+      return exit({ data: p.data, deps: p.deps, context: p.context });
+    });
+    const d = makeNode(async (p) => {
+      visited.push('D');
+      return exit({ data: p.data, deps: p.deps, context: p.context });
+    });
+    const schema: FlowSchema = {
+      startNode: 'A',
+      nodes: { A: {}, B: { go: 'C', skip: 'D' }, C: {}, D: {} },
+    };
+    const a = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
+    const flow = makeFlow(schema, { A: a, B: b, C: c, D: d });
+    await flow.runFrom('B', packet({ data: 'x', deps: {}, context: {} }));
+    expect(visited).toEqual(['B', 'C']);
+  });
+
+  it('abort, pause, and error all work from runFrom entry point', async () => {
+    const node = makeNode(async (p) => error({ data: 'bad', deps: p.deps, context: p.context }));
+    const schema: FlowSchema = { startNode: 'A', nodes: { A: {}, node: {} } };
+    const a = makeNode(async (p) => exit({ data: p.data, deps: p.deps, context: p.context }));
+    const flow = makeFlow(schema, { A: a, node });
+    const out = await flow.runFrom('node', packet({ data: 'x', deps: {}, context: {} }));
+    expect(out.branch).toBe('error');
+  });
+
+  it('run() still starts from startNode after a runFrom call', async () => {
+    const visited: string[] = [];
+    const a = makeNode(async (p) => {
+      visited.push('A');
+      return exit({ data: p.data, deps: p.deps, context: p.context });
+    });
+    const b = makeNode(async (p) => {
+      visited.push('B');
+      return exit({ data: p.data, deps: p.deps, context: p.context });
+    });
+    const schema: FlowSchema = { startNode: 'A', nodes: { A: {}, B: {} } };
+    const flow = makeFlow(schema, { A: a, B: b });
+    await flow.runFrom('B', packet({ data: 'x', deps: {}, context: {} }));
+    visited.length = 0;
+    await flow.run(packet({ data: 'x', deps: {}, context: {} }));
+    expect(visited).toEqual(['A']);
+  });
+});
+
+// ─── 14. Flow — abort resets controller (restartable after abort) ─────────────
+
+describe('Flow — abort resets controller', () => {
+  it('abort() mid-node via post-exec check — run returns abort', async () => {
+    let flowRef: ReturnType<typeof makeFlow>;
+    const node = makeNode(async (p) => {
+      flowRef!.abort();
+      return exit({ data: 'result', deps: p.deps, context: p.context });
+    });
+    const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
+    flowRef = makeFlow(schema, { node });
+
+    const out = await flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
+    expect(out.branch).toBe('abort');
+  });
+
+  it('run() after abort completes normally — fresh controller discards old abort', async () => {
+    const visited: string[] = [];
+    const node = makeNode(async (p) => {
+      visited.push('ran');
+      return exit({ data: p.data, deps: p.deps, context: p.context });
+    });
+    const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
+    const flow = makeFlow(schema, { node });
+
+    // abort is discarded when run() creates fresh controller
+    flow.abort();
+    const out = await flow.run(packet({ data: 'x', deps: {}, context: {} }));
+    expect(out.branch).toBe('exit');
+    expect(visited).toEqual(['ran']);
+  });
+
+  it('abort during node execution — subsequent runFrom resumes cleanly', async () => {
+    let flowRef: ReturnType<typeof makeFlow>;
+    let runCount = 0;
+    const node = makeNode(async (p) => {
+      runCount++;
+      if (runCount === 1) {
+        flowRef!.abort();
+      }
+      return exit({ data: 'result', deps: p.deps, context: p.context });
+    });
+    const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
+    flowRef = makeFlow(schema, { node });
+
+    const first = await flowRef.run(packet({ data: 'x', deps: {}, context: {} }));
+    expect(first.branch).toBe('abort');
+
+    // runFrom creates a fresh controller — second run completes
+    const second = await flowRef.runFrom('node', packet({ data: 'x', deps: {}, context: {} }));
+    expect(second.branch).toBe('exit');
+    expect(second.data).toBe('result');
+  });
+
+  it('multiple abort-during-run + runFrom cycles all succeed', async () => {
+    let flowRef: ReturnType<typeof makeFlow>;
+    let callCount = 0;
+    const node = makeNode(async (p) => {
+      callCount++;
+      if (callCount % 2 === 1) flowRef!.abort(); // abort on odd calls
+      return exit({ data: p.data, deps: p.deps, context: p.context });
+    });
+    const schema: FlowSchema = { startNode: 'node', nodes: { node: {} } };
+    flowRef = makeFlow(schema, { node });
+
+    for (let i = 0; i < 3; i++) {
+      // odd call: aborts
+      const aborted = await flowRef.run(packet({ data: i, deps: {}, context: {} }));
+      expect(aborted.branch).toBe('abort');
+      // even call: fresh controller, succeeds
+      const ok = await flowRef.runFrom('node', packet({ data: i, deps: {}, context: {} }));
+      expect(ok.branch).toBe('exit');
+      expect(ok.data).toBe(i);
+    }
   });
 });
