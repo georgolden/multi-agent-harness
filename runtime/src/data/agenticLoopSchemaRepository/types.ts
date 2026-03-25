@@ -1,4 +1,4 @@
-import type { AgenticLoopSchema } from '../../flows/agentictLoop/flow.js';
+import type { AgenticLoopSchema } from '../../agents/agentictLoop/flow.js';
 
 export interface StoredAgenticLoopSchema extends AgenticLoopSchema {
   userId?: string;

@@ -1,5 +1,5 @@
 import { Data } from './data/index.js';
-import { Flows } from './flows/index.js';
+import { Flows } from './agents/index.js';
 import { Infra } from './infra/index.js';
 import { Services } from './services/index.js';
 import { Skills } from './skills/index.js';

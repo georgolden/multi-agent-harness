@@ -1,5 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
-import type { AgenticLoopSchema } from '../../flows/agentictLoop/flow.js';
+import type { AgenticLoopSchema } from '../../agents/agentictLoop/flow.js';
 import type { StoredAgenticLoopSchema, RepositoryHook } from './types.js';
 import type { App } from '../../app.js';
 

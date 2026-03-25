@@ -1,5 +1,5 @@
 import type { Session } from './session.js';
-import type { AgentLoopConfig } from '../../flows/agentictLoop/flow.js';
+import type { AgentLoopConfig } from '../../agents/agentictLoop/flow.js';
 import type { CallLlmOptions } from '../../utils/callLlm.js';
 import type { FileInfo } from '../../utils/file.js';
 import type { FolderInfo } from '../../utils/folder.js';
