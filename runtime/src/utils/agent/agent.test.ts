@@ -74,6 +74,8 @@ function makeAgent(flowConstructors: Record<string, new () => Flow<any, any, any
   const fcs = flowConstructors;
   const s = agentSchema;
   class TestAgent extends Agent<any, any, MockSession> {
+    name = 'TestAgent';
+    description = 'Test agent';
     flowConstructors = fcs;
     constructor(app: unknown, user: unknown, parent?: MockSession, schemaOverride?: AgentSchema) {
       super(app, user, parent, schemaOverride ?? s);
@@ -329,6 +331,8 @@ describe('Agent — buildContext', () => {
     }
 
     class CustomAgent extends Agent<any, any, MockSession> {
+      name = 'CustomAgent';
+      description = 'Custom agent';
       flowConstructors = { TestFlow: CapturingFlow as any };
       protected buildContext(session: MockSession, input: unknown) {
         return { ...super.buildContext(session, input), extra: 'injected' };

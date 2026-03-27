@@ -1,7 +1,8 @@
 import { Value } from '@sinclair/typebox/value';
 import type { TObject } from '@sinclair/typebox';
 import type { Flow } from './flow.js';
-import type { SessionHooks } from '../../services/sessionService/types.js';
+import type { SessionHooks, SessionData } from '../../services/sessionService/types.js';
+import type { AgentSessionData } from '../../data/agentSessionRepository/types.js';
 
 // ============================================================
 // AgentCheckpointer
@@ -109,6 +110,12 @@ export type AgentSchema = {
  * ```
  */
 export abstract class Agent<TApp = unknown, TUser = unknown, TSession = unknown> {
+  /** Human-readable name for this agent. */
+  abstract name: string;
+
+  /** Human-readable description of what this agent does. */
+  abstract description: string;
+
   /**
    * Map of flow name → Flow constructor. Each constructor's instance must
    * implement `FlowMeta` (name, description, parameters, createSession).
@@ -337,6 +344,57 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession = unknown>
 
     if (next === null) return result;
     return this._executeFrom(next, (result as any).data);
+  }
+
+  /**
+   * Restore a previously interrupted agent from its persisted AgentSession and
+   * all linked FlowSession records.
+   *
+   * - Reconstructs the agent with the saved agentSchema so multi-flow routing works.
+   * - Sets agentSessionId so checkpointing continues against the existing record.
+   * - If a FlowSession exists for currentFlowName and is running/paused, resumes it
+   *   from its node checkpoint via resume().
+   * - Otherwise restarts the checkpointed flow from scratch via runFrom().
+   *
+   * @param AgentClass   - concrete Agent subclass to instantiate
+   * @param agentSession - persisted AgentSession record
+   * @param flowSessions - all FlowSession records linked to this AgentSession
+   * @param app          - app instance
+   * @param user         - user instance
+   */
+  static restore<TApp, TUser, TSession>(
+    AgentClass: new (
+      app: TApp,
+      user: TUser,
+      parent?: TSession,
+      schemaOverride?: AgentSchema,
+    ) => Agent<TApp, TUser, TSession>,
+    agentSession: AgentSessionData,
+    flowSessions: SessionData[],
+    app: TApp,
+    user: TUser,
+  ): { agent: Agent<TApp, TUser, TSession>; promise: Promise<unknown> } {
+    if (!agentSession.currentFlowName) {
+      throw new Error(`Agent.restore: AgentSession '${agentSession.id}' has no currentFlowName checkpoint`);
+    }
+
+    const agent = new AgentClass(app, user, undefined, agentSession.agentSchema as AgentSchema);
+    agent.agentSessionId = agentSession.id;
+
+    const currentFlowSession = flowSessions
+      .filter((fs) => fs.flowName === agentSession.currentFlowName)
+      .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())
+      .find((fs) => fs.status === 'running' || fs.status === 'paused');
+
+    let promise: Promise<unknown>;
+
+    if (currentFlowSession) {
+      promise = agent.resume(agentSession.currentFlowName, currentFlowSession as unknown as TSession);
+    } else {
+      promise = agent.runFrom(agentSession.currentFlowName, agentSession.currentFlowInput);
+    }
+
+    return { agent, promise };
   }
 
   private _resolveNext(wiring: AgentFlowWiring, branch: string): string | null {
