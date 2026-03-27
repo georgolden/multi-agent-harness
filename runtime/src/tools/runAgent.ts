@@ -44,8 +44,8 @@ Returns the agent's response.`,
           return { data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }), details: undefined, error };
         }
 
-        const handle = await app.flows.runFlow(flowName, context, { message });
-        const packet = (await handle.promise) as Packet<unknown>;
+        const agent = await app.agents.runAgent(flowName, context, { message });
+        const packet = (await agent.runPromise) as Packet<unknown>;
 
         if (signal?.aborted) {
           const error = new Error('Operation aborted');

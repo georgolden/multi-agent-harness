@@ -85,19 +85,20 @@ export const appRouter = router({
   // ─── Queries ──────────────────────────────────────────────────────────────
 
   listFlows: publicProcedure.query(({ ctx }) => {
-    const builtin = ctx.app.flows.getFlows().map((f) => ({ name: f.name, description: f.description }));
-    const schemas = ctx.app.flows
+    const builtin = ctx.app.agents.getAgents().map((f) => ({ name: f.name, description: f.description }));
+    const schemas = ctx.app.agents
       .getAgenticLoopSchemas()
       .map((s) => ({ name: s.flowName, description: s.description }));
     return [...builtin, ...schemas];
   }),
 
   listActiveSessions: publicProcedure.query(({ ctx }) => {
-    const active = ctx.app.flows.getActiveFlows();
     const results: { sessionId: string; flowName: string; status: string }[] = [];
-    for (const [sessionId, handle] of active) {
-      if (handle.session.userId === ctx.userId) {
-        results.push({ sessionId, flowName: handle.session.flowName, status: handle.session.status });
+    for (const agent of ctx.app.agents.getActiveAgents()) {
+      for (const session of agent.allSessions) {
+        if (session.userId === ctx.userId) {
+          results.push({ sessionId: session.id, flowName: session.flowName, status: session.status });
+        }
       }
     }
     return results;
@@ -119,8 +120,8 @@ export const appRouter = router({
       const user = await ctx.app.data.userRepository.getUser(ctx.userId);
       if (!user) throw new Error(`User '${ctx.userId}' not found`);
       ctx.webChannel.markUserActive(ctx.userId);
-      const handle = await ctx.app.flows.runFlow(input.flowName, { user }, { message: input.message });
-      return { sessionId: handle.session.id };
+      const agent = await ctx.app.agents.runAgent(input.flowName, { user }, { message: input.message });
+      return { sessionId: agent.allSessions[0].id };
     }),
 
   sendMessage: publicProcedure

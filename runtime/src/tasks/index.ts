@@ -25,8 +25,8 @@ async function runAgentFlow(
       console.error(`[runAgentFlow] User "${userId}" not found`);
       return;
     }
-    const handle = await app.flows.runFlow(flowName, { user }, { message });
-    await handle.promise;
+    const agent = await app.agents.runAgent(flowName, { user }, { message });
+    await agent.runPromise;
   } catch (error) {
     console.error(`[runAgentFlow] Error running agent flow "${flowName}":`, error);
   }

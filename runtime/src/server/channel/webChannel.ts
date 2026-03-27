@@ -19,7 +19,7 @@ export class WebChannel extends BaseChannel {
     this.receiveCallback = callback;
   }
 
-  /** Called before runFlow/sendMessage so ChannelService maps this user to the web channel. */
+  /** Called before runAgent/sendMessage so ChannelService maps this user to the web channel. */
   markUserActive(userId: string): void {
     if (this.receiveCallback) {
       // Emit a synthetic no-op that lets ChannelService register userId → 'web'

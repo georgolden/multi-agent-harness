@@ -33,7 +33,7 @@ export class OrchestratorFlow extends Flow<App, OrchestratorContext>
   async createSession(app: App, user: User, parent: Session | undefined, input: { message: string }): Promise<Session> {
     const timezone = await app.data.taskRepository.getUserTimezone(user.id);
     const currentDate = new Date().toISOString();
-    const flows = app.flows.getFlowsAsXml();
+    const flows = app.agents.getAgentsAsXml();
     const systemPrompt = createSystemPrompt(currentDate, timezone, user.name ?? user.id, flows);
 
     const session = await app.services.sessionService.create({

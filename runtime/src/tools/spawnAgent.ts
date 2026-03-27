@@ -32,8 +32,8 @@ Returns the spawned session ID so you can reference it later.`,
     ) => {
       try {
         // Start the flow but do NOT await its promise — fire and forget
-        const handle = await app.flows.runFlow(flowName, context, { message });
-        const sessionId = handle.session.id;
+        const agent = await app.agents.runAgent(flowName, context, { message });
+        const sessionId = agent.allSessions[0].id;
 
         return {
           data: new ToolResultMessage({

@@ -188,6 +188,14 @@ export class SessionDataRepository {
     return rows.map((r) => this.mapRow(r));
   }
 
+  async getByAgentSessionId(agentSessionId: string): Promise<SessionData[]> {
+    const rows = await this.prisma.flowSession.findMany({
+      where: { agentSessionId },
+      orderBy: { startedAt: 'asc' },
+    });
+    return rows.map((r) => this.mapRow(r));
+  }
+
   async updateStatus(sessionId: string, status: SessionStatus): Promise<void> {
     const client = this._client(sessionId) as any;
     await client.flowSession.update({

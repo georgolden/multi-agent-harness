@@ -1,25 +1,27 @@
 import { App } from '../app.js';
-import { TaskSchedulerFlow } from './taskScheduler/flow.js';
-import { FillTemplateFlow } from './fillTemplate/flow.js';
-import { ExploreFlow } from './explore/flow.js';
-import { AgenticLoopFlow, type AgentFlowParameters } from './agentictLoop/flow.js';
-import { AgentBuilderFlow } from './agentBuilder/flow.js';
-import { OrchestratorFlow } from './orchestrator/flow.js';
+import { TaskSchedulerAgent } from './taskScheduler/index.js';
+import { FillTemplateAgent } from './fillTemplate/index.js';
+import { ExploreAgent } from './explore/index.js';
+import { AgenticLoopAgent } from './agentictLoop/index.js';
+import { AgentBuilderAgent } from './agentBuilder/index.js';
+import { OrchestratorAgent } from './orchestrator/index.js';
+import { type AgentFlowParameters } from './agentictLoop/flow.js';
 import { User } from '../data/userRepository/types.js';
-import { Session } from '../services/sessionService/index.js';
+import { Session } from '../services/sessionService/session.js';
 import type { StoredAgenticLoopSchema } from '../data/agenticLoopSchemaRepository/types.js';
-import type { Flow } from '../utils/agent/flow.js';
-import type { FlowHandle } from './types.js';
+import { Agent, type AgentSchema } from '../utils/agent/agent.js';
 
-/**
- * Common context passed to all flow run functions
- */
-export type FlowContext = {
+export type AgentContext = {
   user: User;
   parent?: Session;
 };
 
-type AnyFlowClass = new () => Flow<App, any, any, any>;
+type AnyAgentClass = new (
+  app: App,
+  user: User,
+  parent?: Session,
+  schemaOverride?: AgentSchema,
+) => Agent<App, User, Session>;
 
 function escapeXml(str: string): string {
   return str
@@ -30,25 +32,28 @@ function escapeXml(str: string): string {
     .replace(/'/g, '&apos;');
 }
 
-/**
- * Flows manager. All flow execution is centralized here.
- */
-export class Flows {
-  private registry = new Map<string, AnyFlowClass>([
-    [new TaskSchedulerFlow().name, TaskSchedulerFlow],
-    [new FillTemplateFlow().name, FillTemplateFlow],
-    [new ExploreFlow().name, ExploreFlow],
-    [new AgenticLoopFlow().name, AgenticLoopFlow],
-    [new AgentBuilderFlow().name, AgentBuilderFlow],
-    [new OrchestratorFlow().name, OrchestratorFlow],
-  ]);
+export class Agents {
+  private agentRegistry: Map<string, AnyAgentClass>;
 
   app: App;
   private agenticLoopSchemas: Map<string, StoredAgenticLoopSchema> = new Map();
-  private activeFlows: Map<string, FlowHandle> = new Map();
+  private activeAgents: Set<Agent<App, User, Session>> = new Set();
 
   constructor(app: App) {
     this.app = app;
+    const agentClasses: AnyAgentClass[] = [
+      TaskSchedulerAgent,
+      FillTemplateAgent,
+      ExploreAgent,
+      AgenticLoopAgent,
+      AgentBuilderAgent,
+      OrchestratorAgent,
+    ];
+    this.agentRegistry = new Map();
+    for (const AgentClass of agentClasses) {
+      const instance = new AgentClass(app, null as unknown as User);
+      this.agentRegistry.set(instance.name, AgentClass);
+    }
   }
 
   async start(): Promise<void> {
@@ -56,55 +61,86 @@ export class Flows {
     schemas.forEach((schema) => {
       this.agenticLoopSchemas.set(schema.flowName, schema);
     });
-    console.log(`[Flows] Loaded ${schemas.length} agentic loop schemas from database`);
+    console.log(`[Agents] Loaded ${schemas.length} agentic loop schemas from database`);
 
     this.app.data.agenticLoopSchemaRepository.registerHooks({
       onInsert: (schema) => {
         this.agenticLoopSchemas.set(schema.flowName, schema);
-        console.log(`[Flows] Schema inserted: ${schema.flowName}`);
+        console.log(`[Agents] Schema inserted: ${schema.flowName}`);
       },
       onUpdate: (schema) => {
         this.agenticLoopSchemas.set(schema.flowName, schema);
-        console.log(`[Flows] Schema updated: ${schema.flowName}`);
+        console.log(`[Agents] Schema updated: ${schema.flowName}`);
       },
-      onDelete: (flowName) => {
-        this.agenticLoopSchemas.delete(flowName);
-        console.log(`[Flows] Schema deleted: ${flowName}`);
+      onDelete: (agentName) => {
+        this.agenticLoopSchemas.delete(agentName);
+        console.log(`[Agents] Schema deleted: ${agentName}`);
       },
     });
+
+    await this._recoverAgents();
+  }
+
+  private async _recoverAgents(): Promise<void> {
+    const incomplete = await this.app.data.agentSessionRepository.getIncomplete();
+    if (incomplete.length === 0) return;
+    console.log(`[Agents] Recovering ${incomplete.length} incomplete agent session(s)`);
+    await Promise.allSettled(
+      incomplete.map(async (agentSession) => {
+        const AgentClass = this.agentRegistry.get(agentSession.agentName);
+        if (!AgentClass) {
+          console.warn(`[Agents] Cannot restore '${agentSession.agentName}': no registered class`);
+          await this.app.data.agentSessionRepository.updateStatus(agentSession.id, 'failed');
+          return;
+        }
+        const user = await this.app.data.userRepository.getUser(agentSession.userId);
+        if (!user) {
+          console.warn(`[Agents] Cannot restore agent session '${agentSession.id}': user not found`);
+          await this.app.data.agentSessionRepository.updateStatus(agentSession.id, 'failed');
+          return;
+        }
+        if (!agentSession.currentFlowName) {
+          console.warn(`[Agents] Agent session '${agentSession.id}' has no checkpoint — marking failed`);
+          await this.app.data.agentSessionRepository.updateStatus(agentSession.id, 'failed');
+          return;
+        }
+        const flowSessions = await this.app.data.flowSessionRepository.getByAgentSessionId(agentSession.id);
+        const { agent, promise } = Agent.restore(AgentClass, agentSession, flowSessions, this.app, user);
+        this._wire(agent, promise);
+        console.log(`[Agents] Restored agent '${agentSession.agentName}' session '${agentSession.id}'`);
+      }),
+    );
   }
 
   getAgenticLoopSchemas(): StoredAgenticLoopSchema[] {
     return Array.from(this.agenticLoopSchemas.values());
   }
 
-  getFlowClass(name: string): AnyFlowClass | undefined {
-    return this.registry.get(name);
+  getAgents(): Agent<App, User, Session>[] {
+    return Array.from(this.agentRegistry.values()).map(
+      (AgentClass) => new AgentClass(this.app, null as unknown as User),
+    );
   }
 
-  getFlowClasses(): AnyFlowClass[] {
-    return Array.from(this.registry.values());
+  getSchemaAgent(agentName: string): StoredAgenticLoopSchema | undefined {
+    return this.agenticLoopSchemas.get(agentName);
   }
 
-  getSchemaAgent(flowName: string): StoredAgenticLoopSchema | undefined {
-    return this.agenticLoopSchemas.get(flowName);
-  }
-
-  getFlowsAsXml(flowNames?: string[]): string {
-    const classes = flowNames
-      ? flowNames.flatMap((n) => { const c = this.registry.get(n); return c ? [c] : []; })
-      : this.getFlowClasses();
+  getAgentsAsXml(agentNames?: string[]): string {
+    const agents = agentNames
+      ? agentNames.flatMap((n) => {
+          const C = this.agentRegistry.get(n);
+          return C ? [new C(this.app, null as unknown as User)] : [];
+        })
+      : this.getAgents();
 
     const lines = ['<available_agents>'];
-
-    for (const FlowClass of classes) {
-      const instance = new FlowClass();
+    for (const agent of agents) {
       lines.push('  <agent>');
-      lines.push(`    <name>${escapeXml(instance.name)}</name>`);
-      lines.push(`    <description>${escapeXml(instance.description)}</description>`);
+      lines.push(`    <name>${escapeXml(agent.name)}</name>`);
+      lines.push(`    <description>${escapeXml(agent.description)}</description>`);
       lines.push('  </agent>');
     }
-
     const schemas = this.getAgenticLoopSchemas();
     if (schemas.length > 0) {
       lines.push('  <schema_agents>');
@@ -116,74 +152,76 @@ export class Flows {
       }
       lines.push('  </schema_agents>');
     }
-
     lines.push('</available_agents>');
     return lines.join('\n');
   }
 
-  /**
-   * Run a flow by name. Looks up built-in flows first, then schema-based agents.
-   */
-  async runFlow(name: string, context: FlowContext, parameters: { message: string }): Promise<FlowHandle> {
-    const FlowClass = this.registry.get(name);
-    if (FlowClass) {
-      return this._run(FlowClass, name, context, parameters);
-    }
-
-    const schema = this.agenticLoopSchemas.get(name);
-    if (schema) {
-      return this.runSchemaFlow(schema, context, parameters);
-    }
-
-    const available = [...this.registry.keys(), ...this.agenticLoopSchemas.keys()].join(', ');
-    throw new Error(`Flow '${name}' not found. Available: ${available || 'none'}`);
-  }
-
-  /**
-   * Run a schema-based agentic loop flow.
-   */
-  async runSchemaFlow(
-    schema: StoredAgenticLoopSchema,
-    context: FlowContext,
+  async runAgent(
+    agentName: string,
+    context: AgentContext,
     parameters: { message: string },
-  ): Promise<FlowHandle> {
-    const params: AgentFlowParameters = { schema: schema as any, message: parameters.message };
-    return this._run(AgenticLoopFlow as AnyFlowClass, schema.flowName, context, params);
+  ): Promise<Agent<App, User, Session>> {
+    const AgentClass = this.agentRegistry.get(agentName);
+    if (AgentClass) {
+      return this._run(AgentClass, context, parameters);
+    }
+    const schema = this.agenticLoopSchemas.get(agentName);
+    if (schema) {
+      return this.runSchemaAgent(schema, context, parameters);
+    }
+    const available = [...this.agentRegistry.keys(), ...this.agenticLoopSchemas.keys()].join(', ');
+    throw new Error(`Agent '${agentName}' not found. Available: ${available || 'none'}`);
   }
 
-  private async _run(FlowClass: AnyFlowClass, name: string, context: FlowContext, parameters: unknown): Promise<FlowHandle> {
-    const flow = new FlowClass();
-    const session = await flow.createSession(this.app, context.user, context.parent, parameters) as Session;
-
-    const { bus } = this.app.infra;
-
-    (session as any).hooks.onStatusChange = async (s: Session, from: string, to: string) => {
-      bus.emit('session:statusChange', { sessionId: s.id, flowName: name, userId: s.userId, from, to });
+  async runSchemaAgent(
+    schema: StoredAgenticLoopSchema,
+    context: AgentContext,
+    parameters: { message: string },
+  ): Promise<Agent<App, User, Session>> {
+    const params: AgentFlowParameters = {
+      schema: schema as AgentFlowParameters['schema'],
+      message: parameters.message,
     };
-    (session as any).hooks.onMessage = async (s: Session) => {
-      bus.emit('session:message:update', { sessionId: s.id, flowName: name, userId: s.userId });
-    };
+    return this._run(AgenticLoopAgent, context, params);
+  }
 
-    const ctx = { user: context.user, parent: context.parent, session };
-    const promise = flow.run({ deps: this.app, context: ctx, data: parameters });
+  private async _run(
+    AgentClass: AnyAgentClass,
+    context: AgentContext,
+    parameters: unknown,
+  ): Promise<Agent<App, User, Session>> {
+    const agent = new AgentClass(this.app, context.user, context.parent);
 
-    const trackedPromise = promise.finally(() => {
-      this.activeFlows.delete(session.id);
+    let resolveFirstSession: () => void;
+    const firstSessionReady = new Promise<void>((resolve) => {
+      resolveFirstSession = resolve;
     });
 
-    const handle: FlowHandle = { flow, session, promise: trackedPromise };
-    this.activeFlows.set(session.id, handle);
-    return handle;
+    const { bus } = this.app.infra;
+    agent.sessionHooks = {
+      onRunning: async () => {
+        resolveFirstSession();
+      },
+      onStatusChange: async (s: Session, from: string, to: string) => {
+        bus.emit('session:statusChange', { sessionId: s.id, flowName: s.flowName, userId: s.userId, from, to });
+      },
+      onMessage: async (s: Session) => {
+        bus.emit('session:message:update', { sessionId: s.id, flowName: s.flowName, userId: s.userId });
+      },
+    };
+
+    const promise = agent.run(parameters);
+    await firstSessionReady;
+    this._wire(agent, promise);
+    return agent;
   }
 
-  // ─── Observable queries ──────────────────────────────────────────────────
-
-  getActiveFlows(): Map<string, FlowHandle> {
-    return this.activeFlows;
+  private _wire(agent: Agent<App, User, Session>, promise: Promise<unknown>): void {
+    this.activeAgents.add(agent);
+    promise.finally(() => this.activeAgents.delete(agent));
   }
 
-  getFlowHandle(sessionId: string): FlowHandle | undefined {
-    return this.activeFlows.get(sessionId);
+  getActiveAgents(): Set<Agent<App, User, Session>> {
+    return this.activeAgents;
   }
-
 }

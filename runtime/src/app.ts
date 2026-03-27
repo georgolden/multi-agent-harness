@@ -1,5 +1,5 @@
 import { Data } from './data/index.js';
-import { Flows } from './agents/index.js';
+import { Agents } from './agents/index.js';
 import { Infra } from './infra/index.js';
 import { Services } from './services/index.js';
 import { Skills } from './skills/index.js';
@@ -11,7 +11,7 @@ export class App {
   services: Services;
   infra: Infra;
   data: Data;
-  flows: Flows;
+  agents: Agents;
   skills: Skills;
   tasks: Tasks;
   tools: Tools;
@@ -22,7 +22,7 @@ export class App {
     this.infra = new Infra(this);
     this.services = new Services(this);
     this.data = new Data(this);
-    this.flows = new Flows(this);
+    this.agents = new Agents(this);
     this.skills = new Skills(cwd);
     this.tasks = new Tasks(this);
     this.tools = new Tools(cwd);
@@ -35,7 +35,7 @@ export class App {
       this.infra.start(),
       this.data.start(),
       this.skills.start(),
-      this.flows.start(),
+      this.agents.start(),
     ]);
     await this.server.start();
   }
