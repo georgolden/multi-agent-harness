@@ -5,7 +5,6 @@
  *   - writeTempFileTool  — save artifacts to the session
  *   - runAgentTool       — run an agent synchronously, return its result
  *   - spawnAgentTool     — fire-and-forget an agent, return session ID immediately
- *   - askUserTool        — inline; handled as a special pause branch in nodes.ts
  *   - submitResultTool   — inline; handled as the exit branch in nodes.ts
  *
  * TOOL_SCHEMAS: OpenAI-compatible JSON schemas for the LLM call in DecideAction.
@@ -16,26 +15,6 @@ import { ToolResultMessage } from '../../utils/message.js';
 import { createRunAgentTool } from '../../tools/runAgent.js';
 import { createSpawnAgentTool } from '../../tools/spawnAgent.js';
 import { createWriteTempFileTool } from '../../tools/writeTempFile.js';
-
-// ─── ask_user (inline — flow control only, not executed via session.getAgentTool) ─
-
-const askUserTool: AgentTool<any> = {
-  name: 'ask_user',
-  label: 'Ask user',
-  description: 'Ask the user a focused clarifying question. Use only when ambiguity would cause the wrong agent to run. Never ask multiple questions at once.',
-  parameters: {
-    type: 'object',
-    properties: {
-      question: { type: 'string', description: 'The clarifying question to ask the user.' },
-      options: { type: 'array', items: { type: 'string' }, description: 'Optional suggested answers.' },
-    },
-    required: ['question'],
-  } as any,
-  execute: async (_app, _ctx, params, { toolCallId }) => ({
-    data: new ToolResultMessage({ toolCallId, content: JSON.stringify(params) }),
-    details: params,
-  }),
-};
 
 // ─── submit_result (inline — flow control only, exits the orchestrator) ────────
 
@@ -85,7 +64,6 @@ export const AGENT_TOOLS: AgentTool<any>[] = [
   createWriteTempFileTool(),
   createRunAgentTool(),
   createSpawnAgentTool(),
-  askUserTool,
   submitResultTool,
 ];
 
@@ -133,21 +111,6 @@ export const TOOL_SCHEMAS: OpenAI.ChatCompletionTool[] = [
           message: { type: 'string', description: 'Input message to send to the agent.' },
         },
         required: ['flowName', 'message'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'ask_user',
-      description: 'Ask the user a focused clarifying question. Use only when ambiguity would cause the wrong agent to run.',
-      parameters: {
-        type: 'object',
-        properties: {
-          question: { type: 'string', description: 'The clarifying question.' },
-          options: { type: 'array', items: { type: 'string' }, description: 'Optional suggested answers.' },
-        },
-        required: ['question'],
       },
     },
   },

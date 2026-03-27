@@ -21,7 +21,7 @@ export class ExploreFlow extends Flow<App, ExploreContext, ExploreInput, { exit:
     startNode: 'PrepareInput',
     nodes: {
       PrepareInput:  'DecideAction',
-      DecideAction:  { ask_user: 'AskUser', tool_calls: 'ToolCalls', submit_result: 'SubmitResult', loop: 'DecideAction' },
+      DecideAction:  { ask_user: 'AskUser', tool_calls: 'ToolCalls', submit_result: 'SubmitResult' },
       AskUser:       { pause: 'UserResponse' },
       UserResponse:  'DecideAction',
       ToolCalls:     'DecideAction',

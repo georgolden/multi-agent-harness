@@ -1,5 +1,5 @@
 import { Flow, type FlowSchema } from '../../utils/agent/flow.js';
-import { PrepareInput, DecideAction, AskUser, ToolCalls, Response, UserResponse } from './nodes.js';
+import { PrepareInput, DecideAction, ToolCalls, Response } from './nodes.js';
 import { taskSchedulerInputSchema, type TaskSchedulerContext } from './types.js';
 import { App } from '../../app.js';
 import { User } from '../../data/userRepository/types.js';
@@ -19,15 +19,13 @@ export class TaskSchedulerFlow extends Flow<App, TaskSchedulerContext>
     startNode: 'PrepareInput',
     nodes: {
       PrepareInput: 'DecideAction',
-      DecideAction: { ask_user: 'AskUser', tool_calls: 'ToolCalls', response: 'Response' },
-      AskUser:      { pause: 'UserResponse' },
-      UserResponse: 'DecideAction',
+      DecideAction: { tool_calls: 'ToolCalls', response: 'Response' },
       ToolCalls:    'DecideAction',
       Response:     null,
     },
   };
 
-  nodeConstructors = { PrepareInput, DecideAction, AskUser, ToolCalls, Response, UserResponse };
+  nodeConstructors = { PrepareInput, DecideAction, ToolCalls, Response };
 
   async createSession(app: App, user: User, _parent: Session | undefined, input: { message: string }): Promise<Session> {
     const { data, services } = app;

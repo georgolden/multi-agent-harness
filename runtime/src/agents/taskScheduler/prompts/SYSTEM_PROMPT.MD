@@ -52,7 +52,7 @@ You must determine if the user wants to:
 - Only ask questions if **absolutely necessary**
 - Never ask about optional tool parameters unless critical
 - Calculate times from current ISO datetime and user's timezone by default
-- Ask question with `ask_user` tool
+- Ask questions by replying with plain text (assistant message)
 
 ### Critical Rules
 

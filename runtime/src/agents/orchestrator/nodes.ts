@@ -11,7 +11,8 @@
  * Tools are registered on the session via session.addAgentTools(AGENT_TOOLS).
  * ToolCalls looks them up with session.getAgentTool(name) and calls tool.execute().
  * write_temp_file, runAgent, spawnAgent are all handled through this path.
- * ask_user and submit_result get dedicated branches for flow control (pause / exit).
+ * ask_user is triggered by a plain text LLM response (assistant message), not a tool call.
+ * submit_result gets a dedicated branch for flow control (exit).
  */
 import { Node, packet, exit, pause, batch, type SinglePacket, type BatchPacket } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
@@ -48,9 +49,8 @@ export class DecideAction extends Node<
   Session,
   {
     tool_calls: LLMToolCall[];
-    ask_user: LLMToolCall;
+    ask_user: string;
     submit_result: LLMToolCall;
-    loop: Session;
   }
 > {
   constructor() {
@@ -69,13 +69,6 @@ export class DecideAction extends Node<
     await session.addMessages([{ message: assistantMsg.toJSON() }]);
 
     if ('toolCalls' in assistantMsg && assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0) {
-      // ask_user — needs special flow control (pause)
-      const askUserCall = assistantMsg.toolCalls.find((tc) => tc.name === 'ask_user');
-      if (askUserCall) {
-        console.log(`[orchestrator.DecideAction] Routing to 'ask_user'`);
-        return packet({ data: askUserCall, context: p.context, branch: 'ask_user', deps: p.deps });
-      }
-
       // submit_result — exits the flow
       const submitCall = assistantMsg.toolCalls.find((tc) => tc.name === 'submit_result');
       if (submitCall) {
@@ -88,13 +81,10 @@ export class DecideAction extends Node<
       return packet({ data: assistantMsg.toolCalls, context: p.context, branch: 'tool_calls', deps: p.deps });
     }
 
-    // Plain text — unexpected; nudge and loop back
+    // Plain text — question or message for the user
     const text = assistantMsg.toJSON().content || '';
-    console.log(`[orchestrator.DecideAction] Plain text response (unexpected), nudging back`);
-    await session.addMessages([
-      { message: new UserMessage(`${text}\n\nPlease call one of the available tools instead of providing plain text.`).toJSON() },
-    ]);
-    return packet({ data: session, context: p.context, branch: 'loop', deps: p.deps });
+    console.log(`[orchestrator.DecideAction] Text response, routing to ask_user`);
+    return packet({ data: text, context: p.context, branch: 'ask_user', deps: p.deps });
   }
 }
 
@@ -157,21 +147,16 @@ export class ToolCalls extends Node<App, OrchestratorContext, LLMToolCall[], { d
 
 // ─── AskUser ──────────────────────────────────────────────────────────────────
 
-export class AskUser extends Node<App, OrchestratorContext, LLMToolCall, { default: void }> {
+export class AskUser extends Node<App, OrchestratorContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session, user } = p.context;
-    const toolCall = p.data;
-    const { question, options } = toolCall.args as { question: string; options?: string[] };
+    const message = p.data;
 
-    const message = options?.length
-      ? `${question}\n\nOptions:\n${options.map((o, i) => `${i + 1}. ${o}`).join('\n')}`
-      : question;
-
-    console.log(`[orchestrator.AskUser] Asking user: "${question.substring(0, 60)}"`);
+    console.log(`[orchestrator.AskUser] Asking user: "${message.substring(0, 60)}"`);
     await session.respond(user, message);
 
     session.onUserMessage(({ message }: { message: string }) => {
-      this.resume({ data: { ...toolCall, _userReply: message }, context: p.context, deps: p.deps });
+      this.resume({ data: message, context: p.context, deps: p.deps });
     });
 
     await session.pause();
@@ -181,16 +166,12 @@ export class AskUser extends Node<App, OrchestratorContext, LLMToolCall, { defau
 
 // ─── UserResponse ─────────────────────────────────────────────────────────────
 
-export class UserResponse extends Node<App, OrchestratorContext, LLMToolCall & { _userReply: string }, { default: Session }> {
+export class UserResponse extends Node<App, OrchestratorContext, string, { default: Session }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
-    const { id: toolCallId, _userReply: reply } = p.data;
+    const message = p.data;
 
-    // Ack the ask_user tool call, then add user's reply as a user message
-    await session.addMessages([
-      { message: new ToolResultMessage({ toolCallId, content: reply }).toJSON() },
-    ]);
-    await session.addUserMessage(new UserMessage(reply));
+    await session.addUserMessage(new UserMessage(message));
     await session.resume();
 
     return packet({ data: session, context: p.context, deps: p.deps });

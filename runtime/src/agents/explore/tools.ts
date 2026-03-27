@@ -89,62 +89,11 @@ const submitResultTool: AgentTool<typeof submitResultSchema> = {
   }),
 };
 
-const askUserTool: AgentTool = {
-  name: 'ask_user',
-  description: 'Ask the user a question to get clarification or more information about their task',
-  label: 'Ask user',
-  parameters: {
-    type: 'object',
-    properties: {
-      question: {
-        type: 'string',
-        description: 'The question to ask the user',
-      },
-      options: {
-        type: 'array',
-        items: {
-          type: 'string',
-        },
-        description: 'Optional list of suggested answers/options for the user to choose from',
-      },
-    },
-    required: ['question'],
-  } as any,
-  execute: async (app, _context, params, { toolCallId }) => ({
-    data: new ToolResultMessage({ toolCallId, content: JSON.stringify(params) }),
-    details: params,
-  }),
-};
-
 // Export as AgentTools for session usage
-export const AGENT_TOOLS = [submitResultTool, askUserTool];
+export const AGENT_TOOLS = [submitResultTool];
 
 // Export as ChatCompletionTools for LLM calls
 export const TOOLS: OpenAI.ChatCompletionTool[] = [
-  {
-    type: 'function',
-    function: {
-      name: 'ask_user',
-      description: 'Ask the user a question to get clarification or more information about their task',
-      parameters: {
-        type: 'object',
-        properties: {
-          question: {
-            type: 'string',
-            description: 'The question to ask the user',
-          },
-          options: {
-            type: 'array',
-            items: {
-              type: 'string',
-            },
-            description: 'Optional list of suggested answers/options for the user to choose from',
-          },
-        },
-        required: ['question'],
-      },
-    },
-  },
   {
     type: 'function',
     function: {

@@ -2,7 +2,7 @@
  * Nodes for the taskScheduler flow using the new flow framework.
  * Each node has a clear, single responsibility.
  */
-import { Node, packet, batch, BatchPacket, SinglePacket, pause } from '../../utils/agent/flow.js';
+import { Node, packet, batch, BatchPacket, SinglePacket } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import { createToolHandler, TOOLS } from './tools.js';
 import type { App } from '../../app.js';
@@ -35,7 +35,7 @@ export class DecideAction extends Node<
   App,
   TaskSchedulerContext,
   undefined,
-  { ask_user: LLMToolCall; tool_calls: LLMToolCall[]; response: string }
+  { tool_calls: LLMToolCall[]; response: string }
 > {
   constructor() {
     super({ maxRunTries: 3, wait: 1000 });
@@ -59,81 +59,22 @@ export class DecideAction extends Node<
 
     console.log(`[DecideAction.run] LLM response:`, JSON.stringify(assistantMsg.toJSON(), null, 2));
 
-    if ('toolCalls' in assistantMsg === false || !assistantMsg.toolCalls || assistantMsg.toolCalls.length === 0) {
-      const text = assistantMsg.toJSON().content || '';
-      console.log(`[DecideAction.run] Setting response to: "${text}"`);
+    if ('toolCalls' in assistantMsg && assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0) {
+      console.log(`[DecideAction.run] Processing ${assistantMsg.toolCalls.length} tool calls`);
       return packet({
-        data: text,
+        data: assistantMsg.toolCalls,
         context: p.context,
-        branch: 'response',
+        branch: 'tool_calls',
         deps: p.deps,
       });
     }
 
-    const askUserToolCall = assistantMsg.toolCalls.find((t: any) => t.funcion?.name === 'ask_user');
-    if (askUserToolCall) {
-      return packet({
-        branch: 'ask_user',
-        context: p.context,
-        deps: p.deps,
-        data: askUserToolCall,
-      });
-    }
-
-    console.log(`[DecideAction.run] Processing ${assistantMsg.toolCalls.length} tool calls`);
+    const text = assistantMsg.toJSON().content || '';
+    console.log(`[DecideAction.run] Text response: "${text}"`);
     return packet({
-      data: assistantMsg.toolCalls,
+      data: text,
       context: p.context,
-      branch: 'tool_calls',
-      deps: p.deps,
-    });
-  }
-}
-
-export class AskUser extends Node<
-  App,
-  TaskSchedulerContext,
-  { id: string; args: { question: string; options?: string[] } },
-  { default: void }
-> {
-  async run(p: this['In']): Promise<this['Out']> {
-    const { user, session } = p.context;
-
-    const { question, options } = p.data.args;
-    const message = `
-    ${question}
-
-    ${options ? 'Options:' : ''}
-    ${options?.map((option, index) => `${index + 1}. ${option}`).join('\n')} 
-    `;
-    console.log(`[AskUser.run] Sending message to userId: ${user.id}, output: "${message}"`);
-    await session.respond(user, message);
-    session.onUserMessage(({ message }: { message: string }) => {
-      this.resume({ data: { message, toolCallId: p.data.id }, context: p.context, deps: p.deps });
-    });
-    await session.pause();
-    return pause({
-      data: undefined,
-      context: p.context,
-      deps: p.deps,
-    });
-  }
-}
-
-export class UserResponse extends Node<
-  App,
-  TaskSchedulerContext,
-  { toolCallId: string; message: string },
-  { default: void }
-> {
-  async run(p: this['In']): Promise<this['Out']> {
-    const { session } = p.context;
-    const { toolCallId, message } = p.data;
-    await session.addMessages([{ message: new ToolResultMessage({ toolCallId, content: message }).toJSON() }]);
-    await session.resume();
-    return packet({
-      data: undefined,
-      context: p.context,
+      branch: 'response',
       deps: p.deps,
     });
   }

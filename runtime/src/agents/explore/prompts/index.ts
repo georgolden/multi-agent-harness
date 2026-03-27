@@ -5,7 +5,7 @@ import { replaceVars } from '../../../utils/readReplace.js';
 const cwd = process.cwd();
 
 // Load the system prompt template and skill file asynchronously.
-const systemPromptTemplatePath = path.join(cwd, 'src/flows/explore/prompts/SYSTEM_PROMPT.MD');
+const systemPromptTemplatePath = path.join(cwd, 'src/agents/explore/prompts/SYSTEM_PROMPT.MD');
 
 const systemPromptTemplate = await readFile(systemPromptTemplatePath, 'utf-8');
 

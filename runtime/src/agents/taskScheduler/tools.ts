@@ -220,30 +220,6 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'ask_user',
-      description: 'Ask the user a question to get clarification',
-      parameters: {
-        type: 'object',
-        properties: {
-          question: {
-            type: 'string',
-            description: 'The question to ask the user',
-          },
-          options: {
-            type: 'array',
-            items: {
-              type: 'string',
-            },
-            description: 'Optional list of suggested answers/options for the user to choose from',
-          },
-        },
-        required: ['question'],
-      },
-    },
-  },
 ];
 
 const toolHandlers = {

@@ -1,13 +1,12 @@
 /**
  * Nodes for the explore agent flow.
- * Borrows from agentic loop (session + context management),
- * task scheduler (ask_user + tool handling), and
- * fillTemplate (pause/resume user interaction).
  *
  * Flow graph:
- *   PrepareInput → DecideAction ─┬─ ask_user       → AskUser        (pause; session stays running)
- *                                ├─ tool_calls     → ToolCalls      (loops back to DecideAction)
- *                                └─ submit_result  → SubmitResult    (exit; session completed)
+ *   PrepareInput → DecideAction ─┬─ ask_user      → AskUser        (pause; session stays running)
+ *                                ├─ tool_calls    → ToolCalls      (loops back to DecideAction)
+ *                                └─ submit_result → SubmitResult    (exit; session completed)
+ *
+ * ask_user is triggered by a plain text LLM response (assistant message), not a tool call.
  */
 import { Node, packet, batch, exit, pause, type SinglePacket, type BatchPacket } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
@@ -53,7 +52,7 @@ export class DecideAction extends Node<
   App,
   ExploreContext,
   undefined,
-  { ask_user: LLMToolCall; tool_calls: LLMToolCall[]; submit_result: SubmitResultArgs; loop: undefined }
+  { ask_user: string; tool_calls: LLMToolCall[]; submit_result: SubmitResultArgs }
 > {
   constructor() {
     super({ maxRunTries: 3, wait: 1000 });
@@ -87,18 +86,6 @@ export class DecideAction extends Node<
         });
       }
 
-      // Check if ask_user is in the tool calls
-      const askUserCall = assistantMsg.toolCalls.find((tc) => tc.name === 'ask_user');
-      if (askUserCall) {
-        console.log(`[DecideAction.run] ask_user tool call detected, routing to ask_user`);
-        return packet({
-          data: askUserCall,
-          context: p.context,
-          branch: 'ask_user',
-          deps: p.deps,
-        });
-      }
-
       // Regular tool calls (read, tree, ls, etc.) — return for ToolCalls to process
       console.log(`[DecideAction.run] ${assistantMsg.toolCalls.length} tool calls, routing to tool_calls`);
       return packet({
@@ -109,15 +96,13 @@ export class DecideAction extends Node<
       });
     }
 
-    // Plain text response (unexpected — tools are required) — loop with error message
+    // Plain text response — question or message for the user
     const text = assistantMsg.toJSON().content || '';
-    const errorMsg = `${text}\n\nPlease call one of the available tools instead of providing plain text.`;
-    await session.addMessages([{ message: new UserMessage(errorMsg).toJSON() }]);
-    console.log(`[DecideAction.run] Plain text response (unexpected), looping back`);
+    console.log(`[DecideAction.run] Text response, routing to ask_user`);
     return packet({
-      data: undefined,
+      data: text,
       context: p.context,
-      branch: 'loop',
+      branch: 'ask_user',
       deps: p.deps,
     });
   }
@@ -126,27 +111,19 @@ export class DecideAction extends Node<
 // ─── AskUser ──────────────────────────────────────────────────────────────────
 
 /**
- * AskUser: Handle ask_user tool call, send question to user, and pause.
+ * AskUser: Send the LLM's text message to the user and pause.
  * Session stays running. Resumes when user provides response.
  */
-export class AskUser extends Node<
-  App,
-  ExploreContext,
-  LLMToolCall,
-  { pause: { toolCallId: string; message: string } }
-> {
+export class AskUser extends Node<App, ExploreContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
     const user = p.context.user;
-    const toolCall = p.data;
-    const { question, options } = toolCall.args as { question: string; options?: string[] };
-
-    const message = `${question}${options ? '\n\nOptions:\n' + options.map((opt, i) => `${i + 1}. ${opt}`).join('\n') : ''}`;
+    const message = p.data;
 
     console.log(`[AskUser.run] Sending question to user, session '${session.id}'`);
     await session.respond(user, message);
-    session.onUserMessage(({ message }) => {
-      this.resume({ data: { toolCallId: toolCall.id, message }, context: p.context, deps: p.deps });
+    session.onUserMessage(({ message }: { message: string }) => {
+      this.resume({ data: message, context: p.context, deps: p.deps });
     });
     await session.pause();
     return pause({
@@ -158,19 +135,14 @@ export class AskUser extends Node<
 }
 
 /**
- * UserResponse: Add user response as ToolResultMessage and loop back to DecideAction.
+ * UserResponse: Add user response as UserMessage and loop back to DecideAction.
  */
-export class UserResponse extends Node<
-  App,
-  ExploreContext,
-  { toolCallId: string; message: string },
-  { default: Session }
-> {
+export class UserResponse extends Node<App, ExploreContext, string, { default: Session }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
-    const { toolCallId, message } = p.data;
+    const message = p.data;
 
-    await session.addMessages([{ message: new ToolResultMessage({ toolCallId, content: message }).toJSON() }]);
+    await session.addUserMessage(new UserMessage(message));
     await session.resume();
 
     return packet({

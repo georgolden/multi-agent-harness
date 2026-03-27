@@ -20,7 +20,7 @@ export class OrchestratorFlow extends Flow<App, OrchestratorContext>
     startNode: 'PrepareInput',
     nodes: {
       PrepareInput:  'DecideAction',
-      DecideAction:  { tool_calls: 'ToolCalls', loop: 'DecideAction', ask_user: 'AskUser', submit_result: 'SubmitResult' },
+      DecideAction:  { tool_calls: 'ToolCalls', ask_user: 'AskUser', submit_result: 'SubmitResult' },
       ToolCalls:     'DecideAction',
       AskUser:       { pause: 'UserResponse' },
       UserResponse:  'DecideAction',
@@ -33,8 +33,8 @@ export class OrchestratorFlow extends Flow<App, OrchestratorContext>
   async createSession(app: App, user: User, parent: Session | undefined, input: { message: string }): Promise<Session> {
     const timezone = await app.data.taskRepository.getUserTimezone(user.id);
     const currentDate = new Date().toISOString();
-    const flows = app.agents.getAgentsAsXml();
-    const systemPrompt = createSystemPrompt(currentDate, timezone, user.name ?? user.id, flows);
+    const agents = app.agents.getAgentsAsXml();
+    const systemPrompt = createSystemPrompt(currentDate, timezone, user.name ?? user.id, agents);
 
     const session = await app.services.sessionService.create({
       parentSessionId: parent?.id,
