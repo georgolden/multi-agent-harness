@@ -1,4 +1,5 @@
 export type SessionStatus = 'created' | 'running' | 'completed' | 'failed' | 'paused';
+export type AgentStatus = 'running' | 'completed' | 'failed' | 'paused';
 
 export interface AgentFlow {
   name: string;
@@ -13,6 +14,16 @@ export interface AgentFlowSession {
   parentSessionId?: string;
   startedAt: string | Date;
   endedAt?: string | Date;
+}
+
+export interface AgentSession {
+  id: string;
+  userId: string;
+  agentName: string;
+  status: AgentStatus;
+  startedAt: string | Date;
+  endedAt?: string | Date;
+  flowSessions: AgentFlowSession[];
 }
 
 export interface ChatMessage {

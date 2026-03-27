@@ -196,6 +196,13 @@ export class SessionDataRepository {
     return rows.map((r) => this.mapRow(r));
   }
 
+  async linkToAgentSession(flowSessionId: string, agentSessionId: string): Promise<void> {
+    await this.prisma.flowSession.update({
+      where: { id: flowSessionId },
+      data: { agentSessionId },
+    });
+  }
+
   async updateStatus(sessionId: string, status: SessionStatus): Promise<void> {
     const client = this._client(sessionId) as any;
     await client.flowSession.update({

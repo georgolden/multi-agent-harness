@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Layers, RefreshCw } from 'lucide-react';
+import { Layers, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
 import { trpc } from '../../trpcClient.js';
-import { SessionCard } from './SessionCard.js';
-import type { AgentFlowSession, SessionStatus } from '../../types.js';
+import { SessionStatusBadge } from './SessionStatusBadge.js';
+import type { AgentSession, AgentFlowSession, AgentStatus, SessionStatus } from '../../types.js';
 
 interface NewSessionEntry {
   sessionId: string;
@@ -25,62 +25,149 @@ const TABS: { key: FilterTab; label: string }[] = [
   { key: 'failed', label: 'Failed' },
 ];
 
+function timeAgo(date: string | Date): string {
+  const now = Date.now();
+  const then = new Date(date).getTime();
+  const diff = Math.max(0, now - then);
+  const secs = Math.floor(diff / 1000);
+  const mins = Math.floor(secs / 60);
+  const hours = Math.floor(mins / 60);
+  if (secs < 60) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return new Date(date).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function statusColor(status: AgentStatus | SessionStatus): string {
+  if (status === 'running') return 'bg-gradient-to-br from-blue-500 to-violet-600';
+  if (status === 'paused') return 'bg-gradient-to-br from-yellow-400 to-orange-500';
+  if (status === 'failed') return 'bg-red-100';
+  return 'bg-gray-100';
+}
+
+interface AgentSessionCardProps {
+  agentSession: AgentSession;
+  activeSessionId: string | null;
+  onSelectSession: (id: string, flowName: string) => void;
+}
+
+function AgentSessionCard({ agentSession, activeSessionId, onSelectSession }: AgentSessionCardProps) {
+  const [expanded, setExpanded] = useState(true);
+  const hasFlows = agentSession.flowSessions.length > 0;
+
+  return (
+    <div className="border border-gray-100 rounded-xl overflow-hidden bg-white shadow-sm">
+      {/* Agent header */}
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-gray-50 transition-colors"
+      >
+        <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 ${statusColor(agentSession.status)}`}>
+          <Layers size={11} className={agentSession.status === 'running' || agentSession.status === 'paused' ? 'text-white' : 'text-gray-400'} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-gray-700 truncate">{agentSession.agentName}</p>
+          <p className="text-[10px] text-gray-300 font-mono">{agentSession.id.slice(0, 12)}… · {timeAgo(agentSession.startedAt)}</p>
+        </div>
+        <SessionStatusBadge status={agentSession.status as SessionStatus} />
+        {hasFlows && (
+          expanded
+            ? <ChevronDown size={12} className="text-gray-300 flex-shrink-0" />
+            : <ChevronRight size={12} className="text-gray-300 flex-shrink-0" />
+        )}
+      </button>
+
+      {/* Flow sessions */}
+      {expanded && hasFlows && (
+        <div className="border-t border-gray-50 bg-gray-50/50">
+          {agentSession.flowSessions.map((fs) => (
+            <FlowSessionRow
+              key={fs.id}
+              flowSession={fs}
+              isActive={fs.id === activeSessionId}
+              onSelect={() => onSelectSession(fs.id, fs.flowName)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface FlowSessionRowProps {
+  flowSession: AgentFlowSession;
+  isActive: boolean;
+  onSelect: () => void;
+}
+
+function FlowSessionRow({ flowSession, isActive, onSelect }: FlowSessionRowProps) {
+  return (
+    <button
+      onClick={onSelect}
+      className={`w-full text-left px-3 py-2 flex items-center gap-2 border-b border-gray-100 last:border-0 transition-colors ${
+        isActive ? 'bg-blue-50' : 'hover:bg-white'
+      }`}
+    >
+      <div className="w-1 self-stretch rounded-full flex-shrink-0 bg-gray-200 ml-1" />
+      <div className="flex-1 min-w-0">
+        <p className={`text-xs font-medium truncate ${isActive ? 'text-blue-700' : 'text-gray-600'}`}>{flowSession.flowName}</p>
+        <p className="text-[10px] text-gray-300 font-mono">{flowSession.id.slice(0, 12)}… · {timeAgo(flowSession.startedAt)}</p>
+      </div>
+      <SessionStatusBadge status={flowSession.status as SessionStatus} />
+    </button>
+  );
+}
+
 export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: SessionsPanelProps) {
   const [filter, setFilter] = useState<FilterTab>('all');
-  const [localSessions, setLocalSessions] = useState<AgentFlowSession[]>([]);
+  const [agentSessions, setAgentSessions] = useState<AgentSession[]>([]);
   const newSessionRef = useRef<string | null>(null);
 
-  const { data: remoteSessions, refetch } = trpc.getUserSessions.useQuery(undefined, {
+  const { data: remoteAgentSessions, refetch } = trpc.getAgentSessions.useQuery(undefined, {
     refetchInterval: 5000,
   });
 
-  // Merge remote sessions
   useEffect(() => {
-    if (!remoteSessions) return;
-    const remote = (remoteSessions as AgentFlowSession[]).map((s) => ({
-      ...s,
-      startedAt: s.startedAt ?? new Date(),
-    }));
-    setLocalSessions(remote);
-  }, [remoteSessions]);
+    if (!remoteAgentSessions) return;
+    setAgentSessions(remoteAgentSessions as AgentSession[]);
+  }, [remoteAgentSessions]);
 
-  // Track status changes via subscription
+  // Track flow-session status changes via subscription
   trpc.streamEvents.useSubscription(
     {},
     {
       onData(event) {
         if (event.type === 'session:statusChange') {
-          setLocalSessions((prev) =>
-            prev.map((s) =>
-              s.id === event.sessionId ? { ...s, status: event.to as SessionStatus } : s,
-            ),
+          setAgentSessions((prev) =>
+            prev.map((as) => ({
+              ...as,
+              flowSessions: as.flowSessions.map((fs) =>
+                fs.id === event.sessionId ? { ...fs, status: event.to as SessionStatus } : fs,
+              ),
+            })),
           );
         }
       },
     },
   );
 
-  // Add new session optimistically when chat creates one
+  // Optimistically add new flow session when chat creates one
   useEffect(() => {
     if (!newSession || newSession.sessionId === newSessionRef.current) return;
     newSessionRef.current = newSession.sessionId;
-    setLocalSessions((prev) => {
-      if (prev.find((s) => s.id === newSession.sessionId)) return prev;
-      const entry: AgentFlowSession = {
-        id: newSession.sessionId,
-        userId: '',
-        flowName: newSession.flowName,
-        status: 'running',
-        startedAt: new Date(),
-      };
-      return [entry, ...prev];
-    });
-  }, [newSession]);
+    // Trigger a refetch so the new session appears under its agent session
+    refetch();
+  }, [newSession, refetch]);
 
   const filtered =
-    filter === 'all' ? localSessions : localSessions.filter((s) => s.status === filter);
+    filter === 'all'
+      ? agentSessions
+      : agentSessions.filter((as) => {
+          if (as.status === filter) return true;
+          return as.flowSessions.some((fs) => fs.status === filter);
+        });
 
-  const runningCount = localSessions.filter((s) => s.status === 'running').length;
+  const runningCount = agentSessions.filter((as) => as.status === 'running').length;
 
   return (
     <aside className="w-72 flex flex-col bg-white/80 backdrop-blur-xl border-l border-gray-200/60 h-full">
@@ -109,8 +196,8 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
         {TABS.map((tab) => {
           const count =
             tab.key === 'all'
-              ? localSessions.length
-              : localSessions.filter((s) => s.status === tab.key).length;
+              ? agentSessions.length
+              : agentSessions.filter((as) => as.status === tab.key).length;
           return (
             <button
               key={tab.key}
@@ -123,11 +210,7 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
             >
               {tab.label}
               {count > 0 && (
-                <span
-                  className={`ml-1 ${
-                    filter === tab.key ? 'text-white/70' : 'text-gray-300'
-                  }`}
-                >
+                <span className={`ml-1 ${filter === tab.key ? 'text-white/70' : 'text-gray-300'}`}>
                   {count}
                 </span>
               )}
@@ -146,20 +229,17 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
             <div>
               <p className="text-sm font-medium text-gray-300">No sessions</p>
               <p className="text-xs text-gray-200 mt-0.5">
-                {filter === 'all'
-                  ? 'Start a chat to create a session'
-                  : `No ${filter} sessions`}
+                {filter === 'all' ? 'Start a chat to create a session' : `No ${filter} sessions`}
               </p>
             </div>
           </div>
         ) : (
-          filtered.map((session) => (
-            <SessionCard
-              key={session.id}
-              session={session}
-              isNew={session.id === newSession?.sessionId}
-              isActive={session.id === activeSessionId}
-              onClick={() => onSelectSession(session.id, session.flowName)}
+          filtered.map((as) => (
+            <AgentSessionCard
+              key={as.id}
+              agentSession={as}
+              activeSessionId={activeSessionId}
+              onSelectSession={onSelectSession}
             />
           ))
         )}

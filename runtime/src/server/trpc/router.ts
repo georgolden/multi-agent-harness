@@ -112,6 +112,17 @@ export const appRouter = router({
     return ctx.app.services.sessionService.getRootSessions(ctx.userId);
   }),
 
+  getAgentSessions: publicProcedure.query(async ({ ctx }) => {
+    const agentSessions = await ctx.app.data.agentSessionRepository.getByUserId(ctx.userId);
+    const result = await Promise.all(
+      agentSessions.map(async (as) => {
+        const flowSessions = await ctx.app.data.flowSessionRepository.getByAgentSessionId(as.id);
+        return { ...as, flowSessions };
+      }),
+    );
+    return result;
+  }),
+
   // ─── Mutations ────────────────────────────────────────────────────────────
 
   runFlow: publicProcedure

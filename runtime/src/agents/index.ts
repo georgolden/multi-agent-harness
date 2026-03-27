@@ -106,6 +106,31 @@ export class Agents {
         }
         const flowSessions = await this.app.data.flowSessionRepository.getByAgentSessionId(agentSession.id);
         const { agent, promise } = Agent.restore(AgentClass, agentSession, flowSessions, this.app, user);
+        const { bus } = this.app.infra;
+        const { agentSessionRepository, flowSessionRepository } = this.app.data;
+        agent.checkpointer = {
+          createAgentSession: async (_agentName, agentSchema, userId) => {
+            const record = await agentSessionRepository.create({ agentName: agent.name, agentSchema, userId });
+            return record.id;
+          },
+          checkpointFlow: async (agentSessionId, flowName, flowInput) => {
+            await agentSessionRepository.updateCurrent(agentSessionId, flowName, flowInput);
+          },
+          finalizeAgentSession: async (agentSessionId, status) => {
+            await agentSessionRepository.updateStatus(agentSessionId, status);
+          },
+          linkFlowSession: async (flowSessionId, agentSessionId) => {
+            await flowSessionRepository.linkToAgentSession(flowSessionId, agentSessionId);
+          },
+        };
+        agent.sessionHooks = {
+          onStatusChange: async (s: Session, from: string, to: string) => {
+            bus.emit('session:statusChange', { sessionId: s.id, flowName: s.flowName, userId: s.userId, from, to });
+          },
+          onMessage: async (s: Session) => {
+            bus.emit('session:message:update', { sessionId: s.id, flowName: s.flowName, userId: s.userId });
+          },
+        };
         this._wire(agent, promise);
         console.log(`[Agents] Restored agent '${agentSession.agentName}' session '${agentSession.id}'`);
       }),
@@ -198,6 +223,24 @@ export class Agents {
     });
 
     const { bus } = this.app.infra;
+    const { agentSessionRepository, flowSessionRepository } = this.app.data;
+
+    agent.checkpointer = {
+      createAgentSession: async (_agentName, agentSchema, userId) => {
+        const record = await agentSessionRepository.create({ agentName: agent.name, agentSchema, userId });
+        return record.id;
+      },
+      checkpointFlow: async (agentSessionId, flowName, flowInput) => {
+        await agentSessionRepository.updateCurrent(agentSessionId, flowName, flowInput);
+      },
+      finalizeAgentSession: async (agentSessionId, status) => {
+        await agentSessionRepository.updateStatus(agentSessionId, status);
+      },
+      linkFlowSession: async (flowSessionId, agentSessionId) => {
+        await flowSessionRepository.linkToAgentSession(flowSessionId, agentSessionId);
+      },
+    };
+
     agent.sessionHooks = {
       onRunning: async () => {
         resolveFirstSession();

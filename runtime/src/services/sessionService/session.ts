@@ -40,10 +40,24 @@ export class Session {
   hooks: SessionHooks;
   tools: AgentTool[] = [];
 
+  private _userMessageCallbacks: Array<
+    (payload: { session: SessionData; message: string; user: User }) => void
+  > = [];
+
   constructor(sessionData: SessionData, app: App, hooks: SessionHooks = {}) {
     this.sessionData = sessionData;
     this.app = app;
     this.hooks = hooks;
+    this._attachUserMessageListener();
+  }
+
+  private _attachUserMessageListener(): void {
+    const eventName = `user:message:${this.userId}:${this.id}`;
+    this.app.infra.bus.on(eventName, (payload: { session: SessionData; message: string; user: User }) => {
+      console.log(`[Session] user message received on '${eventName}', dispatching to ${this._userMessageCallbacks.length} callback(s)`);
+      const callbacks = this._userMessageCallbacks.splice(0);
+      for (const cb of callbacks) cb(payload);
+    });
   }
 
   // ─── Read-only accessors ──────────────────────────────────────────────────
@@ -256,13 +270,8 @@ export class Session {
     return this;
   }
 
-  onUserMessage(cb: ({ session, message, user }: { session: SessionData; message: string; user: User }) => void) {
-    const eventName = `user:message:${this.userId}:${this.id}`;
-    console.log(`[Session.onUserMessage] registering listener on '${eventName}'`);
-    this.app.infra.bus.once(eventName, ({ session, message, user }) => {
-      console.log(`[Session.onUserMessage] fired for '${eventName}'`);
-      return cb({ session, message, user });
-    });
+  onUserMessage(cb: (payload: { session: SessionData; message: string; user: User }) => void) {
+    this._userMessageCallbacks.push(cb);
     return this;
   }
 
