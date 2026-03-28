@@ -44,11 +44,9 @@ export class DecideAction extends Node<
   async run(p: this['In']): Promise<this['Out']> {
     const { session } = p.context;
 
-    const conversation = session.activeMessages.map((msg) => msg.message);
+    const messages = session.activeMessages.map((msg) => msg.message);
 
-    console.log(`[DecideAction.run] Using session '${session.id}' from context with ${conversation.length} messages`);
-
-    const messages = [new SystemMessage(session.systemPrompt).toJSON(), ...conversation];
+    console.log(`[DecideAction.run] Using session '${session.id}' from context with ${messages.length} messages`);
 
     console.log(`[DecideAction.run] Calling LLM with ${messages.length} messages`);
 

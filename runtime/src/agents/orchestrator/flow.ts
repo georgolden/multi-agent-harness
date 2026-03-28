@@ -5,13 +5,12 @@ import { orchestratorInputSchema, type OrchestratorContext } from './types.js';
 import { App } from '../../app.js';
 import { User } from '../../data/userRepository/types.js';
 import { Session } from '../../services/sessionService/session.js';
-import { UserMessage } from '../../utils/message.js';
+import { SystemMessage, UserMessage } from '../../utils/message.js';
 import { createSystemPrompt } from './prompts/index.js';
 
 export class OrchestratorFlow extends Flow<App, OrchestratorContext>
   {
 
-  name = 'orchestrator';
   description =
     "Orchestrator flow — understands the user's request, breaks it into tasks, and dispatches the right agents. Routes simple tasks directly to spawn_agent, uses run_agent when output is needed for subsequent steps, and asks the user only when ambiguity would cause the wrong outcome.";
   parameters = orchestratorInputSchema;
@@ -39,12 +38,13 @@ export class OrchestratorFlow extends Flow<App, OrchestratorContext>
     const session = await app.services.sessionService.create({
       parentSessionId: parent?.id,
       userId: user.id,
-      flowName: this.name,
+      flowName: this.constructor.name,
       systemPrompt,
     });
 
     session.addAgentTools(AGENT_TOOLS as any);
 
+    await session.addMessages([{ message: new SystemMessage(systemPrompt).toJSON() }]);
     await session.addUserMessage(new UserMessage(input.message));
     await session.setFlowSchema(this.toSchema());
 

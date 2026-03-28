@@ -112,16 +112,23 @@ export const appRouter = router({
     return ctx.app.services.sessionService.getRootSessions(ctx.userId);
   }),
 
-  getAgentSessions: publicProcedure.query(async ({ ctx }) => {
-    const agentSessions = await ctx.app.data.agentSessionRepository.getByUserId(ctx.userId);
-    const result = await Promise.all(
-      agentSessions.map(async (as) => {
-        const flowSessions = await ctx.app.data.flowSessionRepository.getByAgentSessionId(as.id);
-        return { ...as, flowSessions };
-      }),
-    );
-    return result;
-  }),
+  getAgentSessions: publicProcedure
+    .input(z.object({ from: z.string().datetime(), to: z.string().datetime().optional() }))
+    .query(async ({ ctx, input }) => {
+      const toDate = input.to ? new Date(input.to) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const agentSessions = await ctx.app.data.agentSessionRepository.getByUserIdInWindow(
+        ctx.userId,
+        new Date(input.from),
+        toDate,
+      );
+      const result = await Promise.all(
+        agentSessions.map(async (as) => {
+          const flowSessions = await ctx.app.data.flowSessionRepository.getByAgentSessionId(as.id);
+          return { ...as, flowSessions };
+        }),
+      );
+      return result;
+    }),
 
   // ─── Mutations ────────────────────────────────────────────────────────────
 

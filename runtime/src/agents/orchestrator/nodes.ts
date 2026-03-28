@@ -20,16 +20,16 @@ import { TOOL_SCHEMAS } from './tools.js';
 import { AssistantMessage, SystemMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
 import type { OrchestratorContext, OrchestratorInput } from './types.js';
 import type { App } from '../../app.js';
-import { Session } from '../../services/sessionService/session.js';
+
 import type { LLMToolCall } from '../../utils/message.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
-export class PrepareInput extends Node<App, OrchestratorContext, OrchestratorInput, { default: Session }> {
+export class PrepareInput extends Node<App, OrchestratorContext, OrchestratorInput, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session } = p.context;
     console.log(`[orchestrator.PrepareInput] Using session '${session.id}'`);
-    return packet({ data: session, context: p.context, deps: p.deps });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 
@@ -46,7 +46,7 @@ export class PrepareInput extends Node<App, OrchestratorContext, OrchestratorInp
 export class DecideAction extends Node<
   App,
   OrchestratorContext,
-  Session,
+  void,
   {
     tool_calls: LLMToolCall[];
     ask_user: string;
@@ -58,12 +58,12 @@ export class DecideAction extends Node<
   }
 
   async run(p: this['In']): Promise<this['Out']> {
-    const session = p.data;
+    const session = p.context.session;
     const messages = session.activeMessages.map((msg) => msg.message);
 
     console.log(`[orchestrator.DecideAction] Session '${session.id}', ${messages.length} messages`);
 
-    const response = await callLlmWithTools([new SystemMessage(session.systemPrompt).toJSON(), ...messages], TOOL_SCHEMAS);
+    const response = await callLlmWithTools(messages, TOOL_SCHEMAS);
 
     const assistantMsg = AssistantMessage.from(response[0].message);
     await session.addMessages([{ message: assistantMsg.toJSON() }]);
@@ -100,7 +100,7 @@ type ToolCallResult = {
  * Handles write_temp_file, runAgent, spawnAgent — all registered on the session.
  * Feeds all results back into the conversation and loops to DecideAction.
  */
-export class ToolCalls extends Node<App, OrchestratorContext, LLMToolCall[], { default: Session }> {
+export class ToolCalls extends Node<App, OrchestratorContext, LLMToolCall[], { default: void }> {
   async preprocess(p: this['In']): Promise<BatchPacket<LLMToolCall, App, OrchestratorContext>> {
     const toolCalls = p.data;
     if (!toolCalls || !Array.isArray(toolCalls)) throw new Error('toolCalls is required');
@@ -141,7 +141,7 @@ export class ToolCalls extends Node<App, OrchestratorContext, LLMToolCall[], { d
         message: new ToolResultMessage({ toolCallId: r.toolCallId, content: r.content }).toJSON(),
       })),
     );
-    return packet({ data: session, context: p.context, deps: p.deps });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 
@@ -166,7 +166,7 @@ export class AskUser extends Node<App, OrchestratorContext, string, { default: v
 
 // ─── UserResponse ─────────────────────────────────────────────────────────────
 
-export class UserResponse extends Node<App, OrchestratorContext, string, { default: Session }> {
+export class UserResponse extends Node<App, OrchestratorContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
     const message = p.data;
@@ -174,7 +174,7 @@ export class UserResponse extends Node<App, OrchestratorContext, string, { defau
     await session.addUserMessage(new UserMessage(message));
     await session.resume();
 
-    return packet({ data: session, context: p.context, deps: p.deps });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 

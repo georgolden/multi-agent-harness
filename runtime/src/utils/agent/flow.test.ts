@@ -82,7 +82,6 @@ function makeFlow(
   }
 
   class TestFlow extends Flow<any, any, any, any> {
-    name = 'TestFlow';
     description = '';
     parameters = {};
     nodeConstructors = ctors;

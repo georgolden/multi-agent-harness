@@ -12,7 +12,6 @@ import { AGENT_TOOLS } from './tools.js';
 export class ExploreFlow extends Flow<App, ExploreContext, ExploreInput, { exit: ExploreResult; loop: void }>
   {
 
-  name = 'explore';
   description =
     'Explore agent flow that allows users to explore and understand a codebase or problem domain. It helps to:\n• Map out project structure\n• Understand key files and their relationships\n• Identify modification targets and dependencies\n• Gather context for downstream agents';
   parameters = exploreInputSchema;
@@ -38,7 +37,7 @@ export class ExploreFlow extends Flow<App, ExploreContext, ExploreInput, { exit:
     const session = await app.services.sessionService.create({
       parentSessionId: parent?.id,
       userId: user.id,
-      flowName: this.name,
+      flowName: this.constructor.name,
       systemPrompt,
     });
 

@@ -10,7 +10,6 @@ import { createSystemPrompt } from './prompts/index.js';
 export class AgentBuilderFlow extends Flow<App, AgentBuilderContext>
   {
 
-  name = 'agentBuilder';
   description =
     'Agent Builder flow — guides the user through designing a complete AI agent by collaboratively filling the Agent Flow Schema, system prompt, and optional user prompt template. Produces a ready-to-use AgenticLoopSchema.';
   parameters = agentBuilderInputSchema;
@@ -35,7 +34,7 @@ export class AgentBuilderFlow extends Flow<App, AgentBuilderContext>
     const session = await app.services.sessionService.create({
       parentSessionId: parent?.id,
       userId: user.id,
-      flowName: this.name,
+      flowName: this.constructor.name,
       systemPrompt,
     });
 

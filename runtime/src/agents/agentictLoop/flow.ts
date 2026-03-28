@@ -82,7 +82,7 @@ export type AgentFlowParameters = Static<typeof agentFlowParametersSchema>;
 export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowParameters>
   {
 
-  name = 'Agentic Loop';
+  override get name(): string { return 'AgenticLoopFlow'; }
   description = 'Universal agentic flow that runs with schema';
   parameters = agentFlowParametersSchema;
 

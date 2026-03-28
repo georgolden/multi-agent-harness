@@ -40,9 +40,7 @@ export class Session {
   hooks: SessionHooks;
   tools: AgentTool[] = [];
 
-  private _userMessageCallbacks: Array<
-    (payload: { session: SessionData; message: string; user: User }) => void
-  > = [];
+  private _userMessageCallbacks: Array<(payload: { session: SessionData; message: string; user: User }) => void> = [];
 
   constructor(sessionData: SessionData, app: App, hooks: SessionHooks = {}) {
     this.sessionData = sessionData;
@@ -54,7 +52,9 @@ export class Session {
   private _attachUserMessageListener(): void {
     const eventName = `user:message:${this.userId}:${this.id}`;
     this.app.infra.bus.on(eventName, (payload: { session: SessionData; message: string; user: User }) => {
-      console.log(`[Session] user message received on '${eventName}', dispatching to ${this._userMessageCallbacks.length} callback(s)`);
+      console.log(
+        `[Session] user message received on '${eventName}', dispatching to ${this._userMessageCallbacks.length} callback(s)`,
+      );
       const callbacks = this._userMessageCallbacks.splice(0);
       for (const cb of callbacks) cb(payload);
     });
@@ -184,7 +184,7 @@ export class Session {
       const filesXml = tempFiles
         .map((f) => `  <file>\n    <name>${f.name}</name>\n    <content>${f.content}</content>\n  </file>`)
         .join('\n');
-      fullContent = `<temp_files>\n${filesXml}\n</temp_files>\n\n${content}`;
+      fullContent = `<temp_files>\n${filesXml}\n</temp_files>\n<user_message>${content}</user_message>`;
     }
 
     return this.addMessages([{ message: new UserMessage(fullContent).toJSON() }]);

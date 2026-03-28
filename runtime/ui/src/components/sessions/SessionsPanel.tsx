@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Layers, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
+import { Layers, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
 import { trpc } from '../../trpcClient.js';
 import { SessionStatusBadge } from './SessionStatusBadge.js';
-import type { AgentSession, AgentFlowSession, AgentStatus, SessionStatus } from '../../types.js';
+import type { AgentSession, AgentStatus, SessionStatus } from '../../types.js';
 
 interface NewSessionEntry {
   sessionId: string;
@@ -12,10 +12,11 @@ interface NewSessionEntry {
 interface SessionsPanelProps {
   newSession: NewSessionEntry | null;
   activeSessionId: string | null;
-  onSelectSession: (id: string, flowName: string) => void;
+  onSelectSession: (agentSession: AgentSession, flowSessionId: string) => void;
 }
 
 type FilterTab = 'all' | 'running' | 'completed' | 'paused' | 'failed';
+
 
 const TABS: { key: FilterTab; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -24,6 +25,8 @@ const TABS: { key: FilterTab; label: string }[] = [
   { key: 'completed', label: 'Done' },
   { key: 'failed', label: 'Failed' },
 ];
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function timeAgo(date: string | Date): string {
   const now = Date.now();
@@ -45,48 +48,77 @@ function statusColor(status: AgentStatus | SessionStatus): string {
   return 'bg-gray-100';
 }
 
+function agentSortOrder(as: AgentSession): number {
+  if (as.status === 'paused') return 0;
+  if (as.status === 'running') return 1;
+  return 2;
+}
+
 interface AgentSessionCardProps {
   agentSession: AgentSession;
   activeSessionId: string | null;
-  onSelectSession: (id: string, flowName: string) => void;
+  onSelectSession: (agentSession: AgentSession, flowSessionId: string) => void;
 }
 
 function AgentSessionCard({ agentSession, activeSessionId, onSelectSession }: AgentSessionCardProps) {
-  const [expanded, setExpanded] = useState(true);
   const hasFlows = agentSession.flowSessions.length > 0;
+  const isAnyFlowActive = agentSession.flowSessions.some((fs) => fs.id === activeSessionId);
+
+  const [expanded, setExpanded] = useState(isAnyFlowActive);
+
+  // Pick first flow session as default when clicking the agent row
+  function handleAgentClick() {
+    if (!hasFlows) return;
+    const first = agentSession.flowSessions[0];
+    onSelectSession(agentSession, first.id);
+    setExpanded(true);
+  }
 
   return (
-    <div className="border border-gray-100 rounded-xl overflow-hidden bg-white shadow-sm">
-      {/* Agent header */}
+    <div className="border border-gray-100 rounded-xl bg-white shadow-sm">
+      {/* Agent row — click opens first flow */}
       <button
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-gray-50 transition-colors"
+        onClick={handleAgentClick}
+        className={`w-full px-3 py-2.5 flex items-center gap-2 transition-colors ${
+          isAnyFlowActive ? 'bg-blue-50' : 'hover:bg-gray-50'
+        }`}
       >
         <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 ${statusColor(agentSession.status)}`}>
           <Layers size={11} className={agentSession.status === 'running' || agentSession.status === 'paused' ? 'text-white' : 'text-gray-400'} />
         </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-xs font-semibold text-gray-700 truncate">{agentSession.agentName}</p>
-          <p className="text-[10px] text-gray-300 font-mono">{agentSession.id.slice(0, 12)}… · {timeAgo(agentSession.startedAt)}</p>
+        <div className="flex-1 min-w-0 text-left">
+          <p className={`text-xs font-semibold truncate ${isAnyFlowActive ? 'text-blue-700' : 'text-gray-700'}`}>{agentSession.agentName}</p>
+          <p className="text-[10px] text-gray-400">{timeAgo(agentSession.startedAt)}</p>
         </div>
         <SessionStatusBadge status={agentSession.status as SessionStatus} />
         {hasFlows && (
-          expanded
-            ? <ChevronDown size={12} className="text-gray-300 flex-shrink-0" />
-            : <ChevronRight size={12} className="text-gray-300 flex-shrink-0" />
+          <span
+            onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
+            className="w-6 h-6 flex items-center justify-center rounded-md bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition-all duration-150 flex-shrink-0"
+          >
+            {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          </span>
         )}
       </button>
 
-      {/* Flow sessions */}
+      {/* Flow session rows — capped at 5 visible rows, scrollable beyond */}
       {expanded && hasFlows && (
-        <div className="border-t border-gray-50 bg-gray-50/50">
+        <div className="border-t border-gray-100 bg-gray-50/50 rounded-b-xl overflow-y-auto" style={{ maxHeight: '280px' }}>
           {agentSession.flowSessions.map((fs) => (
-            <FlowSessionRow
+            <button
               key={fs.id}
-              flowSession={fs}
-              isActive={fs.id === activeSessionId}
-              onSelect={() => onSelectSession(fs.id, fs.flowName)}
-            />
+              onClick={() => onSelectSession(agentSession, fs.id)}
+              className={`w-full text-left px-3 py-2 flex items-center gap-2 border-b border-gray-100 last:border-0 transition-colors ${
+                fs.id === activeSessionId ? 'bg-blue-50' : 'hover:bg-white'
+              }`}
+            >
+              <div className="w-1 self-stretch rounded-full flex-shrink-0 bg-gray-200 ml-1" />
+              <div className="flex-1 min-w-0">
+                <p className={`text-xs font-medium truncate ${fs.id === activeSessionId ? 'text-blue-700' : 'text-gray-600'}`}>{fs.flowName}</p>
+                <p className="text-[10px] text-gray-400">{timeAgo(fs.startedAt)}</p>
+              </div>
+              <SessionStatusBadge status={fs.status as SessionStatus} />
+            </button>
           ))}
         </div>
       )}
@@ -94,45 +126,37 @@ function AgentSessionCard({ agentSession, activeSessionId, onSelectSession }: Ag
   );
 }
 
-interface FlowSessionRowProps {
-  flowSession: AgentFlowSession;
-  isActive: boolean;
-  onSelect: () => void;
-}
-
-function FlowSessionRow({ flowSession, isActive, onSelect }: FlowSessionRowProps) {
-  return (
-    <button
-      onClick={onSelect}
-      className={`w-full text-left px-3 py-2 flex items-center gap-2 border-b border-gray-100 last:border-0 transition-colors ${
-        isActive ? 'bg-blue-50' : 'hover:bg-white'
-      }`}
-    >
-      <div className="w-1 self-stretch rounded-full flex-shrink-0 bg-gray-200 ml-1" />
-      <div className="flex-1 min-w-0">
-        <p className={`text-xs font-medium truncate ${isActive ? 'text-blue-700' : 'text-gray-600'}`}>{flowSession.flowName}</p>
-        <p className="text-[10px] text-gray-300 font-mono">{flowSession.id.slice(0, 12)}… · {timeAgo(flowSession.startedAt)}</p>
-      </div>
-      <SessionStatusBadge status={flowSession.status as SessionStatus} />
-    </button>
-  );
-}
-
 export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: SessionsPanelProps) {
   const [filter, setFilter] = useState<FilterTab>('all');
+  // All accumulated sessions across loaded windows
   const [agentSessions, setAgentSessions] = useState<AgentSession[]>([]);
+  // How many full 24h windows back we've loaded (0 = current window only)
+  const [windowsLoaded, setWindowsLoaded] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const newSessionRef = useRef<string | null>(null);
+  // Anchor so window boundaries don't shift while the panel is open
+  const mountedAt = useRef(Date.now()).current;
 
-  const { data: remoteAgentSessions, refetch } = trpc.getAgentSessions.useQuery(undefined, {
-    refetchInterval: 5000,
-  });
+  // Current window: (mountedAt - 24h, +∞) — no upper cap so new sessions appear
+  const currentWindowFrom = new Date(mountedAt - DAY_MS).toISOString();
+  const { data: currentWindowData, refetch } = trpc.getAgentSessions.useQuery(
+    { from: currentWindowFrom },
+    { refetchInterval: 5000 },
+  );
 
+  // Merge current window data into state (replaces any existing current-window sessions)
   useEffect(() => {
-    if (!remoteAgentSessions) return;
-    setAgentSessions(remoteAgentSessions as AgentSession[]);
-  }, [remoteAgentSessions]);
+    if (!currentWindowData) return;
+    const incoming = currentWindowData as AgentSession[];
+    setAgentSessions((prev) => {
+      // Remove sessions that fall in the current window, replace with fresh data
+      const cutoff = new Date(currentWindowFrom).getTime();
+      const historical = prev.filter((s) => new Date(s.startedAt).getTime() < cutoff);
+      return [...incoming, ...historical];
+    });
+  }, [currentWindowData]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Track flow-session status changes via subscription
+  // Status updates from subscription
   trpc.streamEvents.useSubscription(
     {},
     {
@@ -151,21 +175,54 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
     },
   );
 
-  // Optimistically add new flow session when chat creates one
   useEffect(() => {
     if (!newSession || newSession.sessionId === newSessionRef.current) return;
     newSessionRef.current = newSession.sessionId;
-    // Trigger a refetch so the new session appears under its agent session
     refetch();
   }, [newSession, refetch]);
 
+  // Load the next 24h window on demand using the tRPC utils
+  const utils = trpc.useUtils();
+
+  async function loadMoreHistory() {
+    setLoadingMore(true);
+    const nextWindow = windowsLoaded + 1;
+    // Window N covers (mountedAt - (N+1)*24h, mountedAt - N*24h)
+    const from = new Date(mountedAt - (nextWindow + 1) * DAY_MS).toISOString();
+    const to = new Date(mountedAt - nextWindow * DAY_MS).toISOString();
+    try {
+      const data = await utils.getAgentSessions.fetch({ from, to });
+      const incoming = data as AgentSession[];
+      if (incoming.length > 0) {
+        setAgentSessions((prev) => {
+          const existingIds = new Set(prev.map((s) => s.id));
+          return [...prev, ...incoming.filter((s) => !existingIds.has(s.id))];
+        });
+      }
+      setWindowsLoaded(nextWindow);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  const sorted = agentSessions.slice().sort((a, b) => {
+    const orderDiff = agentSortOrder(a) - agentSortOrder(b);
+    if (orderDiff !== 0) return orderDiff;
+    return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime();
+  });
+
   const filtered =
     filter === 'all'
-      ? agentSessions
-      : agentSessions.filter((as) => {
+      ? sorted
+      : sorted.filter((as) => {
           if (as.status === filter) return true;
           return as.flowSessions.some((fs) => fs.status === filter);
         });
+
+  const tabCount = (key: FilterTab) =>
+    key === 'all'
+      ? sorted.length
+      : sorted.filter((as) => as.status === key || as.flowSessions.some((fs) => fs.status === key)).length;
 
   const runningCount = agentSessions.filter((as) => as.status === 'running').length;
 
@@ -194,10 +251,7 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
       {/* Filter Tabs */}
       <div className="flex gap-1 px-3 py-2 overflow-x-auto">
         {TABS.map((tab) => {
-          const count =
-            tab.key === 'all'
-              ? agentSessions.length
-              : agentSessions.filter((as) => as.status === tab.key).length;
+          const count = tabCount(tab.key);
           return (
             <button
               key={tab.key}
@@ -243,6 +297,13 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
             />
           ))
         )}
+        <button
+          onClick={loadMoreHistory}
+          disabled={loadingMore}
+          className="w-full py-2 text-xs text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-xl border border-dashed border-gray-200 hover:border-gray-300 transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {loadingMore ? 'Loading…' : 'Show previous 24 hours'}
+        </button>
       </div>
 
       {/* Footer hint */}

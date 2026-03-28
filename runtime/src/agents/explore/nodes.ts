@@ -21,7 +21,7 @@ import {
   ToolResultMessage,
   type LLMToolCall,
 } from '../../utils/message.js';
-import type { ExploreContext, ExploreResult, Session } from './types.js';
+import type { ExploreContext, ExploreResult } from './types.js';
 import { App } from '../../app.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
@@ -65,7 +65,7 @@ export class DecideAction extends Node<
 
     console.log(`[DecideAction.run] Session '${session.id}', ${messages.length} messages`);
 
-    const response = await callLlmWithTools([new SystemMessage(session.systemPrompt).toJSON(), ...messages], TOOLS);
+    const response = await callLlmWithTools(messages, TOOLS);
 
     const assistantMsg = AssistantMessage.from(response[0].message);
     await session.addMessages([{ message: assistantMsg.toJSON() }]);
@@ -137,7 +137,7 @@ export class AskUser extends Node<App, ExploreContext, string, { default: void }
 /**
  * UserResponse: Add user response as UserMessage and loop back to DecideAction.
  */
-export class UserResponse extends Node<App, ExploreContext, string, { default: Session }> {
+export class UserResponse extends Node<App, ExploreContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
     const message = p.data;
@@ -145,11 +145,7 @@ export class UserResponse extends Node<App, ExploreContext, string, { default: S
     await session.addUserMessage(new UserMessage(message));
     await session.resume();
 
-    return packet({
-      data: session,
-      context: p.context,
-      deps: p.deps,
-    });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 

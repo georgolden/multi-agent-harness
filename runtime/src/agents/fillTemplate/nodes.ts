@@ -12,10 +12,9 @@
 import { Node, packet, exit, pause } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import { TOOLS } from './tools.js';
-import { AssistantMessage, SystemMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
+import { AssistantMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
 import type { FillTemplateContext, FillTemplateInput } from './types.js';
 import type { App } from '../../app.js';
-import { Session } from '../../services/sessionService/session.js';
 import type { LLMToolCall } from '../../utils/message.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
@@ -23,15 +22,11 @@ import type { LLMToolCall } from '../../utils/message.js';
 /**
  * PrepareInput: validate session is present in context (session is created before flow runs)
  */
-export class PrepareInput extends Node<App, FillTemplateContext, FillTemplateInput, { default: Session }> {
+export class PrepareInput extends Node<App, FillTemplateContext, FillTemplateInput, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session } = p.context;
     console.log(`[PrepareInput.run] Using session '${session.id}'`);
-    return packet({
-      data: session,
-      context: p.context,
-      deps: p.deps,
-    });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 
@@ -48,7 +43,7 @@ export class PrepareInput extends Node<App, FillTemplateContext, FillTemplateInp
 export class DecideAction extends Node<
   App,
   FillTemplateContext,
-  Session,
+  void,
   { write_temp_file: LLMToolCall; ask_user: string; submit_template: string }
 > {
   constructor() {
@@ -56,51 +51,58 @@ export class DecideAction extends Node<
   }
 
   async run(p: this['In']): Promise<this['Out']> {
-    const session = p.data;
+    const session = p.context.session;
 
     const messages = session.activeMessages.map((msg) => msg.message);
-    const systemPrompt = session.systemPrompt;
 
     console.log(`[DecideAction.run] Session '${session.id}', ${messages.length} messages`);
 
-    const response = await callLlmWithTools([new SystemMessage(systemPrompt).toJSON(), ...messages], TOOLS);
+    const response = await callLlmWithTools(messages, TOOLS);
 
     const assistantMsg = AssistantMessage.from(response[0].message);
     await session.addMessages([{ message: assistantMsg.toJSON() }]);
 
     if ('toolCalls' in assistantMsg && assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0) {
-      const toolCall = assistantMsg.toolCalls[0];
+      const toolCalls = assistantMsg.toolCalls;
+      const submitCall = toolCalls.find((tc) => tc.name === 'submit_template');
+      const otherCalls = toolCalls.filter((tc) => tc.name !== 'submit_template');
 
-      if (toolCall.name === 'write_temp_file') {
-        console.log(`[DecideAction.run] write_temp_file called, routing to WriteTempFile`);
-        return packet({
-          data: toolCall,
-          context: p.context,
-          branch: 'write_temp_file',
-          deps: p.deps,
-        });
+      // Execute all non-submit tool calls first (write_temp_file, etc.)
+      for (const toolCall of otherCalls) {
+        if (toolCall.name === 'write_temp_file') {
+          const { name, content } = toolCall.args as { name: string; content: string };
+          console.log(`[DecideAction.run] write_temp_file called — '${name}'`);
+          await session.writeTempFile({ name, content });
+          await session.addMessages([{
+            message: new ToolResultMessage({
+              toolCallId: toolCall.id,
+              content: JSON.stringify({ success: true, name, contentLength: content.length }),
+            }).toJSON(),
+          }]);
+        }
       }
 
-      if (toolCall.name === 'submit_template') {
+      // If submit_template was included, exit immediately — no LLM round-trip needed
+      if (submitCall) {
         console.log(`[DecideAction.run] submit_template called, routing to SubmitTemplate`);
         return packet({
-          data: toolCall.args.filled_template as string,
+          data: submitCall.args.filled_template as string,
           context: p.context,
           branch: 'submit_template',
           deps: p.deps,
         });
+      }
+
+      // Only write_temp_file (no submit yet) — loop back to DecideAction
+      if (otherCalls.length > 0) {
+        return packet({ data: undefined, context: p.context, deps: p.deps });
       }
     }
 
     // Plain text response — ask user
     const text = assistantMsg.toJSON().content || '';
     console.log(`[DecideAction.run] Text response, routing to ask_user`);
-    return packet({
-      data: text,
-      context: p.context,
-      branch: 'ask_user',
-      deps: p.deps,
-    });
+    return packet({ data: text, context: p.context, branch: 'ask_user', deps: p.deps });
   }
 }
 
@@ -110,7 +112,7 @@ export class DecideAction extends Node<
  * WriteTempFile: Persist the current best version of the filled template to the session's
  * temp files, then add the tool result to the conversation and loop back to DecideAction.
  */
-export class WriteTempFile extends Node<App, FillTemplateContext, LLMToolCall, { default: Session }> {
+export class WriteTempFile extends Node<App, FillTemplateContext, LLMToolCall, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
     const toolCall = p.data;
@@ -122,7 +124,6 @@ export class WriteTempFile extends Node<App, FillTemplateContext, LLMToolCall, {
 
     await session.writeTempFile({ name, content });
 
-    // Feed the tool result back so the LLM knows the write succeeded
     await session.addMessages([
       {
         message: new ToolResultMessage({
@@ -132,11 +133,7 @@ export class WriteTempFile extends Node<App, FillTemplateContext, LLMToolCall, {
       },
     ]);
 
-    return packet({
-      data: session,
-      context: p.context,
-      deps: p.deps,
-    });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 
@@ -157,27 +154,19 @@ export class AskUser extends Node<App, FillTemplateContext, string, { default: v
       this.resume({ data: message, context: p.context, deps: p.deps });
     });
     await session.pause();
-    return pause({
-      data: undefined,
-      context: p.context,
-      deps: p.deps,
-    });
+    return pause({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 
 // ─── UserResponse ─────────────────────────────────────────────────────────────
 
-export class UserResponse extends Node<App, FillTemplateContext, string, { default: Session }> {
+export class UserResponse extends Node<App, FillTemplateContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
     const message = p.data;
     await session.addUserMessage(new UserMessage(message));
     await session.resume();
-    return packet({
-      data: session,
-      context: p.context,
-      deps: p.deps,
-    });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 
@@ -192,16 +181,11 @@ export class SubmitTemplate extends Node<App, FillTemplateContext, string, { def
     const { session } = p.context;
     const filledTemplate = p.data;
 
-    // Ensure the final version is always persisted in temp files
     await session.writeTempFile({ name: 'filled_template.md', content: filledTemplate });
 
     console.log(`[SubmitTemplate.run] Marking session '${session.id}' as completed`);
     await session.complete();
 
-    return exit({
-      data: filledTemplate,
-      context: p.context,
-      deps: p.deps,
-    });
+    return exit({ data: filledTemplate, context: p.context, deps: p.deps });
   }
 }

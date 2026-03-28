@@ -66,7 +66,7 @@ export class SessionDataRepository {
             state.commit = commit;
             state.rollback = rollback;
           });
-        })
+        }, { timeout: 600_000 }) // 10 minutes — LLM calls can take 60s+
         .catch((err) => {
           this._txMap.delete(sessionId);
           outerReject(err);

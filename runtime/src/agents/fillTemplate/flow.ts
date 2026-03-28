@@ -6,12 +6,11 @@ import { App } from '../../app.js';
 import { User } from '../../data/userRepository/types.js';
 import { Session } from '../../services/sessionService/session.js';
 import { createSystemPrompt } from './prompts/index.js';
-import { UserMessage } from '../../utils/message.js';
+import { SystemMessage, UserMessage } from '../../utils/message.js';
 
 export class FillTemplateFlow extends Flow<App, FillTemplateContext>
   {
 
-  name = 'fillTemplate';
   description =
     'FillTemplate agent flow that guides users through filling a template conversationally. It helps to:\n• Collect information step by step\n• Fill all template sections and variables\n• Submit the completed template';
   parameters = fillTemplateInputSchema;
@@ -38,10 +37,11 @@ export class FillTemplateFlow extends Flow<App, FillTemplateContext>
     const session = await app.services.sessionService.create({
       parentSessionId: parent?.id,
       userId: user.id,
-      flowName: this.name,
+      flowName: this.constructor.name,
       systemPrompt,
     });
 
+    await session.addMessages([{ message: new SystemMessage(systemPrompt).toJSON() }]);
     await session.addUserMessage(new UserMessage(input.message));
     await session.setFlowSchema(this.toSchema());
 

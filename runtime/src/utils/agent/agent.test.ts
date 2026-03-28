@@ -2,30 +2,36 @@ import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { Agent, type AgentSchema } from './agent.js';
 import { Flow, Node, type FlowSchema, packet, exit, type SinglePacket } from './flow.js';
+import type { SessionData, SessionHooks } from '../../services/sessionService/types.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 type MockSession = {
   id: string;
-  hooks: Record<string, unknown>;
-  currentNodeName?: string;
-  currentPacketData?: unknown;
+  hooks: SessionHooks;
+  sessionData: SessionData;
   beginNodeTransaction(): Promise<void>;
   commitNodeTransaction(nodeName: string, packetData: unknown): Promise<void>;
   rollbackNodeTransaction(): Promise<void>;
+  onUserMessage(cb: (payload: { message: string }) => void): void;
 };
 
 function mockSession(
   overrides: { id?: string; currentNodeName?: string; currentPacketData?: unknown } = {},
 ): MockSession {
+  const id = overrides.id ?? 'sess-1';
   return {
-    id: overrides.id ?? 'sess-1',
+    id,
     hooks: {},
-    currentNodeName: overrides.currentNodeName,
-    currentPacketData: overrides.currentPacketData,
+    sessionData: {
+      id,
+      currentNodeName: overrides.currentNodeName,
+      currentPacketData: overrides.currentPacketData,
+    } as SessionData,
     beginNodeTransaction: async () => {},
     commitNodeTransaction: async () => {},
     rollbackNodeTransaction: async () => {},
+    onUserMessage: () => {},
   };
 }
 
@@ -51,7 +57,6 @@ function makeFlowClass(opts: {
   }
 
   class TestFlow extends Flow<any, any, any, any> {
-    name = 'TestFlow';
     description = 'test';
     parameters = params;
     nodeConstructors = { only: OnlyNode };
@@ -530,7 +535,6 @@ describe('Agent — multi-flow routing', () => {
 describe('Agent — error handling', () => {
   it('rejects when createSession throws', async () => {
     class BrokenFlow extends Flow<any, any, any, any> {
-      name = 'BrokenFlow';
       description = 'test';
       parameters = Type.Object({ message: Type.String() });
       nodeConstructors = {};
@@ -549,7 +553,6 @@ describe('Agent — error handling', () => {
 
   it('activeSessions is clean after an error', async () => {
     class BrokenFlow extends Flow<any, any, any, any> {
-      name = 'BrokenFlow';
       description = 'test';
       parameters = Type.Object({ message: Type.String() });
       nodeConstructors = {};
@@ -599,7 +602,6 @@ describe('Agent — activeFlows tracking', () => {
 
   it('is empty after run errors', async () => {
     class BrokenFlow extends Flow<any, any, any, any> {
-      name = 'BrokenFlow';
       description = 'test';
       parameters = Type.Object({ message: Type.String() });
       nodeConstructors = {};

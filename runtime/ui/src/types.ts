@@ -26,10 +26,25 @@ export interface AgentSession {
   flowSessions: AgentFlowSession[];
 }
 
+export interface TempFile {
+  name: string;
+  content: string;
+}
+
+export interface ToolCallInfo {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  result?: string;
+}
+
 export interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'tool_call' | 'tool_result';
   content: string;
+  tempFiles?: TempFile[];
+  toolCalls?: ToolCallInfo[];   // for role=tool_call messages
+  toolCallId?: string;          // for role=tool_result, links back to tool_call
   timestamp: Date;
 }
 

@@ -1,8 +1,18 @@
 import { Value } from '@sinclair/typebox/value';
 import type { TObject } from '@sinclair/typebox';
-import type { Flow } from './flow.js';
+import type { Flow, FlowSessionRef } from './flow.js';
 import type { SessionHooks, SessionData } from '../../services/sessionService/types.js';
 import type { AgentSessionData } from '../../data/agentSessionRepository/types.js';
+
+/**
+ * Minimal structural interface that TSession must satisfy.
+ * Keeps Agent generic without coupling it to the concrete Session class.
+ */
+export interface AgentSession extends FlowSessionRef {
+  hooks: SessionHooks;
+  sessionData: SessionData;
+  onUserMessage(cb: (payload: { message: string }) => void): void;
+}
 
 // ============================================================
 // AgentCheckpointer
@@ -109,7 +119,7 @@ export type AgentSchema = {
  * }
  * ```
  */
-export abstract class Agent<TApp = unknown, TUser = unknown, TSession = unknown> {
+export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends AgentSession = AgentSession> {
   /** Human-readable name for this agent. */
   abstract name: string;
 
@@ -190,8 +200,8 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession = unknown>
   }
 
   private async _initAndExecute(startFlow: string, input: unknown): Promise<unknown> {
-    if (this.checkpointer) {
-      const userId = (this.user as any)?.id ?? 'unknown';
+    if (this.checkpointer && !this.agentSessionId) {
+      const userId = (this.user as { id?: string })?.id ?? 'unknown';
       this.agentSessionId = await this.checkpointer.createAgentSession(
         this.constructor.name,
         this._resolvedSchema(),
@@ -224,9 +234,9 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession = unknown>
    * @param flowName - name of the flow to start from (key in flowConstructors)
    * @param input    - input handed to that flow's createSession and run()
    */
-  runFrom(flowName: string, input: unknown): Promise<unknown> {
+  runFrom(flowName: string, input: unknown, existingSession?: TSession): Promise<unknown> {
     this.paused = false;
-    this.runPromise = this._executeFrom(flowName, input);
+    this.runPromise = this._executeFrom(flowName, input, existingSession);
     return this.runPromise;
   }
 
@@ -257,15 +267,14 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession = unknown>
     if (!FlowClass) {
       throw new Error(`Agent "${this.constructor.name}": no constructor for flow "${flowName}"`);
     }
-    const s = session as any;
-    const nodeName: string = s.currentNodeName ?? s.sessionData?.currentNodeName;
-    const packetData: unknown = s.currentPacketData ?? s.sessionData?.currentPacketData;
+    const nodeName = session.sessionData.currentNodeName;
+    const packetData: unknown = session.sessionData.currentPacketData;
     if (!nodeName) {
       throw new Error(`Agent "${this.constructor.name}": session has no currentNodeName — cannot resume`);
     }
 
     const flow = new FlowClass();
-    flow.session = session as any;
+    flow.session = session;
 
     this.activeFlows.push(flow);
     this.activeSessions.push(session);
@@ -273,7 +282,7 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession = unknown>
     const ctx = context ?? this.buildContext(session, packetData);
     const inPacket = { data: packetData, deps: this.app, context: ctx };
 
-    const promise = flow.runFrom(nodeName, inPacket as any).finally(() => {
+    const promise = flow.runFrom(nodeName, inPacket).finally(() => {
       this.activeFlows = this.activeFlows.filter((f) => f !== flow);
       this.activeSessions = this.activeSessions.filter((s) => s !== session);
     });
@@ -293,7 +302,7 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession = unknown>
     throw new Error(`Agent "${this.constructor.name}" has multiple flows but no schema defined`);
   }
 
-  private async _executeFrom(flowName: string, input: unknown): Promise<unknown> {
+  private async _executeFrom(flowName: string, input: unknown, existingSession?: TSession): Promise<unknown> {
     const FlowClass = this.flowConstructors[flowName];
     if (!FlowClass) {
       throw new Error(`Agent "${this.constructor.name}": no constructor for flow "${flowName}"`);
@@ -315,12 +324,14 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession = unknown>
       await this.checkpointer.checkpointFlow(this.agentSessionId, flowName, input);
     }
 
-    // Create session — flow is responsible for building its system prompt
-    const session = (await flow.createSession(this.app, this.user, this.parent, input)) as TSession;
+    // Reuse existing session if provided (restore path), otherwise create a new one
+    const session =
+      existingSession ?? ((await flow.createSession(this.app, this.user, this.parent, input)) as TSession);
+    flow.session = session;
 
-    // Link flow session to agent session
-    if (this.checkpointer && this.agentSessionId) {
-      await this.checkpointer.linkFlowSession((session as any).id, this.agentSessionId);
+    // Link flow session to agent session (only for newly created sessions)
+    if (!existingSession && this.checkpointer && this.agentSessionId) {
+      await this.checkpointer.linkFlowSession(session.id, this.agentSessionId);
     }
 
     this.allSessions.push(session);
@@ -328,7 +339,7 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession = unknown>
     this.activeFlows.push(flow);
 
     if (this.sessionHooks) {
-      Object.assign((session as any).hooks, this.sessionHooks);
+      Object.assign(session.hooks, this.sessionHooks);
     }
 
     const context = this.buildContext(session, input);
@@ -362,39 +373,78 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession = unknown>
    * @param app          - app instance
    * @param user         - user instance
    */
-  static restore<TApp, TUser, TSession>(
-    AgentClass: new (
-      app: TApp,
-      user: TUser,
-      parent?: TSession,
-      schemaOverride?: AgentSchema,
-    ) => Agent<TApp, TUser, TSession>,
-    agentSession: AgentSessionData,
-    flowSessions: SessionData[],
-    app: TApp,
-    user: TUser,
-  ): { agent: Agent<TApp, TUser, TSession>; promise: Promise<unknown> } {
+  /**
+   * Resume this agent from a persisted AgentSession checkpoint.
+   * Call after wiring checkpointer and sessionHooks — this starts execution immediately.
+   *
+   * @param agentSession - persisted AgentSession record (must have currentFlowName set)
+   * @param flowSessions - live TSession objects linked to this AgentSession
+   */
+  async restore(agentSession: AgentSessionData, flowSessions: TSession[]): Promise<unknown> {
     if (!agentSession.currentFlowName) {
       throw new Error(`Agent.restore: AgentSession '${agentSession.id}' has no currentFlowName checkpoint`);
     }
 
-    const agent = new AgentClass(app, user, undefined, agentSession.agentSchema as AgentSchema);
-    agent.agentSessionId = agentSession.id;
-
     const currentFlowSession = flowSessions
-      .filter((fs) => fs.flowName === agentSession.currentFlowName)
-      .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())
-      .find((fs) => fs.status === 'running' || fs.status === 'paused');
+      .filter((fs) => fs.sessionData.flowName === agentSession.currentFlowName)
+      .sort((a, b) => b.sessionData.startedAt.getTime() - a.sessionData.startedAt.getTime())
+      .find((fs) => fs.sessionData.status === 'running' || fs.sessionData.status === 'paused');
 
-    let promise: Promise<unknown>;
+    const status = currentFlowSession?.sessionData.status;
+    const nodeName = currentFlowSession?.sessionData.currentNodeName;
 
-    if (currentFlowSession) {
-      promise = agent.resume(agentSession.currentFlowName, currentFlowSession as unknown as TSession);
-    } else {
-      promise = agent.runFrom(agentSession.currentFlowName, agentSession.currentFlowInput);
+    console.log(`[Agent.restore] agentSession='${agentSession.id}' currentFlowName='${agentSession.currentFlowName}' currentFlowSession=${currentFlowSession ? `id='${currentFlowSession.id}' status='${status}' nodeName='${nodeName}'` : 'none'}`);
+
+    // If the session is paused, it is waiting for user input — do not execute any node.
+    // Register an onUserMessage listener and return a pending promise that resolves
+    // when the user replies and the resumed flow finishes.
+    if (currentFlowSession && status === 'paused' && nodeName) {
+      console.log(`[Agent.restore] session is paused at '${nodeName}' — waiting for user input`);
+      this.runPromise = new Promise<unknown>((resolve, reject) => {
+        currentFlowSession.onUserMessage(({ message }: { message: string }) => {
+          console.log(`[Agent.restore] user message received, resuming from '${nodeName}'`);
+          // Update packet data to the actual user message so the node receives real input
+          currentFlowSession.sessionData.currentPacketData = message;
+          this._runAndFinalize(agentSession, currentFlowSession, nodeName)
+            .then(resolve)
+            .catch(reject);
+        });
+      });
+      return this.runPromise;
     }
 
-    return { agent, promise };
+    return this._runAndFinalize(agentSession, currentFlowSession, nodeName);
+  }
+
+  private async _runAndFinalize(
+    agentSession: AgentSessionData,
+    currentFlowSession: TSession | undefined,
+    nodeName: string | undefined,
+  ): Promise<unknown> {
+    try {
+      const result = nodeName && currentFlowSession
+        ? await this.resume(agentSession.currentFlowName!, currentFlowSession)
+        : await this.runFrom(agentSession.currentFlowName!, agentSession.currentFlowInput, currentFlowSession);
+      const branch = (result as any)?.branch;
+      const errorData = (result as any)?.data;
+      console.log(`[Agent.restore] finished agentSession='${agentSession.id}' branch='${branch}'${branch === 'error' ? ` error=${errorData}` : ''}`);
+      if (branch === 'error') {
+        if (this.checkpointer && this.agentSessionId) {
+          await this.checkpointer.finalizeAgentSession(this.agentSessionId, 'failed').catch(() => {});
+        }
+        return result;
+      }
+      if (branch !== 'abort' && this.checkpointer && this.agentSessionId) {
+        await this.checkpointer.finalizeAgentSession(this.agentSessionId, 'completed');
+      }
+      return result;
+    } catch (err) {
+      console.error(`[Agent.restore] threw agentSession='${agentSession.id}'`, err);
+      if (this.checkpointer && this.agentSessionId) {
+        await this.checkpointer.finalizeAgentSession(this.agentSessionId, 'failed').catch(() => {});
+      }
+      throw err;
+    }
   }
 
   private _resolveNext(wiring: AgentFlowWiring, branch: string): string | null {

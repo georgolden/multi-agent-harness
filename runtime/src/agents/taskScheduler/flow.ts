@@ -5,12 +5,11 @@ import { App } from '../../app.js';
 import { User } from '../../data/userRepository/types.js';
 import { Session } from '../../services/sessionService/session.js';
 import { createSystemPrompt } from './prompts/index.js';
-import { UserMessage } from '../../utils/message.js';
+import { SystemMessage, UserMessage } from '../../utils/message.js';
 
 export class TaskSchedulerFlow extends Flow<App, TaskSchedulerContext>
   {
 
-  name = 'taskScheduler';
   description =
     'TaskScheduler agent flow that allows users to schedule tasks. It helps to:\n• Schedule one-time reminders and agent flows\n• Set up recurring reminders and agent flows\n• List your active tasks\n• Cancel tasks';
   parameters = taskSchedulerInputSchema;
@@ -39,10 +38,11 @@ export class TaskSchedulerFlow extends Flow<App, TaskSchedulerContext>
 
     const session = await services.sessionService.create({
       userId: user.id,
-      flowName: this.name,
+      flowName: this.constructor.name,
       systemPrompt,
     });
 
+    await session.addMessages([{ message: new SystemMessage(systemPrompt).toJSON() }]);
     await session.addUserMessage(new UserMessage(input.message));
     await session.setFlowSchema(this.toSchema());
 

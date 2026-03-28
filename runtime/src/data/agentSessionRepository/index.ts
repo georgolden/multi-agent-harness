@@ -134,6 +134,14 @@ export class AgentSessionRepository {
     return rows.map((r) => this.mapRow(r));
   }
 
+  async getByUserIdInWindow(userId: string, from: Date, to: Date): Promise<AgentSessionData[]> {
+    const rows = await this.prisma.agentSession.findMany({
+      where: { userId, startedAt: { gte: from, lt: to } },
+      orderBy: { startedAt: 'desc' },
+    });
+    return rows.map((r) => this.mapRow(r));
+  }
+
   async getIncomplete(): Promise<AgentSessionData[]> {
     const rows = await this.prisma.agentSession.findMany({
       where: { status: { in: ['running', 'paused'] } },

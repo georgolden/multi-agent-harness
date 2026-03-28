@@ -278,7 +278,7 @@ export abstract class LLMMessage {
             text: data.content,
             toolCalls: data.tool_calls.map((tc) => ({
               id: tc.id,
-              name: tc.function.name,
+              name: tc.function.name.trim(),
               args: JSON.parse(tc.function.arguments) as Record<string, unknown>,
             })),
           });
@@ -418,7 +418,7 @@ export class AssistantToolCallMessage extends AssistantMessage {
         .filter((tc): tc is ChatCompletionMessageFunctionToolCall => tc.type === 'function')
         .map((tc) => ({
           id: tc.id,
-          name: tc.function.name,
+          name: tc.function.name.trim(),
           args: tc.function.arguments ? (JSON.parse(tc.function.arguments) as Record<string, unknown>) : {},
         })),
     });

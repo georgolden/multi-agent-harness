@@ -104,10 +104,13 @@ export class Agents {
           await this.app.data.agentSessionRepository.updateStatus(agentSession.id, 'failed');
           return;
         }
-        const flowSessions = await this.app.data.flowSessionRepository.getByAgentSessionId(agentSession.id);
-        const { agent, promise } = Agent.restore(AgentClass, agentSession, flowSessions, this.app, user);
+        const flowSessionData = await this.app.data.flowSessionRepository.getByAgentSessionId(agentSession.id);
+        console.log(`[Agents._recoverAgents] agentSession='${agentSession.id}' currentFlowName='${agentSession.currentFlowName}' flowSessionData:`, flowSessionData.map(d => ({ id: d.id, flowName: d.flowName, status: d.status, currentNodeName: d.currentNodeName })));
+        const flowSessions = flowSessionData.map((data) => new Session(data, this.app));
         const { bus } = this.app.infra;
         const { agentSessionRepository, flowSessionRepository } = this.app.data;
+        const agent = new AgentClass(this.app, user, undefined, agentSession.agentSchema as AgentSchema);
+        agent.agentSessionId = agentSession.id;
         agent.checkpointer = {
           createAgentSession: async (_agentName, agentSchema, userId) => {
             const record = await agentSessionRepository.create({ agentName: agent.name, agentSchema, userId });
@@ -117,6 +120,7 @@ export class Agents {
             await agentSessionRepository.updateCurrent(agentSessionId, flowName, flowInput);
           },
           finalizeAgentSession: async (agentSessionId, status) => {
+            console.log(`[Agents.checkpointer.finalizeAgentSession] id='${agentSessionId}' status='${status}'`, new Error('stack').stack);
             await agentSessionRepository.updateStatus(agentSessionId, status);
           },
           linkFlowSession: async (flowSessionId, agentSessionId) => {
@@ -131,6 +135,7 @@ export class Agents {
             bus.emit('session:message:update', { sessionId: s.id, flowName: s.flowName, userId: s.userId });
           },
         };
+        const promise = agent.restore(agentSession, flowSessions);
         this._wire(agent, promise);
         console.log(`[Agents] Restored agent '${agentSession.agentName}' session '${agentSession.id}'`);
       }),

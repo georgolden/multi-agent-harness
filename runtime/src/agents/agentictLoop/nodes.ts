@@ -22,7 +22,7 @@ import type { Tool } from '../../tools/index.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import type { AgenticLoopContext } from './types.js';
 import type OpenAI from 'openai';
-import { Session } from '../../services/sessionService/session.js';
+
 import {
   SystemMessage,
   UserMessage,
@@ -39,7 +39,7 @@ import { FillTemplateFlow } from '../fillTemplate/flow.js';
  * Session is already created by prepareAgenticLoop before flow.run().
  * Outputs the session for DecideAction to use.
  */
-export class PrepareInput extends Node<App, AgenticLoopContext, string, { default: Session }> {
+export class PrepareInput extends Node<App, AgenticLoopContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session, user } = p.context;
     let message = p.data;
@@ -58,11 +58,7 @@ export class PrepareInput extends Node<App, AgenticLoopContext, string, { defaul
     }
     console.log(`[PrepareInput.prep] Adding user message to session '${session.id}'`);
     await session.addUserMessage(new UserMessage(message));
-    return packet({
-      data: session,
-      context: p.context,
-      deps: p.deps,
-    });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 
@@ -78,7 +74,7 @@ export class PrepareInput extends Node<App, AgenticLoopContext, string, { defaul
 export class DecideAction extends Node<
   App,
   AgenticLoopContext,
-  Session,
+  void,
   { ask_user: string; tool_calls: LLMToolCall[]; submit_answer: string; loop: undefined }
 > {
   constructor({ maxLoopEntering = 10 }: { maxLoopEntering?: number }) {
@@ -86,7 +82,7 @@ export class DecideAction extends Node<
   }
 
   async run(p: this['In']): Promise<this['Out']> {
-    const session = p.data;
+    const session = p.context.session;
     const conversation = session.activeMessages.map((msg) => msg.message);
 
     // Convert stored ToolSchema[] to the OpenAI ChatCompletionTool format
@@ -181,17 +177,13 @@ export class AskUser extends Node<App, AgenticLoopContext, string, { default: vo
   }
 }
 
-export class UserResponse extends Node<App, AgenticLoopContext, string, { default: Session }> {
+export class UserResponse extends Node<App, AgenticLoopContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session!;
     const message = p.data;
     await session.addUserMessage(new UserMessage(message));
     await session.resume();
-    return packet({
-      data: session,
-      context: p.context,
-      deps: p.deps,
-    });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 
@@ -208,7 +200,7 @@ type ToolCallsExecResult = {
  * Finds each tool by name and calls tool.execute() — no hardcoded handlers.
  * Outputs the session so it loops back to DecideAction.
  */
-export class ToolCalls extends Node<App, AgenticLoopContext, LLMToolCall[], { default: Session; ask_user: string }> {
+export class ToolCalls extends Node<App, AgenticLoopContext, LLMToolCall[], { default: void; ask_user: string }> {
   async preprocess(p: this['In']): Promise<BatchPacket<LLMToolCall, App, AgenticLoopContext>> {
     const toolCalls = p.data;
     if (!toolCalls) throw new Error('toolCalls is required');
@@ -257,11 +249,7 @@ export class ToolCalls extends Node<App, AgenticLoopContext, LLMToolCall[], { de
         message: new ToolResultMessage({ toolCallId: result.tool_call_id, content: result.content }).toJSON(),
       })),
     );
-    return packet({
-      data: session,
-      context: p.context,
-      deps: p.deps,
-    });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 
   async fallback(
@@ -276,7 +264,7 @@ export class ToolCalls extends Node<App, AgenticLoopContext, LLMToolCall[], { de
       await session.addMessages([
         { message: new UserMessage(`Tool error: ${errMsg}. Please try a different approach.`).toJSON() },
       ]);
-      return packet({ data: session, context: p.context, deps: p.deps });
+      return packet({ data: undefined, context: p.context, deps: p.deps });
     }
     return packet({ data: errMsg, branch: 'ask_user', context: p.context, deps: p.deps });
   }

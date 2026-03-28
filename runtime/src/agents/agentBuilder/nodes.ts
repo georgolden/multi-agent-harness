@@ -15,16 +15,17 @@ import { TOOLS } from './tools.js';
 import { AssistantMessage, SystemMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
 import type { AgentBuilderContext, AgentBuilderInput } from './types.js';
 import type { App } from '../../app.js';
-import { Session } from '../../services/sessionService/session.js';
+import type { AgenticLoopSchema } from '../agentictLoop/flow.js';
+
 import type { LLMToolCall } from '../../utils/message.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
-export class PrepareInput extends Node<App, AgentBuilderContext, AgentBuilderInput, { default: Session }> {
+export class PrepareInput extends Node<App, AgentBuilderContext, AgentBuilderInput, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session } = p.context;
     console.log(`[agentBuilder.PrepareInput] Using session '${session.id}'`);
-    return packet({ data: session, context: p.context, deps: p.deps });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 
@@ -41,7 +42,7 @@ export class PrepareInput extends Node<App, AgentBuilderContext, AgentBuilderInp
 export class DecideAction extends Node<
   App,
   AgentBuilderContext,
-  Session,
+  void,
   { write_temp_file: LLMToolCall; ask_user: string; submit_answer: string }
 > {
   constructor() {
@@ -49,7 +50,7 @@ export class DecideAction extends Node<
   }
 
   async run(p: this['In']): Promise<this['Out']> {
-    const session = p.data;
+    const session = p.context.session;
     const messages = session.activeMessages.map((msg) => msg.message);
     const systemPrompt = session.systemPrompt;
 
@@ -61,21 +62,39 @@ export class DecideAction extends Node<
     await session.addMessages([{ message: assistantMsg.toJSON() }]);
 
     if ('toolCalls' in assistantMsg && assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0) {
-      const toolCall = assistantMsg.toolCalls[0];
+      const toolCalls = assistantMsg.toolCalls;
+      const submitCall = toolCalls.find((tc) => tc.name === 'submit_answer');
+      const otherCalls = toolCalls.filter((tc) => tc.name !== 'submit_answer');
 
-      if (toolCall.name === 'write_temp_file') {
-        console.log(`[agentBuilder.DecideAction] write_temp_file called — '${(toolCall.args as any).name}'`);
-        return packet({ data: toolCall, context: p.context, branch: 'write_temp_file', deps: p.deps });
+      // Execute all non-submit tool calls first (write_temp_file, etc.)
+      for (const toolCall of otherCalls) {
+        if (toolCall.name === 'write_temp_file') {
+          const { name, content } = toolCall.args as { name: string; content: string };
+          console.log(`[agentBuilder.DecideAction] write_temp_file called — '${name}'`);
+          await session.writeTempFile({ name, content });
+          await session.addMessages([{
+            message: new ToolResultMessage({
+              toolCallId: toolCall.id,
+              content: JSON.stringify({ success: true, name, contentLength: content.length }),
+            }).toJSON(),
+          }]);
+        }
       }
 
-      if (toolCall.name === 'submit_answer') {
+      // If submit_answer was included, exit immediately — no LLM round-trip needed
+      if (submitCall) {
         console.log(`[agentBuilder.DecideAction] submit_answer called, exiting`);
         return packet({
-          data: toolCall.args.answer as string,
+          data: submitCall.args.answer as string,
           context: p.context,
           branch: 'submit_answer',
           deps: p.deps,
         });
+      }
+
+      // Only write_temp_file (no submit yet) — loop back to DecideAction
+      if (otherCalls.length > 0) {
+        return packet({ data: undefined, context: p.context, deps: p.deps });
       }
     }
 
@@ -92,7 +111,7 @@ export class DecideAction extends Node<
  * WriteTempFile: persist the artifact the LLM just produced, ack the tool call,
  * then loop back to DecideAction so the LLM can continue the conversation.
  */
-export class WriteTempFile extends Node<App, AgentBuilderContext, LLMToolCall, { default: Session }> {
+export class WriteTempFile extends Node<App, AgentBuilderContext, LLMToolCall, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
     const toolCall = p.data;
@@ -111,7 +130,7 @@ export class WriteTempFile extends Node<App, AgentBuilderContext, LLMToolCall, {
       },
     ]);
 
-    return packet({ data: session, context: p.context, deps: p.deps });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 
@@ -136,13 +155,13 @@ export class AskUser extends Node<App, AgentBuilderContext, string, { default: v
 
 // ─── UserResponse ─────────────────────────────────────────────────────────────
 
-export class UserResponse extends Node<App, AgentBuilderContext, string, { default: Session }> {
+export class UserResponse extends Node<App, AgentBuilderContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
     const message = p.data;
     await session.addUserMessage(new UserMessage(message));
     await session.resume();
-    return packet({ data: session, context: p.context, deps: p.deps });
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 
@@ -154,15 +173,31 @@ export class UserResponse extends Node<App, AgentBuilderContext, string, { defau
  */
 export class SubmitAnswer extends Node<App, AgentBuilderContext, string, { default: string }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { session } = p.context;
-    const schema = p.data;
+    const { session, user } = p.context;
+    const app = p.deps;
+    const schemaRaw = p.data;
 
-    // Ensure the very last version is always persisted
-    await session.writeTempFile({ name: 'agent_schema.json', content: schema });
+    await session.writeTempFile({ name: 'agent_schema.json', content: schemaRaw });
+
+    let parsed: AgenticLoopSchema;
+    try {
+      parsed = JSON.parse(schemaRaw) as AgenticLoopSchema;
+    } catch (e) {
+      console.error(`[agentBuilder.SubmitAnswer] Failed to parse schema JSON: ${e}`);
+      await session.complete();
+      return exit({ data: schemaRaw, context: p.context, deps: p.deps });
+    }
+
+    try {
+      await app.data.agenticLoopSchemaRepository.createSchema({ userId: user.id, schema: parsed });
+      console.log(`[agentBuilder.SubmitAnswer] Schema '${parsed.flowName}' saved to DB`);
+    } catch (e) {
+      console.error(`[agentBuilder.SubmitAnswer] Failed to save schema to DB: ${e}`);
+    }
 
     console.log(`[agentBuilder.SubmitAnswer] Session '${session.id}' completed`);
     await session.complete();
 
-    return exit({ data: schema, context: p.context, deps: p.deps });
+    return exit({ data: schemaRaw, context: p.context, deps: p.deps });
   }
 }

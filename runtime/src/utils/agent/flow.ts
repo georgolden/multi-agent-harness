@@ -576,7 +576,7 @@ export abstract class Flow<
   // ── Self-description (required on every concrete subclass) ───────────────
 
   /** Human-readable name used to look up this flow. */
-  abstract name: string;
+  get name(): string { return this.constructor.name; }
   /** Human-readable description of what this flow does. */
   abstract description: string;
   /** TypeBox schema used to validate input before the Agent calls run(). */
@@ -905,7 +905,11 @@ export abstract class Flow<
             await this.session?.commitNodeTransaction('pause', result.data);
             return result;
           }
-          await this.session?.commitNodeTransaction(this._nodeName(pauseHandler), result.data);
+          // Checkpoint the pausing node (e.g. AskUser) with its own input data so
+          // restore re-runs it — re-registers the listener and waits for user input.
+          // Do NOT checkpoint pauseHandler (UserResponse) with undefined, which would
+          // cause restore to run UserResponse with no user input.
+          await this.session?.commitNodeTransaction(this._nodeName(currentNode), currentPacket.data);
           this._pausePending = false;
           const resumed = await this._suspendUntilResumed({ ...result, signal }, pauseHandler, currentNode);
           currentNode = pauseHandler;
@@ -939,6 +943,7 @@ export abstract class Flow<
     } catch (err) {
       await this.session?.rollbackNodeTransaction();
       const safeErr = ensureError(err);
+      console.error(`[Flow._traverse] '${this.constructor.name}' unhandled error:`, safeErr);
       const errPacket = {
         data: safeErr,
         branch: 'error',
