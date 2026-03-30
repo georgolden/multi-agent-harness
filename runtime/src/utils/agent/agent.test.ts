@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
-import { Agent, type AgentSchema } from './agent.js';
-import { Flow, Node, type FlowSchema, packet, exit, type SinglePacket } from './flow.js';
+import { Agent, type AgentSchema, type AgentCheckpointer, type BatchBranch } from './agent.js';
+import { Flow, Node, type FlowSchema, packet, exit, batchExit, type SinglePacket } from './flow.js';
 import type { SessionData, SessionHooks } from '../../services/sessionService/types.js';
+import type { AgentSessionData, AgentStep, AgentStepItem } from '../../data/agentSessionRepository/types.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -790,5 +791,814 @@ describe('Agent — resume()', () => {
     expect(second.branch).toBe('exit');
     expect(agentRef.paused).toBe(false);
     expect(runCount).toBe(2);
+  });
+});
+
+// ─── 13. batchExit helper ────────────────────────────────────────────────────
+
+describe('batchExit helper', () => {
+  it('returns a BatchPacket with type batch and branch exit', () => {
+    const p = batchExit({ data: [1, 2, 3], deps: {}, context: {} });
+    expect(p.type).toBe('batch');
+    expect((p as any).branch).toBe('exit');
+    expect(p.data).toEqual([1, 2, 3]);
+  });
+
+  it('preserves deps and context', () => {
+    const deps = { svc: true };
+    const ctx = { user: 'u1' };
+    const p = batchExit({ data: ['a'], deps, context: ctx });
+    expect(p.deps).toBe(deps);
+    expect(p.context).toBe(ctx);
+  });
+});
+
+// ─── 14. BatchBranch — basic parallel execution ──────────────────────────────
+
+describe('Agent — BatchBranch basic parallel', () => {
+  it('spawns one chain per item and collects results', async () => {
+    const processed: unknown[] = [];
+    const PlannerFlow = makeFlowClass({
+      sessionId: 'planner',
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['task-a', 'task-b', 'task-c'], deps: {}, context: {} }) as any,
+    });
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => {
+        processed.push(i);
+        return exit({ data: { done: i }, deps: {}, context: {} });
+      },
+    });
+    const CollectorFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => exit({ data: i, deps: {}, context: {} }),
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'WorkerFlow', collect: 'CollectorFlow' } },
+        WorkerFlow: null,
+        CollectorFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, WorkerFlow, CollectorFlow }, schema))(APP, USER);
+    const result = (await agent.run({ message: 'go' })) as any;
+
+    expect(processed).toHaveLength(3);
+    expect(processed).toContain('task-a');
+    expect(processed).toContain('task-b');
+    expect(processed).toContain('task-c');
+    expect(result.data.results).toHaveLength(3);
+    expect(result.data.errors).toHaveLength(0);
+  });
+
+  it('collect: null returns aggregated results directly without routing to another flow', async () => {
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['x', 'y'], deps: {}, context: {} }) as any,
+    });
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => exit({ data: i, deps: {}, context: {} }),
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'WorkerFlow', collect: null } },
+        WorkerFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, WorkerFlow }, schema))(APP, USER);
+    const result = (await agent.run({ message: 'go' })) as any;
+
+    expect(result.results).toHaveLength(2);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('each spawned chain uses a separate session', async () => {
+    let sessionCount = 0;
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['a', 'b', 'c'], deps: {}, context: {} }) as any,
+    });
+
+    class CountingWorkerFlow extends Flow<any, any, any, any> {
+      description = 'worker';
+      parameters = Type.Any();
+      nodeConstructors = {
+        only: class extends Node<any, any, any, any> {
+          async run(p: SinglePacket<any, any, any>) {
+            return exit({ data: p.data, deps: p.deps, context: p.context });
+          }
+        },
+      };
+      constructor() {
+        super({ startNode: 'only', nodes: { only: null } });
+      }
+      async createSession(): Promise<MockSession> {
+        sessionCount++;
+        return mockSession({ id: `worker-${sessionCount}` });
+      }
+    }
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'CountingWorkerFlow', collect: null } },
+        CountingWorkerFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, CountingWorkerFlow: CountingWorkerFlow }, schema))(APP, USER);
+    await agent.run({ message: 'go' });
+
+    expect(sessionCount).toBe(3);
+    expect(agent.allSessions).toHaveLength(4); // 1 planner + 3 workers
+  });
+
+  it('all sessions added to allSessions including planner and workers', async () => {
+    const PlannerFlow = makeFlowClass({
+      sessionId: 'p1',
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: [1, 2], deps: {}, context: {} }) as any,
+    });
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => exit({ data: i, deps: {}, context: {} }),
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'WorkerFlow', collect: null } },
+        WorkerFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, WorkerFlow }, schema))(APP, USER);
+    await agent.run({ message: 'go' });
+
+    // planner + 2 workers
+    expect(agent.allSessions).toHaveLength(3);
+  });
+
+  it('activeSessions is empty after batch completes', async () => {
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: [1, 2, 3], deps: {}, context: {} }) as any,
+    });
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => exit({ data: i, deps: {}, context: {} }),
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'WorkerFlow', collect: null } },
+        WorkerFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, WorkerFlow }, schema))(APP, USER);
+    await agent.run({ message: 'go' });
+
+    expect(agent.activeSessions).toHaveLength(0);
+    expect(agent.activeFlows).toHaveLength(0);
+  });
+});
+
+// ─── 15. BatchBranch — error handling ────────────────────────────────────────
+
+describe('Agent — BatchBranch error handling', () => {
+  it('failed worker items land in errors array, not results', async () => {
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['ok', 'fail', 'ok2'], deps: {}, context: {} }) as any,
+    });
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => {
+        if (i === 'fail') throw new Error('worker exploded');
+        return exit({ data: i, deps: {}, context: {} });
+      },
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'WorkerFlow', collect: null } },
+        WorkerFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, WorkerFlow }, schema))(APP, USER);
+    const result = (await agent.run({ message: 'go' })) as any;
+
+    expect(result.results).toHaveLength(2);
+    expect(result.errors).toHaveLength(1);
+  });
+
+  it('all workers failing still resolves with empty results and full errors', async () => {
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['a', 'b'], deps: {}, context: {} }) as any,
+    });
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (_i: any) => {
+        throw new Error('boom');
+      },
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'WorkerFlow', collect: null } },
+        WorkerFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, WorkerFlow }, schema))(APP, USER);
+    const result = (await agent.run({ message: 'go' })) as any;
+
+    expect(result.results).toHaveLength(0);
+    expect(result.errors).toHaveLength(2);
+  });
+
+  it('collect flow still runs even when some workers fail', async () => {
+    let collectorInput: unknown;
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['ok', 'fail'], deps: {}, context: {} }) as any,
+    });
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => {
+        if (i === 'fail') throw new Error('exploded');
+        return exit({ data: i, deps: {}, context: {} });
+      },
+    });
+    const CollectorFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => {
+        collectorInput = i;
+        return exit({ data: i, deps: {}, context: {} });
+      },
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'WorkerFlow', collect: 'CollectorFlow' } },
+        WorkerFlow: null,
+        CollectorFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, WorkerFlow, CollectorFlow }, schema))(APP, USER);
+    await agent.run({ message: 'go' });
+
+    expect(collectorInput).toBeDefined();
+    expect((collectorInput as any).results).toHaveLength(1);
+    expect((collectorInput as any).errors).toHaveLength(1);
+  });
+});
+
+// ─── 16. BatchBranch — multi-flow worker chains ──────────────────────────────
+
+describe('Agent — BatchBranch worker chains', () => {
+  it('each spawned item runs a full multi-flow chain', async () => {
+    const visited: string[] = [];
+
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['item-1', 'item-2'], deps: {}, context: {} }) as any,
+    });
+    const ExecutorFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => {
+        visited.push(`executor:${i}`);
+        return exit({ data: { executed: i }, deps: {}, context: {} });
+      },
+    });
+    const ReviewerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => {
+        visited.push(`reviewer:${i.executed}`);
+        return exit({ data: i, deps: {}, context: {} });
+      },
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'ExecutorFlow', collect: null } },
+        ExecutorFlow: 'ReviewerFlow',
+        ReviewerFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, ExecutorFlow, ReviewerFlow }, schema))(APP, USER);
+    await agent.run({ message: 'go' });
+
+    expect(visited.filter((v) => v.startsWith('executor'))).toHaveLength(2);
+    expect(visited.filter((v) => v.startsWith('reviewer'))).toHaveLength(2);
+  });
+
+  it('data from executor is passed to reviewer within the same chain', async () => {
+    let reviewerSaw: unknown;
+
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['hello'], deps: {}, context: {} }) as any,
+    });
+    const ExecutorFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => exit({ data: { transformed: i.toUpperCase() }, deps: {}, context: {} }),
+    });
+    const ReviewerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => {
+        reviewerSaw = i;
+        return exit({ data: i, deps: {}, context: {} });
+      },
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'ExecutorFlow', collect: null } },
+        ExecutorFlow: 'ReviewerFlow',
+        ReviewerFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, ExecutorFlow, ReviewerFlow }, schema))(APP, USER);
+    await agent.run({ message: 'go' });
+
+    expect(reviewerSaw).toEqual({ transformed: 'HELLO' });
+  });
+
+  it('collect flow receives results from the end of the chain, not the start', async () => {
+    let collectorSaw: unknown;
+
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['a'], deps: {}, context: {} }) as any,
+    });
+    const ExecutorFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (_i: any) => exit({ data: { stage: 'executor-output' }, deps: {}, context: {} }),
+    });
+    const ReviewerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (_i: any) => exit({ data: { stage: 'reviewer-output' }, deps: {}, context: {} }),
+    });
+    const CollectorFlow = makeFlowClass({
+      parameters: Type.Object({}),
+      runFn: async (i: any) => {
+        collectorSaw = i;
+        return exit({ data: i, deps: {}, context: {} });
+      },
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'ExecutorFlow', collect: 'CollectorFlow' } },
+        ExecutorFlow: 'ReviewerFlow',
+        ReviewerFlow: null,
+        CollectorFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, ExecutorFlow, ReviewerFlow, CollectorFlow }, schema))(APP, USER);
+    await agent.run({ message: 'go' });
+
+    expect((collectorSaw as any).results[0].data).toEqual({ stage: 'reviewer-output' });
+  });
+});
+
+// ─── 17. BatchBranch — checkpointer integration ──────────────────────────────
+
+function makeCheckpointer() {
+  const steps: AgentStep[] = [];
+  const itemUpdates: { index: number; update: Partial<AgentStepItem> }[] = [];
+  const checkpointer: AgentCheckpointer = {
+    createAgentSession: vi.fn(async () => 'agent-sess-1'),
+    checkpointStep: vi.fn(async (_id, step) => {
+      steps.push(structuredClone(step));
+    }),
+    updateStepItem: vi.fn(async (_id, index, update) => {
+      itemUpdates.push({ index, update });
+    }),
+    finalizeAgentSession: vi.fn(async () => {}),
+    linkFlowSession: vi.fn(async () => {}),
+  };
+  return { checkpointer, steps, itemUpdates };
+}
+
+describe('Agent — BatchBranch checkpointer', () => {
+  it('checkpointStep called with parallel mode before batch runs', async () => {
+    const { checkpointer, steps } = makeCheckpointer();
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['a', 'b'], deps: {}, context: {} }) as any,
+    });
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Object({}),
+      runFn: async (i: any) => exit({ data: i, deps: {}, context: {} }),
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'WorkerFlow', collect: null } },
+        WorkerFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, WorkerFlow }, schema))(APP, USER);
+    agent.checkpointer = checkpointer;
+    await agent.run({ message: 'go' });
+
+    const parallelStep = steps.find((s) => s.mode === 'parallel');
+    expect(parallelStep).toBeDefined();
+    expect(parallelStep!.flow).toBe('WorkerFlow');
+    expect(parallelStep!.items).toHaveLength(2);
+    expect(parallelStep!.items.every((i) => i.status === 'running')).toBe(true);
+  });
+
+  it('updateStepItem called with done for each successful worker', async () => {
+    const { checkpointer, itemUpdates } = makeCheckpointer();
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['a', 'b', 'c'], deps: {}, context: {} }) as any,
+    });
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => exit({ data: i, deps: {}, context: {} }),
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'WorkerFlow', collect: null } },
+        WorkerFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, WorkerFlow }, schema))(APP, USER);
+    agent.checkpointer = checkpointer;
+    await agent.run({ message: 'go' });
+
+    const doneUpdates = itemUpdates.filter((u) => u.update.status === 'done');
+    expect(doneUpdates).toHaveLength(3);
+  });
+
+  it('updateStepItem called with failed for erroring workers', async () => {
+    const { checkpointer, itemUpdates } = makeCheckpointer();
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['ok', 'bad'], deps: {}, context: {} }) as any,
+    });
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => {
+        if (i === 'bad') throw new Error('boom');
+        return exit({ data: i, deps: {}, context: {} });
+      },
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'WorkerFlow', collect: null } },
+        WorkerFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, WorkerFlow }, schema))(APP, USER);
+    agent.checkpointer = checkpointer;
+    await agent.run({ message: 'go' });
+
+    const failedUpdates = itemUpdates.filter((u) => u.update.status === 'failed');
+    expect(failedUpdates).toHaveLength(1);
+  });
+
+  it('finalizeAgentSession completed called after successful batch', async () => {
+    const { checkpointer } = makeCheckpointer();
+    const PlannerFlow = makeFlowClass({
+      parameters: Type.Object({ message: Type.String() }),
+      runFn: async (_i: any) => batchExit({ data: ['a'], deps: {}, context: {} }) as any,
+    });
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Object({}),
+      runFn: async (i: any) => exit({ data: i, deps: {}, context: {} }),
+    });
+
+    const schema: AgentSchema = {
+      start: 'PlannerFlow',
+      flows: {
+        PlannerFlow: { exit: { mode: 'parallel', flow: 'WorkerFlow', collect: null } },
+        WorkerFlow: null,
+      },
+    };
+    const agent = new (makeAgent({ PlannerFlow, WorkerFlow }, schema))(APP, USER);
+    agent.checkpointer = checkpointer;
+    await agent.run({ message: 'go' });
+
+    expect(checkpointer.finalizeAgentSession).toHaveBeenCalledWith('agent-sess-1', 'completed');
+  });
+});
+
+// ─── 18. restore — single mode ───────────────────────────────────────────────
+
+describe('Agent — restore single mode', () => {
+  function makeAgentSession(overrides: Partial<AgentSessionData> = {}): AgentSessionData {
+    return {
+      id: 'as-1',
+      userId: 'u1',
+      agentName: 'TestAgent',
+      agentSchema: {},
+      status: 'running',
+      startedAt: new Date(),
+      ...overrides,
+    };
+  }
+
+  it('throws if currentStep is missing', async () => {
+    const FC = makeFlowClass({});
+    const agent = new (makeAgent({ TestFlow: FC }))(APP, USER);
+    await expect(agent.restore(makeAgentSession(), [])).rejects.toThrow('no currentStep');
+  });
+
+  it('runs fresh when sessionId is null (no prior flowSession)', async () => {
+    const FC = makeFlowClass({ parameters: Type.Object({}) });
+    const schema: AgentSchema = { start: 'FC', flows: { FC: null } };
+    const agent = new (makeAgent({ FC }, schema))(APP, USER);
+
+    const agentSession = makeAgentSession({
+      currentStep: {
+        mode: 'single',
+        flow: 'FC',
+        collect: null,
+        items: [{ input: { msg: 'hello' }, sessionId: null, status: 'running' }],
+      },
+    });
+
+    const result = (await agent.restore(agentSession, [])) as any;
+    expect(result.branch).toBe('exit');
+  });
+
+  it('resumes from node checkpoint when flowSession exists with currentNodeName', async () => {
+    let ranWith: unknown;
+    const FC = makeFlowClass({
+      parameters: Type.Object({}),
+      runFn: async (i: any) => {
+        ranWith = i;
+        return exit({ data: i, deps: {}, context: {} });
+      },
+    });
+    const schema: AgentSchema = { start: 'FC', flows: { FC: null } };
+    const agent = new (makeAgent({ FC }, schema))(APP, USER);
+
+    const session = mockSession({ id: 'fs-1', currentNodeName: 'only', currentPacketData: { resumed: true } });
+    const agentSession = makeAgentSession({
+      currentStep: {
+        mode: 'single',
+        flow: 'FC',
+        collect: null,
+        items: [{ input: {}, sessionId: 'fs-1', status: 'running' }],
+      },
+    });
+
+    await agent.restore(agentSession, [session]);
+    expect(ranWith).toEqual({ resumed: true });
+  });
+
+  it('sets agentSessionId from agentSession.id', async () => {
+    const FC = makeFlowClass({ parameters: Type.Object({}) });
+    const schema: AgentSchema = { start: 'FC', flows: { FC: null } };
+    const agent = new (makeAgent({ FC }, schema))(APP, USER);
+
+    const agentSession = makeAgentSession({
+      id: 'my-agent-session',
+      currentStep: {
+        mode: 'single',
+        flow: 'FC',
+        collect: null,
+        items: [{ input: {}, sessionId: null, status: 'running' }],
+      },
+    });
+
+    await agent.restore(agentSession, []);
+    expect(agent.agentSessionId).toBe('my-agent-session');
+  });
+
+  it('calls finalizeAgentSession completed on success', async () => {
+    const { checkpointer } = makeCheckpointer();
+    const FC = makeFlowClass({ parameters: Type.Object({}) });
+    const schema: AgentSchema = { start: 'FC', flows: { FC: null } };
+    const agent = new (makeAgent({ FC }, schema))(APP, USER);
+    agent.checkpointer = checkpointer;
+    agent.agentSessionId = 'as-1';
+
+    const agentSession = makeAgentSession({
+      id: 'as-1',
+      currentStep: {
+        mode: 'single',
+        flow: 'FC',
+        collect: null,
+        items: [{ input: {}, sessionId: null, status: 'running' }],
+      },
+    });
+
+    await agent.restore(agentSession, []);
+    expect(checkpointer.finalizeAgentSession).toHaveBeenCalledWith('as-1', 'completed');
+  });
+
+  it('calls finalizeAgentSession failed when flow throws', async () => {
+    const { checkpointer } = makeCheckpointer();
+    const FC = makeFlowClass({
+      parameters: Type.Object({}),
+      runFn: async () => {
+        throw new Error('crash');
+      },
+    });
+    const schema: AgentSchema = { start: 'FC', flows: { FC: null } };
+    const agent = new (makeAgent({ FC }, schema))(APP, USER);
+    agent.checkpointer = checkpointer;
+    agent.agentSessionId = 'as-1';
+
+    const agentSession = makeAgentSession({
+      id: 'as-1',
+      currentStep: {
+        mode: 'single',
+        flow: 'FC',
+        collect: null,
+        items: [{ input: {}, sessionId: null, status: 'running' }],
+      },
+    });
+
+    await agent.restore(agentSession, []).catch(() => {});
+    expect(checkpointer.finalizeAgentSession).toHaveBeenCalledWith('as-1', 'failed');
+  });
+});
+
+// ─── 19. restore — parallel mode ─────────────────────────────────────────────
+
+describe('Agent — restore parallel mode', () => {
+  function makeAgentSession(overrides: Partial<AgentSessionData> = {}): AgentSessionData {
+    return {
+      id: 'as-2',
+      userId: 'u1',
+      agentName: 'TestAgent',
+      agentSchema: {},
+      status: 'running',
+      startedAt: new Date(),
+      ...overrides,
+    };
+  }
+
+  it('skips done items and uses their stored result', async () => {
+    const executed: unknown[] = [];
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => {
+        executed.push(i);
+        return exit({ data: i, deps: {}, context: {} });
+      },
+    });
+    const schema: AgentSchema = {
+      start: 'WorkerFlow',
+      flows: { WorkerFlow: null },
+    };
+    const agent = new (makeAgent({ WorkerFlow }, schema))(APP, USER);
+
+    const agentSession = makeAgentSession({
+      currentStep: {
+        mode: 'parallel',
+        flow: 'WorkerFlow',
+        collect: null,
+        items: [
+          { input: 'a', sessionId: null, status: 'done', result: { branch: 'exit', data: 'a-done' } },
+          { input: 'b', sessionId: null, status: 'running' },
+          { input: 'c', sessionId: null, status: 'done', result: { branch: 'exit', data: 'c-done' } },
+        ],
+      },
+    });
+
+    const result = (await agent.restore(agentSession, [])) as any;
+    // only item b should be re-executed
+    expect(executed).toHaveLength(1);
+    expect(executed[0]).toBe('b');
+    expect(result.results).toHaveLength(3);
+  });
+
+  it('failed items from checkpoint are treated as errors on restore', async () => {
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => exit({ data: i, deps: {}, context: {} }),
+    });
+    const schema: AgentSchema = { start: 'WorkerFlow', flows: { WorkerFlow: null } };
+    const agent = new (makeAgent({ WorkerFlow }, schema))(APP, USER);
+
+    const agentSession = makeAgentSession({
+      currentStep: {
+        mode: 'parallel',
+        flow: 'WorkerFlow',
+        collect: null,
+        items: [
+          { input: 'a', sessionId: null, status: 'done', result: { branch: 'exit', data: 'ok' } },
+          { input: 'b', sessionId: null, status: 'failed', result: 'Error: previous crash' },
+        ],
+      },
+    });
+
+    const result = (await agent.restore(agentSession, [])) as any;
+    expect(result.results).toHaveLength(1);
+    expect(result.errors).toHaveLength(1);
+  });
+
+  it('running item with flowSession resumes from node checkpoint', async () => {
+    let ranWith: unknown;
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => {
+        ranWith = i;
+        return exit({ data: i, deps: {}, context: {} });
+      },
+    });
+    const schema: AgentSchema = { start: 'WorkerFlow', flows: { WorkerFlow: null } };
+    const agent = new (makeAgent({ WorkerFlow }, schema))(APP, USER);
+
+    const session = mockSession({ id: 'fs-w1', currentNodeName: 'only', currentPacketData: { resumed: 42 } });
+    const agentSession = makeAgentSession({
+      currentStep: {
+        mode: 'parallel',
+        flow: 'WorkerFlow',
+        collect: null,
+        items: [{ input: {}, sessionId: 'fs-w1', status: 'running' }],
+      },
+    });
+
+    await agent.restore(agentSession, [session]);
+    expect(ranWith).toEqual({ resumed: 42 });
+  });
+
+  it('routes to collect flow after all items finish', async () => {
+    let collectorRan = false;
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => exit({ data: i, deps: {}, context: {} }),
+    });
+    const CollectorFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => {
+        collectorRan = true;
+        return exit({ data: i, deps: {}, context: {} });
+      },
+    });
+    const schema: AgentSchema = {
+      start: 'WorkerFlow',
+      flows: { WorkerFlow: null, CollectorFlow: null },
+    };
+    const agent = new (makeAgent({ WorkerFlow, CollectorFlow }, schema))(APP, USER);
+
+    const agentSession = makeAgentSession({
+      currentStep: {
+        mode: 'parallel',
+        flow: 'WorkerFlow',
+        collect: 'CollectorFlow',
+        items: [{ input: 'x', sessionId: null, status: 'running' }],
+      },
+    });
+
+    await agent.restore(agentSession, []);
+    expect(collectorRan).toBe(true);
+  });
+
+  it('updateStepItem called for re-executed running items', async () => {
+    const { checkpointer, itemUpdates } = makeCheckpointer();
+    const WorkerFlow = makeFlowClass({
+      parameters: Type.Any(),
+      runFn: async (i: any) => exit({ data: i, deps: {}, context: {} }),
+    });
+    const schema: AgentSchema = { start: 'WorkerFlow', flows: { WorkerFlow: null } };
+    const agent = new (makeAgent({ WorkerFlow }, schema))(APP, USER);
+    agent.checkpointer = checkpointer;
+    agent.agentSessionId = 'as-2';
+
+    const agentSession = makeAgentSession({
+      currentStep: {
+        mode: 'parallel',
+        flow: 'WorkerFlow',
+        collect: null,
+        items: [
+          { input: 'a', sessionId: null, status: 'done', result: 'prev' },
+          { input: 'b', sessionId: null, status: 'running' },
+        ],
+      },
+    });
+
+    await agent.restore(agentSession, []);
+    // only item index 1 was re-run, so only that index gets a done status update
+    const doneUpdate = itemUpdates.find((u) => u.index === 1 && u.update.status === 'done');
+    expect(doneUpdate).toBeDefined();
+    // item index 0 was already done — no status update for it
+    expect(itemUpdates.find((u) => u.index === 0 && u.update.status !== undefined)).toBeUndefined();
   });
 });

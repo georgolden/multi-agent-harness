@@ -99,13 +99,13 @@ export class Agents {
           await this.app.data.agentSessionRepository.updateStatus(agentSession.id, 'failed');
           return;
         }
-        if (!agentSession.currentFlowName) {
+        if (!agentSession.currentStep) {
           console.warn(`[Agents] Agent session '${agentSession.id}' has no checkpoint — marking failed`);
           await this.app.data.agentSessionRepository.updateStatus(agentSession.id, 'failed');
           return;
         }
         const flowSessionData = await this.app.data.flowSessionRepository.getByAgentSessionId(agentSession.id);
-        console.log(`[Agents._recoverAgents] agentSession='${agentSession.id}' currentFlowName='${agentSession.currentFlowName}' flowSessionData:`, flowSessionData.map(d => ({ id: d.id, flowName: d.flowName, status: d.status, currentNodeName: d.currentNodeName })));
+        console.log(`[Agents._recoverAgents] agentSession='${agentSession.id}' currentStep=`, agentSession.currentStep, `flowSessionData:`, flowSessionData.map(d => ({ id: d.id, flowName: d.flowName, status: d.status, currentNodeName: d.currentNodeName })));
         const flowSessions = flowSessionData.map((data) => new Session(data, this.app));
         const { bus } = this.app.infra;
         const { agentSessionRepository, flowSessionRepository } = this.app.data;
@@ -116,8 +116,15 @@ export class Agents {
             const record = await agentSessionRepository.create({ agentName: agent.name, agentSchema, userId });
             return record.id;
           },
-          checkpointFlow: async (agentSessionId, flowName, flowInput) => {
-            await agentSessionRepository.updateCurrent(agentSessionId, flowName, flowInput);
+          checkpointStep: async (agentSessionId, step) => {
+            await agentSessionRepository.updateCurrent(agentSessionId, step);
+          },
+          updateStepItem: async (agentSessionId, index, update) => {
+            const record = await agentSessionRepository.getById(agentSessionId);
+            if (!record?.currentStep) return;
+            const items = [...record.currentStep.items];
+            items[index] = { ...items[index], ...update };
+            await agentSessionRepository.updateCurrent(agentSessionId, { ...record.currentStep, items });
           },
           finalizeAgentSession: async (agentSessionId, status) => {
             console.log(`[Agents.checkpointer.finalizeAgentSession] id='${agentSessionId}' status='${status}'`, new Error('stack').stack);
@@ -235,8 +242,15 @@ export class Agents {
         const record = await agentSessionRepository.create({ agentName: agent.name, agentSchema, userId });
         return record.id;
       },
-      checkpointFlow: async (agentSessionId, flowName, flowInput) => {
-        await agentSessionRepository.updateCurrent(agentSessionId, flowName, flowInput);
+      checkpointStep: async (agentSessionId, step) => {
+        await agentSessionRepository.updateCurrent(agentSessionId, step);
+      },
+      updateStepItem: async (agentSessionId, index, update) => {
+        const record = await agentSessionRepository.getById(agentSessionId);
+        if (!record?.currentStep) return;
+        const items = [...record.currentStep.items];
+        items[index] = { ...items[index], ...update };
+        await agentSessionRepository.updateCurrent(agentSessionId, { ...record.currentStep, items });
       },
       finalizeAgentSession: async (agentSessionId, status) => {
         await agentSessionRepository.updateStatus(agentSessionId, status);

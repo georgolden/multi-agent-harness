@@ -1,7 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import type { App } from '../../app.js';
-import type { AgentSessionData, AgentStatus, CreateAgentSessionParams } from './types.js';
+import type { AgentSessionData, AgentStatus, AgentStep, CreateAgentSessionParams } from './types.js';
 
 /** Any Prisma client or interactive-transaction client */
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
@@ -50,12 +50,12 @@ export class AgentSessionRepository {
     });
   }
 
-  async commitTransaction(agentSessionId: string, currentFlowName: string, currentFlowInput: unknown): Promise<void> {
+  async commitTransaction(agentSessionId: string, currentStep: AgentStep): Promise<void> {
     const state = this._txMap.get(agentSessionId);
     if (!state) return;
     await (state.tx as any).agentSession.update({
       where: { id: agentSessionId },
-      data: { currentFlowName, currentFlowInput: currentFlowInput as any },
+      data: { currentStep: currentStep as any },
     });
     this._txMap.delete(agentSessionId);
     state.commit();
@@ -77,8 +77,7 @@ export class AgentSessionRepository {
       agentName: row.agentName,
       agentSchema: row.agentSchema,
       status: row.status as AgentStatus,
-      currentFlowName: row.currentFlowName ?? undefined,
-      currentFlowInput: row.currentFlowInput ?? undefined,
+      currentStep: row.currentStep ?? undefined,
       startedAt: row.startedAt,
       endedAt: row.endedAt ?? undefined,
     };
@@ -102,11 +101,11 @@ export class AgentSessionRepository {
     return this.mapRow(row);
   }
 
-  async updateCurrent(agentSessionId: string, currentFlowName: string, currentFlowInput: unknown): Promise<void> {
+  async updateCurrent(agentSessionId: string, currentStep: AgentStep): Promise<void> {
     const client = this._client(agentSessionId) as any;
     await client.agentSession.update({
       where: { id: agentSessionId },
-      data: { currentFlowName, currentFlowInput: currentFlowInput as any },
+      data: { currentStep: currentStep as any },
     });
   }
 

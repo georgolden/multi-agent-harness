@@ -35,8 +35,12 @@
   - [x] agent builder of agents
   - build secretary agent/agents
   - execute skill tool
-  - UI
-  - Telegram Channel
+  - [x] UI
+  - Session: temp files history
+  - [x] Agent: parallel flow execution and schema extention for it
+  - All Agents: continue agent after completed
+  - Agent Builder: update builder to support parallel
+  - [ ] Telegram Channel
   - autonomous mode - mimic user is the best way to not tweak agent. agent could be user of another agent
   - sandboxing and security tweaks for outside agents
   - agents for creating skills/tools

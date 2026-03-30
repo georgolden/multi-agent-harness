@@ -220,6 +220,20 @@ export const error = <TData = undefined, TDeps = unknown, TContext = unknown>(op
 }): SinglePacket<TData, TDeps, TContext> => ({ ...opts, branch: 'error' });
 
 /**
+ * Terminate the containing Flow successfully with a batch of items.
+ * Use this when a flow produces multiple items to be processed in parallel
+ * by the agent via a BatchBranch wiring.
+ *
+ * @example
+ *   return batchExit({ data: [task1, task2, task3], deps: p.deps, context: p.context });
+ */
+export const batchExit = <TData, TDeps = unknown, TContext = unknown>(opts: {
+  data: TData[];
+  deps: TDeps;
+  context: TContext;
+}): BatchPacket<TData, TDeps, TContext> => ({ type: 'batch', branch: 'exit', ...opts });
+
+/**
  * Pause the containing Flow. The flow suspends until `node.resume(packet)` or
  * `flow.resume(packet)` is called with a packet to pass to the next node.
  *
@@ -370,7 +384,7 @@ export abstract class Node<
   ): Promise<SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>> {
     try {
       // 1. Preprocess — single/batch decision point
-      const preprocessed = this.preprocess ? await this.preprocess(inPacket as any) : inPacket;
+      const preprocessed = this.preprocess ? await this.preprocess(inPacket) : inPacket;
 
       // 2. Run
       let result: SinglePacket<any, TDeps, TContext> | BatchPacket<any, TDeps, TContext>;
@@ -467,7 +481,7 @@ export abstract class Node<
 
       try {
         const promise = this.run(p as this['In']);
-        if (timeout === undefined) return (await promise) as any;
+        if (timeout === undefined) return (await promise) as SinglePacket<unknown, TDeps, TContext>;
 
         const ac = new AbortController();
         const timer = sleep(timeout, { signal: ac.signal }).then<never>(() => {
@@ -478,7 +492,7 @@ export abstract class Node<
         });
 
         try {
-          return (await Promise.race([promise, timer])) as any;
+          return (await Promise.race([promise, timer])) as SinglePacket<unknown, TDeps, TContext>;
         } finally {
           ac.abort();
         }
@@ -576,7 +590,9 @@ export abstract class Flow<
   // ── Self-description (required on every concrete subclass) ───────────────
 
   /** Human-readable name used to look up this flow. */
-  get name(): string { return this.constructor.name; }
+  get name(): string {
+    return this.constructor.name;
+  }
   /** Human-readable description of what this flow does. */
   abstract description: string;
   /** TypeBox schema used to validate input before the Agent calls run(). */
@@ -624,7 +640,7 @@ export abstract class Flow<
     // constructor arg and resolve lazily in _ensureSchema().
     if (schema) this._schema = schema;
     const opts = options ?? schema?.options ?? {};
-    (this as any).options = {
+    (this as { options: Node['options'] }).options = {
       maxRunTries: opts.maxRunTries ?? 1,
       wait: opts.wait ?? 0,
       timeout: opts.timeout,
@@ -642,7 +658,7 @@ export abstract class Flow<
 
   private _ensureSchema(): FlowSchema {
     if (this._schema) return this._schema;
-    const s = (this as any).schema as FlowSchema | undefined;
+    const s = (this as { schema?: FlowSchema }).schema;
     if (!s)
       throw new Error(
         `Flow "${this.constructor.name}" has no schema — define a schema property or pass one to the constructor`,
@@ -851,7 +867,7 @@ export abstract class Flow<
             currentPacket = { ...errPacket, signal };
             continue;
           }
-          if (this.fallback) return this.fallback(inPacket as any, errData);
+          if (this.fallback) return this.fallback(inPacket as this['In'], errData);
           return errPacket;
         }
 
@@ -894,7 +910,7 @@ export abstract class Flow<
           await this.session?.rollbackNodeTransaction();
           const errVal = (result as SinglePacket<any>).data;
           if (this.fallback)
-            return this.fallback(inPacket as any, errVal instanceof Error ? errVal : new Error(String(errVal)));
+            return this.fallback(inPacket as this['In'], errVal instanceof Error ? errVal : new Error(String(errVal)));
           return result;
         }
 

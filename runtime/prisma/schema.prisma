@@ -82,8 +82,7 @@ model AgentSession {
   agentName        String    @map("agent_name") @db.VarChar(255)
   agentSchema      Json      @map("agent_schema")
   status           String    @default("running") @db.VarChar(20)
-  currentFlowName  String?   @map("current_flow_name") @db.VarChar(255)
-  currentFlowInput Json?     @map("current_flow_input")
+  currentStep      Json?     @map("current_step")
   startedAt        DateTime  @default(now()) @map("started_at")
   endedAt          DateTime? @map("ended_at")
 

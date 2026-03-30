@@ -2,7 +2,10 @@ import { Value } from '@sinclair/typebox/value';
 import type { TObject } from '@sinclair/typebox';
 import type { Flow, FlowSessionRef } from './flow.js';
 import type { SessionHooks, SessionData } from '../../services/sessionService/types.js';
-import type { AgentSessionData } from '../../data/agentSessionRepository/types.js';
+import type { AgentSessionData, AgentStep, AgentStepItem } from '../../data/agentSessionRepository/types.js';
+
+/** Minimal shape of what the agent reads from a flow result packet. */
+type FlowResult = { branch?: string; data?: unknown };
 
 /**
  * Minimal structural interface that TSession must satisfy.
@@ -26,8 +29,10 @@ export interface AgentSession extends FlowSessionRef {
 export interface AgentCheckpointer {
   /** Create a new AgentSession record and return its id. */
   createAgentSession(agentName: string, agentSchema: unknown, userId: string): Promise<string>;
-  /** Atomically checkpoint which flow is currently running and what its input was. */
-  checkpointFlow(agentSessionId: string, flowName: string, flowInput: unknown): Promise<void>;
+  /** Atomically checkpoint the current step (single or parallel). */
+  checkpointStep(agentSessionId: string, step: AgentStep): Promise<void>;
+  /** Update a single item within the current parallel step. */
+  updateStepItem(agentSessionId: string, index: number, update: Partial<AgentStepItem>): Promise<void>;
   /** Mark the AgentSession terminal (completed / failed). */
   finalizeAgentSession(agentSessionId: string, status: 'completed' | 'failed'): Promise<void>;
   /** Link a FlowSession to this AgentSession. */
@@ -39,6 +44,17 @@ export interface AgentCheckpointer {
 // ============================================================
 
 /**
+ * Descriptor for a parallel batch branch.
+ * When a flow emits a BatchPacket on this branch, the agent spawns one chain
+ * per item in parallel, then passes aggregated results to `collect`.
+ */
+export type BatchBranch = {
+  mode: 'parallel';
+  flow: string; // entry flow for each spawned chain
+  collect: string | null; // flow that receives { results, errors } when all done, or null to return
+};
+
+/**
  * Wiring descriptor for a single flow inside an agent. Three forms:
  *
  * - `'NextFlow'`                        — always advance to NextFlow
@@ -47,7 +63,7 @@ export interface AgentCheckpointer {
  */
 export type AgentFlowWiring =
   | string // always go to this flow
-  | Record<string, string | null> // branch name → next flow name | null (exit)
+  | Record<string, string | null | BatchBranch> // branch name → next flow | null (exit) | parallel batch
   | null; // terminal — agent exits after this flow
 
 /**
@@ -64,7 +80,7 @@ export type AgentFlowWiring =
  * schema: AgentSchema = {
  *   start: 'ManagerFlow',
  *   flows: {
- *     ManagerFlow:  { task: 'ExecutorFlow', finish: null },
+ *     ManagerFlow:  { task: { mode: parallel, flow: 'ExecutorFlow', collectBranch: success }, finish: null },
  *     ExecutorFlow: 'ReviewerFlow',
  *     ReviewerFlow: { test: 'TesterFlow', fix: 'ExecutorFlow' },
  *     TesterFlow:   { success: 'ManagerFlow', fix: 'ExecutorFlow' },
@@ -321,7 +337,12 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
 
     // Checkpoint: record which flow we're about to enter
     if (this.checkpointer && this.agentSessionId) {
-      await this.checkpointer.checkpointFlow(this.agentSessionId, flowName, input);
+      await this.checkpointer.checkpointStep(this.agentSessionId, {
+        mode: 'single',
+        flow: flowName,
+        collect: null,
+        items: [{ input, sessionId: null, status: 'running' }],
+      });
     }
 
     // Reuse existing session if provided (restore path), otherwise create a new one
@@ -332,6 +353,7 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
     // Link flow session to agent session (only for newly created sessions)
     if (!existingSession && this.checkpointer && this.agentSessionId) {
       await this.checkpointer.linkFlowSession(session.id, this.agentSessionId);
+      await this.checkpointer.updateStepItem(this.agentSessionId, 0, { sessionId: session.id });
     }
 
     this.allSessions.push(session);
@@ -343,91 +365,110 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
     }
 
     const context = this.buildContext(session, input);
-    const result = await flow.run({ deps: this.app, context: context as any, data: input });
+    const result = (await flow.run({
+      deps: this.app,
+      context: context as Record<string, unknown>,
+      data: input,
+    })) as FlowResult;
 
     this.activeSessions = this.activeSessions.filter((s) => s !== session);
     this.activeFlows = this.activeFlows.filter((f) => f !== flow);
 
     // Route to next flow
     const wiring = this._resolvedSchema().flows[flowName];
-    const branch = (result as any).branch ?? 'default';
+    const branch = result.branch ?? 'default';
     const next = this._resolveNext(wiring, branch);
 
     if (next === null) return result;
-    return this._executeFrom(next, (result as any).data);
+    if (typeof next === 'object') {
+      // BatchBranch — result must be a batch packet
+      const items = result.data as unknown[];
+      return this._executeBatch(next, items);
+    }
+    return this._executeFrom(next, result.data);
   }
 
-  /**
-   * Restore a previously interrupted agent from its persisted AgentSession and
-   * all linked FlowSession records.
-   *
-   * - Reconstructs the agent with the saved agentSchema so multi-flow routing works.
-   * - Sets agentSessionId so checkpointing continues against the existing record.
-   * - If a FlowSession exists for currentFlowName and is running/paused, resumes it
-   *   from its node checkpoint via resume().
-   * - Otherwise restarts the checkpointed flow from scratch via runFrom().
-   *
-   * @param AgentClass   - concrete Agent subclass to instantiate
-   * @param agentSession - persisted AgentSession record
-   * @param flowSessions - all FlowSession records linked to this AgentSession
-   * @param app          - app instance
-   * @param user         - user instance
-   */
+  private async _executeBatch(batchBranch: BatchBranch, items: unknown[]): Promise<unknown> {
+    if (this.checkpointer && this.agentSessionId) {
+      await this.checkpointer.checkpointStep(this.agentSessionId, {
+        mode: 'parallel',
+        flow: batchBranch.flow,
+        collect: batchBranch.collect,
+        items: items.map((input) => ({ input, sessionId: null, status: 'running' })),
+      });
+    }
+
+    const settled = await Promise.allSettled(
+      items.map((item, index) =>
+        this._executeFrom(batchBranch.flow, item).then(
+          async (result) => {
+            const failed = (result as FlowResult)?.branch === 'error';
+            if (this.checkpointer && this.agentSessionId) {
+              await this.checkpointer.updateStepItem(this.agentSessionId, index, {
+                status: failed ? 'failed' : 'done',
+                result,
+              });
+            }
+            return result;
+          },
+          async (err) => {
+            if (this.checkpointer && this.agentSessionId) {
+              await this.checkpointer.updateStepItem(this.agentSessionId, index, {
+                status: 'failed',
+                result: String(err),
+              });
+            }
+            throw err;
+          },
+        ),
+      ),
+    );
+
+    const results: unknown[] = [];
+    const errors: unknown[] = [];
+    for (const s of settled) {
+      if (s.status === 'rejected') {
+        errors.push(s.reason);
+      } else if ((s.value as FlowResult)?.branch === 'error') {
+        errors.push(s.value);
+      } else {
+        results.push(s.value);
+      }
+    }
+
+    const collected = { results, errors };
+    if (batchBranch.collect === null) return collected;
+    return this._executeFrom(batchBranch.collect, collected);
+  }
+
   /**
    * Resume this agent from a persisted AgentSession checkpoint.
    * Call after wiring checkpointer and sessionHooks — this starts execution immediately.
    *
-   * @param agentSession - persisted AgentSession record (must have currentFlowName set)
+   * @param agentSession - persisted AgentSession record (must have currentStep set)
    * @param flowSessions - live TSession objects linked to this AgentSession
    */
   async restore(agentSession: AgentSessionData, flowSessions: TSession[]): Promise<unknown> {
-    if (!agentSession.currentFlowName) {
-      throw new Error(`Agent.restore: AgentSession '${agentSession.id}' has no currentFlowName checkpoint`);
+    if (!agentSession.currentStep) {
+      throw new Error(`Agent.restore: AgentSession '${agentSession.id}' has no currentStep checkpoint`);
     }
 
-    const currentFlowSession = flowSessions
-      .filter((fs) => fs.sessionData.flowName === agentSession.currentFlowName)
-      .sort((a, b) => b.sessionData.startedAt.getTime() - a.sessionData.startedAt.getTime())
-      .find((fs) => fs.sessionData.status === 'running' || fs.sessionData.status === 'paused');
+    const step = agentSession.currentStep;
+    console.log(`[Agent.restore] agentSession='${agentSession.id}' mode='${step.mode}' flow='${step.flow}'`);
 
-    const status = currentFlowSession?.sessionData.status;
-    const nodeName = currentFlowSession?.sessionData.currentNodeName;
+    this.agentSessionId = agentSession.id;
 
-    console.log(`[Agent.restore] agentSession='${agentSession.id}' currentFlowName='${agentSession.currentFlowName}' currentFlowSession=${currentFlowSession ? `id='${currentFlowSession.id}' status='${status}' nodeName='${nodeName}'` : 'none'}`);
-
-    // If the session is paused, it is waiting for user input — do not execute any node.
-    // Register an onUserMessage listener and return a pending promise that resolves
-    // when the user replies and the resumed flow finishes.
-    if (currentFlowSession && status === 'paused' && nodeName) {
-      console.log(`[Agent.restore] session is paused at '${nodeName}' — waiting for user input`);
-      this.runPromise = new Promise<unknown>((resolve, reject) => {
-        currentFlowSession.onUserMessage(({ message }: { message: string }) => {
-          console.log(`[Agent.restore] user message received, resuming from '${nodeName}'`);
-          // Update packet data to the actual user message so the node receives real input
-          currentFlowSession.sessionData.currentPacketData = message;
-          this._runAndFinalize(agentSession, currentFlowSession, nodeName)
-            .then(resolve)
-            .catch(reject);
-        });
-      });
-      return this.runPromise;
-    }
-
-    return this._runAndFinalize(agentSession, currentFlowSession, nodeName);
-  }
-
-  private async _runAndFinalize(
-    agentSession: AgentSessionData,
-    currentFlowSession: TSession | undefined,
-    nodeName: string | undefined,
-  ): Promise<unknown> {
     try {
-      const result = nodeName && currentFlowSession
-        ? await this.resume(agentSession.currentFlowName!, currentFlowSession)
-        : await this.runFrom(agentSession.currentFlowName!, agentSession.currentFlowInput, currentFlowSession);
-      const branch = (result as any)?.branch;
-      const errorData = (result as any)?.data;
-      console.log(`[Agent.restore] finished agentSession='${agentSession.id}' branch='${branch}'${branch === 'error' ? ` error=${errorData}` : ''}`);
+      const result =
+        step.mode === 'parallel'
+          ? await this._restoreParallel(step, flowSessions)
+          : await this._restoreSingle(step, flowSessions);
+
+      const branch = (result as FlowResult)?.branch;
+      const errorData = (result as FlowResult)?.data;
+      console.log(
+        `[Agent.restore] finished agentSession='${agentSession.id}' branch='${branch}'${branch === 'error' ? ` error=${errorData}` : ''}`,
+      );
       if (branch === 'error') {
         if (this.checkpointer && this.agentSessionId) {
           await this.checkpointer.finalizeAgentSession(this.agentSessionId, 'failed').catch(() => {});
@@ -447,7 +488,98 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
     }
   }
 
-  private _resolveNext(wiring: AgentFlowWiring, branch: string): string | null {
+  private async _restoreSingle(step: AgentStep, flowSessions: TSession[]): Promise<unknown> {
+    const item = step.items[0];
+    const flowSession = item.sessionId ? flowSessions.find((fs) => fs.id === item.sessionId) : undefined;
+
+    const status = flowSession?.sessionData.status;
+    const nodeName = flowSession?.sessionData.currentNodeName;
+
+    console.log(
+      `[Agent.restore] single flow='${step.flow}' session=${flowSession ? `id='${flowSession.id}' status='${status}' nodeName='${nodeName}'` : 'none'}`,
+    );
+
+    // Paused — waiting for user input
+    if (flowSession && status === 'paused' && nodeName) {
+      console.log(`[Agent.restore] session is paused at '${nodeName}' — waiting for user input`);
+      this.runPromise = new Promise<unknown>((resolve, reject) => {
+        flowSession.onUserMessage(({ message }: { message: string }) => {
+          console.log(`[Agent.restore] user message received, resuming from '${nodeName}'`);
+          flowSession.sessionData.currentPacketData = message;
+          (nodeName && flowSession
+            ? this.resume(step.flow, flowSession)
+            : this.runFrom(step.flow, item.input, flowSession)
+          )
+            .then(resolve)
+            .catch(reject);
+        });
+      });
+      return this.runPromise;
+    }
+
+    return nodeName && flowSession
+      ? this.resume(step.flow, flowSession)
+      : this.runFrom(step.flow, item.input, flowSession);
+  }
+
+  private async _restoreParallel(step: AgentStep, flowSessions: TSession[]): Promise<unknown> {
+    const settled = await Promise.allSettled(
+      step.items.map((item, index) => {
+        // Already finished — use stored result
+        if (item.status === 'done' || item.status === 'failed') {
+          return item.status === 'done' ? Promise.resolve(item.result) : Promise.reject(item.result);
+        }
+
+        // Still running — resume or restart
+        const flowSession = item.sessionId ? flowSessions.find((fs) => fs.id === item.sessionId) : undefined;
+        const nodeName = flowSession?.sessionData.currentNodeName;
+
+        console.log(
+          `[Agent.restore] parallel item[${index}] flow='${step.flow}' session=${flowSession ? `id='${flowSession.id}' nodeName='${nodeName}'` : 'none'}`,
+        );
+
+        return (
+          nodeName && flowSession
+            ? this.resume(step.flow, flowSession)
+            : this.runFrom(step.flow, item.input, flowSession)
+        ).then(
+          async (result) => {
+            if (this.checkpointer && this.agentSessionId) {
+              await this.checkpointer.updateStepItem(this.agentSessionId, index, { status: 'done', result });
+            }
+            return result;
+          },
+          async (err) => {
+            if (this.checkpointer && this.agentSessionId) {
+              await this.checkpointer.updateStepItem(this.agentSessionId, index, {
+                status: 'failed',
+                result: String(err),
+              });
+            }
+            throw err;
+          },
+        );
+      }),
+    );
+
+    const results: unknown[] = [];
+    const errors: unknown[] = [];
+    for (const s of settled) {
+      if (s.status === 'rejected') {
+        errors.push(s.reason);
+      } else if ((s.value as FlowResult)?.branch === 'error') {
+        errors.push(s.value);
+      } else {
+        results.push(s.value);
+      }
+    }
+
+    const collected = { results, errors };
+    if (step.collect === null) return collected;
+    return this._executeFrom(step.collect, collected);
+  }
+
+  private _resolveNext(wiring: AgentFlowWiring, branch: string): string | null | BatchBranch {
     if (wiring === null) return null;
     if (typeof wiring === 'string') return wiring;
     // branch-map: try exact branch, then 'default', then null (exit)
