@@ -8,6 +8,7 @@ const app = new App();
 
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection:', reason);
+  process.exit(1);
 });
 
 process.on('uncaughtException', (error) => {
@@ -16,7 +17,9 @@ process.on('uncaughtException', (error) => {
 });
 
 process.on('SIGINT', async () => {
+  const forceExit = setTimeout(() => process.exit(1), 3000).unref();
   await app.stop();
+  clearTimeout(forceExit);
   process.exit(0);
 });
 

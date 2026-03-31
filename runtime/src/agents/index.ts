@@ -219,6 +219,7 @@ export class Agents {
       schema: schema as AgentFlowParameters['schema'],
       message: parameters.message,
     };
+    console.log(`[Agents.runSchemaAgent] flowName='${schema.flowName}' params.schema.agentLoopConfig=${JSON.stringify(params.schema.agentLoopConfig)} params.schema.toolNames=${JSON.stringify(params.schema.toolNames)}`);
     return this._run(AgenticLoopAgent, context, params);
   }
 
@@ -228,11 +229,6 @@ export class Agents {
     parameters: unknown,
   ): Promise<Agent<App, User, Session>> {
     const agent = new AgentClass(this.app, context.user, context.parent);
-
-    let resolveFirstSession: () => void;
-    const firstSessionReady = new Promise<void>((resolve) => {
-      resolveFirstSession = resolve;
-    });
 
     const { bus } = this.app.infra;
     const { agentSessionRepository, flowSessionRepository } = this.app.data;
@@ -261,9 +257,6 @@ export class Agents {
     };
 
     agent.sessionHooks = {
-      onRunning: async () => {
-        resolveFirstSession();
-      },
       onStatusChange: async (s: Session, from: string, to: string) => {
         bus.emit('session:statusChange', { sessionId: s.id, flowName: s.flowName, userId: s.userId, from, to });
       },
@@ -273,7 +266,6 @@ export class Agents {
     };
 
     const promise = agent.run(parameters);
-    await firstSessionReady;
     this._wire(agent, promise);
     return agent;
   }

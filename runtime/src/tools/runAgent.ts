@@ -44,8 +44,11 @@ Returns the agent's response.`,
           return { data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }), details: undefined, error };
         }
 
+        console.log(`[runAgent] Starting agent flowName='${flowName}' message='${message.slice(0, 80)}'`);
         const agent = await app.agents.runAgent(flowName, context, { message });
+        console.log(`[runAgent] Agent created, waiting for runPromise flowName='${flowName}'`);
         const packet = (await agent.runPromise) as Packet<unknown>;
+        console.log(`[runAgent] runPromise resolved flowName='${flowName}' branch='${(packet as any)?.branch}' data=${JSON.stringify((packet as any)?.data)?.slice(0, 200)}`);
 
         if (signal?.aborted) {
           const error = new Error('Operation aborted');
@@ -54,14 +57,17 @@ Returns the agent's response.`,
 
         const { data, branch } = packet;
         const packetError = branch === 'error' && 'error' in packet ? packet.error : null;
+        const content = JSON.stringify({ data, branch, error: packetError });
+        console.log(`[runAgent] Returning tool result flowName='${flowName}' branch='${branch}' content='${content.slice(0, 200)}'`);
 
         return {
-          data: new ToolResultMessage({ toolCallId, content: JSON.stringify({ data, branch, error: packetError }) }),
+          data: new ToolResultMessage({ toolCallId, content }),
           details: { flowName, command } satisfies RunAgentDetails,
         };
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         const errorMsg = `runAgent failed: ${err.message}`;
+        console.error(`[runAgent] Exception flowName='${flowName}' error='${err.message}'`);
         return {
           data: new ToolResultMessage({ toolCallId, content: `Error: ${errorMsg}` }),
           details: undefined,

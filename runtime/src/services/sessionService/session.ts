@@ -52,9 +52,6 @@ export class Session {
   private _attachUserMessageListener(): void {
     const eventName = `user:message:${this.userId}:${this.id}`;
     this.app.infra.bus.on(eventName, (payload: { session: SessionData; message: string; user: User }) => {
-      console.log(
-        `[Session] user message received on '${eventName}', dispatching to ${this._userMessageCallbacks.length} callback(s)`,
-      );
       const callbacks = this._userMessageCallbacks.splice(0);
       for (const cb of callbacks) cb(payload);
     });
@@ -327,9 +324,6 @@ export class Session {
     await this.hooks.onStatusChange?.(this, from, to);
 
     switch (to) {
-      case 'running':
-        await this.hooks.onRunning?.(this);
-        break;
       case 'completed':
         await this.hooks.onCompleted?.(this);
         break;

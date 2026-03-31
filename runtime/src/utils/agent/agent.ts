@@ -328,6 +328,7 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
 
     // Validate input against flow parameters schema
     if (!Value.Check(flow.parameters as TObject, input)) {
+      console.log({ input, params: flow.parameters })
       const errors = [...Value.Errors(flow.parameters as TObject, input)];
       throw new Error(
         `Agent "${this.constructor.name}": input validation failed for flow "${flowName}":\n` +
@@ -365,6 +366,7 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
     }
 
     const context = this.buildContext(session, input);
+    console.log(`[Agent._executeFrom] flow.run data type=${typeof input} keys=${typeof input === 'object' && input !== null ? Object.keys(input as object).join(',') : 'n/a'} value=${JSON.stringify(input)?.slice(0, 200)}`);
     const result = (await flow.run({
       deps: this.app,
       context: context as Record<string, unknown>,
@@ -499,19 +501,31 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
       `[Agent.restore] single flow='${step.flow}' session=${flowSession ? `id='${flowSession.id}' status='${status}' nodeName='${nodeName}'` : 'none'}`,
     );
 
-    // Paused — waiting for user input
+    // Paused — waiting for user input. Do NOT re-run the pausing node (e.g. AskUser).
+    // Look up its pause handler from the stored flow schema and run from there directly.
     if (flowSession && status === 'paused' && nodeName) {
-      console.log(`[Agent.restore] session is paused at '${nodeName}' — waiting for user input`);
+      const schema = flowSession.sessionData.flowSchema as { nodes: Record<string, unknown> } | undefined;
+      const nodeWiring = schema?.nodes?.[nodeName];
+      const pauseHandlerName = typeof nodeWiring === 'object' && nodeWiring !== null && 'pause' in nodeWiring
+        ? (nodeWiring as Record<string, string>)['pause']
+        : undefined;
+      console.log(`[Agent.restore] session '${flowSession.id}' is paused at '${nodeName}' — waiting for user message`);
       this.runPromise = new Promise<unknown>((resolve, reject) => {
         flowSession.onUserMessage(({ message }: { message: string }) => {
-          console.log(`[Agent.restore] user message received, resuming from '${nodeName}'`);
-          flowSession.sessionData.currentPacketData = message;
-          (nodeName && flowSession
-            ? this.resume(step.flow, flowSession)
-            : this.runFrom(step.flow, item.input, flowSession)
-          )
-            .then(resolve)
-            .catch(reject);
+          if (pauseHandlerName) {
+            // Resume from the pause handler node directly — skip re-running the pausing node
+            flowSession.sessionData.currentNodeName = pauseHandlerName;
+            flowSession.sessionData.currentPacketData = message;
+            this.resume(step.flow, flowSession)
+              .then(resolve)
+              .catch(reject);
+          } else {
+            // Fallback: no pause handler wired, resume from pausing node
+            flowSession.sessionData.currentPacketData = message;
+            this.resume(step.flow, flowSession)
+              .then(resolve)
+              .catch(reject);
+          }
         });
       });
       return this.runPromise;
@@ -533,10 +547,32 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
         // Still running — resume or restart
         const flowSession = item.sessionId ? flowSessions.find((fs) => fs.id === item.sessionId) : undefined;
         const nodeName = flowSession?.sessionData.currentNodeName;
+        const sessionStatus = flowSession?.sessionData.status;
 
         console.log(
-          `[Agent.restore] parallel item[${index}] flow='${step.flow}' session=${flowSession ? `id='${flowSession.id}' nodeName='${nodeName}'` : 'none'}`,
+          `[Agent.restore] parallel item[${index}] flow='${step.flow}' session=${flowSession ? `id='${flowSession.id}' status='${sessionStatus}' nodeName='${nodeName}'` : 'none'}`,
         );
+
+        // Paused — same fix as _restoreSingle: resume from pause handler, not the pausing node
+        if (flowSession && sessionStatus === 'paused' && nodeName) {
+          const schema = flowSession.sessionData.flowSchema as { nodes: Record<string, unknown> } | undefined;
+          const nodeWiring = schema?.nodes?.[nodeName];
+          const pauseHandlerName = typeof nodeWiring === 'object' && nodeWiring !== null && 'pause' in nodeWiring
+            ? (nodeWiring as Record<string, string>)['pause']
+            : undefined;
+          console.log(`[Agent.restore] parallel item[${index}] session '${flowSession.id}' is paused at '${nodeName}' — waiting for user message`);
+          return new Promise<unknown>((resolve, reject) => {
+            flowSession.onUserMessage(({ message }: { message: string }) => {
+              if (pauseHandlerName) {
+                flowSession.sessionData.currentNodeName = pauseHandlerName;
+                flowSession.sessionData.currentPacketData = message;
+              } else {
+                flowSession.sessionData.currentPacketData = message;
+              }
+              this.resume(step.flow, flowSession).then(resolve).catch(reject);
+            });
+          });
+        }
 
         return (
           nodeName && flowSession

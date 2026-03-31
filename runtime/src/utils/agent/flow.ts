@@ -686,6 +686,7 @@ export abstract class Flow<
     for (const name of Object.keys(nodes)) {
       const Ctor = ctors[name];
       if (!Ctor) throw new Error(`Flow "${this.constructor.name}": no constructor for node "${name}"`);
+      console.log(`[Flow._ensureRouting] '${this.constructor.name}' instantiating node '${name}' with no args`);
       this._nodes.set(name, new Ctor());
       const wiring = nodes[name];
       const entries: [string, string][] =
@@ -758,6 +759,7 @@ export abstract class Flow<
 
   private _checkLoopGuard(node: Node<TDeps, TContext, any, any>, enters: number): void {
     const { maxLoopEntering } = node.options;
+    console.log(`[Flow._checkLoopGuard] node='${this._nodeName(node)}' enters=${enters} node.options.maxLoopEntering=${maxLoopEntering} flow.options.maxLoopEntering=${this.options.maxLoopEntering}`);
     if (maxLoopEntering !== undefined && enters > maxLoopEntering) {
       throw new Error(`Node "${this._nodeName(node)}" exceeded maxLoopEntering of ${maxLoopEntering}`);
     }
@@ -933,7 +935,8 @@ export abstract class Flow<
           continue;
         }
 
-        const nextNode = this._nextNode(this._nodeName(currentNode), result.branch ?? 'default');
+        const resolvedBranch = result.branch ?? 'default';
+        const nextNode = this._nextNode(this._nodeName(currentNode), resolvedBranch);
         if (!nextNode) {
           // Terminal — no wired next node
           await this.session?.commitNodeTransaction(this._nodeName(currentNode), result.data);

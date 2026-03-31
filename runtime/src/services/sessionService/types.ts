@@ -135,7 +135,6 @@ export interface SessionDataTreeNode {
  *
  * onMessage       — fired after messages are added to the session
  * onStatusChange  — fired on every status transition (general hook)
- * onRunning       — fired when status transitions to 'running'
  * onCompleted     — fired when status transitions to 'completed'
  * onFailed        — fired when status transitions to 'failed'
  * onPaused        — fired when status transitions to 'paused'
@@ -148,7 +147,6 @@ export interface SessionDataTreeNode {
 export interface SessionHooks {
   onMessage?: (session: Session) => void | Promise<void>;
   onStatusChange?: (session: Session, from: SessionStatus, to: SessionStatus) => void | Promise<void>;
-  onRunning?: (session: Session) => void | Promise<void>;
   onCompleted?: (session: Session) => void | Promise<void>;
   onFailed?: (session: Session) => void | Promise<void>;
   onPaused?: (session: Session) => void | Promise<void>;
