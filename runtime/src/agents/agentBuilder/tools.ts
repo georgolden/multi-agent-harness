@@ -2,7 +2,7 @@
  * Tool definitions for the agentBuilder flow.
  *
  * - write_temp_file  : persist any artifact (schema, system prompt, user prompt template, checklist)
- * - submit_answer    : exit the flow with the completed AgenticLoopSchema
+ * - submit_result    : exit the flow with the completed AgenticLoopSchema
  */
 import type { OpenAI } from 'openai';
 
@@ -35,7 +35,7 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'submit_answer',
+      name: 'submit_result',
       description:
         'Submit the completed agent schema and exit. ' +
         'Call ONLY after the user has explicitly confirmed they are satisfied with all artifacts. ' +

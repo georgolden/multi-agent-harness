@@ -4,7 +4,7 @@ import { agentBuilderInputSchema, type AgentBuilderContext } from './types.js';
 import { App } from '../../app.js';
 import { User } from '../../data/userRepository/types.js';
 import { Session } from '../../services/sessionService/session.js';
-import { UserMessage } from '../../utils/message.js';
+import { SystemMessage, UserMessage } from '../../utils/message.js';
 import { createSystemPrompt } from './prompts/index.js';
 
 export class AgentBuilderFlow extends Flow<App, AgentBuilderContext>
@@ -18,7 +18,7 @@ export class AgentBuilderFlow extends Flow<App, AgentBuilderContext>
     startNode: 'PrepareInput',
     nodes: {
       PrepareInput:  'DecideAction',
-      DecideAction:  { write_temp_file: 'WriteTempFile', ask_user: 'AskUser', submit_answer: 'SubmitAnswer' },
+      DecideAction:  { write_temp_file: 'WriteTempFile', ask_user: 'AskUser', submit_result: 'SubmitAnswer' },
       WriteTempFile: 'DecideAction',
       AskUser:       { pause: 'UserResponse' },
       UserResponse:  'DecideAction',
@@ -37,7 +37,7 @@ export class AgentBuilderFlow extends Flow<App, AgentBuilderContext>
       flowName: this.constructor.name,
       systemPrompt,
     });
-
+    await session.addMessages([{ message: new SystemMessage(systemPrompt).toJSON() }]);
     await session.addUserMessage(new UserMessage(input.message));
     await session.setFlowSchema(this.toSchema());
 

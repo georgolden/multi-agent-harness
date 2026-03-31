@@ -4,10 +4,10 @@
  * Flow graph:
  *   PrepareInput → DecideAction ─┬─ write_temp_file → WriteTempFile → DecideAction (loop)
  *                                ├─ ask_user        → AskUser        (pause; session stays running)
- *                                └─ submit_answer   → SubmitAnswer   (exit; session completed)
+ *                                └─ submit_result   → SubmitAnswer   (exit; session completed)
  *
  * The LLM saves artifacts (schema, system prompt, templates, checklist) via write_temp_file
- * after every update, then continues the conversation. submit_answer exits with the final schema.
+ * after every update, then continues the conversation. submit_result exits with the final schema.
  */
 import { Node, packet, exit, pause } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
@@ -37,13 +37,13 @@ export class PrepareInput extends Node<App, AgentBuilderContext, AgentBuilderInp
  * Routes:
  *   'write_temp_file' — LLM is persisting an artifact; handle and loop back
  *   'ask_user'        — LLM has a question or message for the user
- *   'submit_answer'   — LLM submits the completed schema; exit the flow
+ *   'submit_result'   — LLM submits the completed schema; exit the flow
  */
 export class DecideAction extends Node<
   App,
   AgentBuilderContext,
   void,
-  { write_temp_file: LLMToolCall; ask_user: string; submit_answer: string }
+  { write_temp_file: LLMToolCall; ask_user: string; submit_result: string }
 > {
   constructor() {
     super({ maxRunTries: 3, wait: 1000 });
@@ -52,55 +52,37 @@ export class DecideAction extends Node<
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
     const messages = session.activeMessages.map((msg) => msg.message);
-    const systemPrompt = session.systemPrompt;
 
     console.log(`[agentBuilder.DecideAction] Session '${session.id}', ${messages.length} messages`);
 
-    const response = await callLlmWithTools([new SystemMessage(systemPrompt).toJSON(), ...messages], TOOLS);
+    const response = await callLlmWithTools(messages, TOOLS);
 
     const assistantMsg = AssistantMessage.from(response[0].message);
     await session.addMessages([{ message: assistantMsg.toJSON() }]);
 
     if ('toolCalls' in assistantMsg && assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0) {
       const toolCalls = assistantMsg.toolCalls;
-      const submitCall = toolCalls.find((tc) => tc.name === 'submit_answer');
-      const otherCalls = toolCalls.filter((tc) => tc.name !== 'submit_answer');
+      const submitCall = toolCalls.find((tc) => tc.name === 'submit_result');
+      const writeCall = toolCalls.find((tc) => tc.name === 'write_temp_file');
 
-      // Execute all non-submit tool calls first (write_temp_file, etc.)
-      for (const toolCall of otherCalls) {
-        if (toolCall.name === 'write_temp_file') {
-          const { name, content } = toolCall.args as { name: string; content: string };
-          console.log(`[agentBuilder.DecideAction] write_temp_file called — '${name}'`);
-          await session.writeTempFile({ name, content });
-          await session.addMessages([{
-            message: new ToolResultMessage({
-              toolCallId: toolCall.id,
-              content: JSON.stringify({ success: true, name, contentLength: content.length }),
-            }).toJSON(),
-          }]);
-        }
-      }
-
-      // If submit_answer was included, exit immediately — no LLM round-trip needed
+      // If submit_result was called, exit with submit_result branch
       if (submitCall) {
-        console.log(`[agentBuilder.DecideAction] submit_answer called, exiting`);
         return packet({
           data: submitCall.args.answer as string,
           context: p.context,
-          branch: 'submit_answer',
+          branch: 'submit_result',
           deps: p.deps,
         });
       }
 
-      // Only write_temp_file (no submit yet) — loop back to DecideAction
-      if (otherCalls.length > 0) {
-        return packet({ data: undefined, context: p.context, deps: p.deps });
+      // Route write_temp_file to WriteTempFile node
+      if (writeCall) {
+        return packet({ data: writeCall, context: p.context, branch: 'write_temp_file', deps: p.deps });
       }
     }
 
     // Plain text — question or message for the user
     const text = assistantMsg.toJSON().content || '';
-    console.log(`[agentBuilder.DecideAction] Text response, routing to ask_user`);
     return packet({ data: text, context: p.context, branch: 'ask_user', deps: p.deps });
   }
 }

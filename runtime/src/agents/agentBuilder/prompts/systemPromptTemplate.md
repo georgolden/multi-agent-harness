@@ -28,7 +28,7 @@ What knowledge or expertise does it have?
 Give instructions of how to solve a specific problem
 Make it step by step, for complex problems it is a good practive to use Tree of Thoughts pattern - just describe what to do in different scenarious
 It is nice to write here section about possible inputs and how to proceed with them.
-Do not forget that submit_answer tool must be always used to end agent work
+Do not forget that submit_result tool must be always used to end agent work
 Asking user is an option as well
 
 ---

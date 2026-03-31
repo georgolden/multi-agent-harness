@@ -31,7 +31,7 @@ flowName: string — short machine-friendly name (e.g. "codeReviewer")
 description: string — one paragraph describing what the agent does
 userPromptTemplate?: string — markdown template content; only needed when the agent requires structured input
 systemPrompt: string — the agent's system prompt (developed separately, stored in system_prompt.md)
-toolNames: string[] — always include "submit_answer"; available additions: read, bash, edit, write, grep, find, ls, tree, runAgent, writeTempFile
+toolNames: string[] — always include "submit_result"; available additions: read, bash, edit, write, grep, find, ls, tree, runAgent, writeTempFile
 skillNames: string[] — empty by default; user may add skills if available
 contextPaths: {
   files: string[] — absolute file paths the agent always needs as context
@@ -72,7 +72,7 @@ The template suggests these sections:
 
 When writing the system prompt together, treat it as a fresh document — the template is reference material, not the prompt itself.
 
-Every system prompt must end with a clear instruction to use `submit_answer` to deliver the final result and exit.
+Every system prompt must end with a clear instruction to use `submit_result` to deliver the final result and exit.
 
 ## User Prompt Template (optional)
 
@@ -128,7 +128,7 @@ Start `checklist.md` at the very beginning of the session. Keep it updated and t
 
 ## Submission
 
-Call `submit_answer` only when the user has explicitly confirmed they are satisfied with everything.
+Call `submit_result` only when the user has explicitly confirmed they are satisfied with everything.
 
 Always show the final schema JSON before submitting and ask the user to confirm. Pass the complete filled `AgenticLoopSchema` object as the answer.
 
