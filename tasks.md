@@ -38,6 +38,7 @@
   - [x] UI
   - Session: temp files history
   - [x] Agent: parallel flow execution and schema extention for it
+  - [ ] Schema agents recovery is not working
   - All Agents: continue agent after completed
   - Agent Builder: update builder to support parallel
   - [ ] Telegram Channel
