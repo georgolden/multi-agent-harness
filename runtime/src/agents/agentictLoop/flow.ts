@@ -4,6 +4,7 @@ import { MessageWindowConfig } from '../../services/sessionService/types.js';
 import { User } from '../../data/userRepository/types.js';
 import { CallLlmOptions } from '../../utils/callLlm.js';
 import { fillSystemPrompt, readFilesWithLimit, readFoldersInfos } from './utils.js';
+import { SUBMIT_RESULT_SCHEMA } from './tools.js';
 import { PrepareInput, DecideAction, AskUser, UserResponse, ToolCalls, SubmitAnswer, BestAnswer } from './nodes.js';
 import type { AgenticLoopContext } from './types.js';
 import { Session } from '../../services/sessionService/session.js';
@@ -79,22 +80,22 @@ export type AgentFlowParameters = Static<typeof agentFlowParametersSchema>;
  * If loopExit is 'bestAnswer', delegates to BestAnswer node for a final LLM call.
  * Otherwise fails the session.
  */
-export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowParameters>
-  {
-
-  override get name(): string { return 'AgenticLoopFlow'; }
+export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowParameters> {
+  override get name(): string {
+    return 'AgenticLoopFlow';
+  }
   description = 'Universal agentic flow that runs with schema';
   parameters = agentFlowParametersSchema;
 
   schema: FlowSchema = {
     startNode: 'PrepareInput',
     nodes: {
-      PrepareInput:  'DecideAction',
-      DecideAction:  { ask_user: 'AskUser', tool_calls: 'ToolCalls', submit_answer: 'SubmitAnswer', loop: 'DecideAction' },
-      AskUser:       { pause: 'UserResponse' },
-      UserResponse:  'DecideAction',
-      ToolCalls:     { default: 'DecideAction', ask_user: 'AskUser' },
-      SubmitAnswer:  null,
+      PrepareInput: 'DecideAction',
+      DecideAction: { ask_user: 'AskUser', tool_calls: 'ToolCalls', submit_result: 'SubmitAnswer' },
+      AskUser: { pause: 'UserResponse' },
+      UserResponse: 'DecideAction',
+      ToolCalls: { default: 'DecideAction', ask_user: 'AskUser' },
+      SubmitAnswer: null,
     },
   };
 
@@ -102,7 +103,12 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
 
   private bestAnswerNode = new BestAnswer();
 
-  async createSession(app: App, user: User, _parent: Session | undefined, input: AgentFlowParameters): Promise<Session> {
+  async createSession(
+    app: App,
+    user: User,
+    _parent: Session | undefined,
+    input: AgentFlowParameters,
+  ): Promise<Session> {
     const {
       flowName,
       systemPrompt,
@@ -115,10 +121,24 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
       agentLoopConfig,
     } = input.schema;
 
-    const filledSystemPrompt = fillSystemPrompt(systemPrompt, user);
+    console.log(
+      `[AgenticLoopFlow.createSession] raw input.schema: toolNames=${JSON.stringify(toolNames)} agentLoopConfig=${JSON.stringify(agentLoopConfig)} messageWindowConfig=${JSON.stringify(messageWindowConfig)} contextPaths=${JSON.stringify(contextPaths)}`,
+    );
+
+    const filledSystemPrompt = `Current datetime: ${new Date().toISOString()}\nUser timezone: ${user.timezone ?? 'UTC'}\n\n${systemPrompt}`;
 
     const tools = app.tools.getSlice(toolNames);
     const skills = app.skills.getSlice(skillNames);
+
+    console.log(
+      `[AgenticLoopFlow.createSession] flowName='${flowName}' tools=[${tools.map((t) => t.name).join(', ')}] skills=[${skills.map((s) => s.name).join(', ')}]`,
+    );
+
+    const toolSchemas = [
+      ...tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
+      SUBMIT_RESULT_SCHEMA,
+    ];
+    const skillSchemas = skills.map((s) => ({ name: s.name, description: s.description, location: s.location }));
 
     const contextFiles = await readFilesWithLimit(contextPaths.files);
     const contextFoldersInfos = await readFoldersInfos(contextPaths.folders);
@@ -129,13 +149,16 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
       userPromptTemplate,
       userId: user.id,
       messageWindowConfig: messageWindowConfig as MessageWindowConfig,
-      tools,
-      skills,
+      tools: toolSchemas,
+      skills: skillSchemas,
       contextFiles,
       contextFoldersInfos,
       callLlmOptions,
       agentLoopConfig,
     });
+
+    // Attach live Tool objects so ToolCalls node can execute them
+    session.tools = tools as any;
 
     await session.setFlowSchema(this.toSchema());
 
@@ -145,9 +168,12 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
   async fallback(p: this['InError'], err: Error): Promise<this['Out']> {
     const { session } = p.context;
     const loopExit = session.agentLoopConfig?.loopExit ?? 'failure';
+    console.warn(
+      `[AgenticLoopFlow.fallback] err type=${typeof err} constructor=${(err as any)?.constructor?.name} value=${JSON.stringify(err)} loopExit=${loopExit}`,
+    );
     const isLoopExceeded = err.message.includes('maxLoopEntering') || err.message.includes('exceeded');
 
-    console.warn(`[AgenticLoopFlow.fallback] ${err.message}, loopExit: ${loopExit}`);
+    console.warn(`[AgenticLoopFlow.fallback] err.message='${err.message}' isLoopExceeded=${isLoopExceeded}`);
 
     if (isLoopExceeded && loopExit === 'bestAnswer') {
       try {

@@ -149,6 +149,30 @@ export class AgentSessionRepository {
     return rows.map((r) => this.mapRow(r));
   }
 
+  async deleteWithFlowSessions(agentSessionId: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      // Collect all flow session ids linked to this agent session
+      const flowSessions = await (tx as any).flowSession.findMany({
+        where: { agentSessionId },
+        select: { id: true },
+      });
+      const flowSessionIds = flowSessions.map((fs: { id: string }) => fs.id);
+
+      if (flowSessionIds.length > 0) {
+        // Null out parent references within the set so ordering doesn't matter
+        await (tx as any).flowSession.updateMany({
+          where: { parentSessionId: { in: flowSessionIds } },
+          data: { parentSessionId: null },
+        });
+        await (tx as any).flowSession.deleteMany({
+          where: { id: { in: flowSessionIds } },
+        });
+      }
+
+      await (tx as any).agentSession.delete({ where: { id: agentSessionId } });
+    });
+  }
+
   async start(): Promise<void> {
     console.log('[AgentSessionRepository] Ready');
   }

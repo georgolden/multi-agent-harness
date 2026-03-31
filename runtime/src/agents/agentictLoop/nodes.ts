@@ -5,7 +5,7 @@
  * Flow graph:
  *   PrepareInput → DecideAction ─┬─ ask_user      → AskUser        (ends run; session completed)
  *                                ├─ tool_calls    → ToolCalls      (loops back to DecideAction)
- *                                └─ submit_answer → SubmitAnswer    (ends run; session completed)
+ *                                └─ submit_result → SubmitAnswer    (ends run; session completed)
  */
 import {
   Node,
@@ -42,21 +42,25 @@ import { FillTemplateFlow } from '../fillTemplate/flow.js';
 export class PrepareInput extends Node<App, AgenticLoopContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session, user } = p.context;
-    let message = p.data;
+    const rawData = p.data as any;
+    let message: string = typeof rawData === 'string' ? rawData : rawData?.message;
+    console.log(`[PrepareInput.run] session='${session.id}' userPromptTemplate=${!!session.userPromptTemplate} p.data type=${typeof p.data} resolved message='${String(message).slice(0, 120)}'`);
     if (session.userPromptTemplate) {
+      console.log(`[PrepareInput.run] Filling template: '${session.userPromptTemplate.slice(0, 80)}'`);
       const fillFlow = new FillTemplateFlow();
       const fillSession = await fillFlow.createSession(p.deps, user, session, {
-        message: p.data,
+        message,
         template: session.userPromptTemplate,
       });
       const result = await fillFlow.run({
         deps: p.deps,
         context: { user, parent: session, session: fillSession },
-        data: { message: p.data, template: session.userPromptTemplate },
+        data: { message, template: session.userPromptTemplate },
       });
       message = (result as any).data ?? message;
+      console.log(`[PrepareInput.run] Template filled, message='${message.slice(0, 120)}'`);
     }
-    console.log(`[PrepareInput.prep] Adding user message to session '${session.id}'`);
+    console.log(`[PrepareInput.run] Adding user message to session '${session.id}'`);
     await session.addUserMessage(new UserMessage(message));
     return packet({ data: undefined, context: p.context, deps: p.deps });
   }
@@ -69,15 +73,16 @@ export class PrepareInput extends Node<App, AgenticLoopContext, string, { defaul
  * Takes a Session and routes to:
  *   'ask_user'       — LLM replied with text (response string for the user)
  *   'tool_calls'     — LLM called tools (Session to loop back to ToolCalls)
- *   'submit_answer'  — LLM called submit_answer tool (answer string)
+ *   'submit_result'  — LLM called submit_result tool (answer string)
  */
 export class DecideAction extends Node<
   App,
   AgenticLoopContext,
   void,
-  { ask_user: string; tool_calls: LLMToolCall[]; submit_answer: string; loop: undefined }
+  { ask_user: string; tool_calls: LLMToolCall[]; submit_result: string }
 > {
-  constructor({ maxLoopEntering = 10 }: { maxLoopEntering?: number }) {
+  constructor({ maxLoopEntering = 10 }: { maxLoopEntering?: number } = {}) {
+    console.log(`[DecideAction.constructor] arg received, maxLoopEntering=${maxLoopEntering}`);
     super({ maxRunTries: 3, wait: 1000, maxLoopEntering });
   }
 
@@ -98,26 +103,25 @@ export class DecideAction extends Node<
     const systemPrompt = session.systemPrompt;
     const callLlmOptions = session.callLlmOptions;
 
-    console.log(`[DecideAction.run] Session '${session.id}', ${conversation.length} messages, ${tools.length} tools`);
-
     const messages = [new SystemMessage(systemPrompt).toJSON(), ...conversation];
 
-    console.log(`[DecideAction.exec] Calling LLM with ${messages.length} messages`);
+    console.log(`[DecideAction.run] Calling LLM with ${messages.length} messages (1 system + ${conversation.length} conversation)`);
 
     const response = await callLlmWithTools(messages, tools, callLlmOptions);
     const assistantMsg = AssistantMessage.from(response[0].message);
+    console.log(`[DecideAction.run] LLM responded: hasToolCalls=${'toolCalls' in assistantMsg && !!assistantMsg.toolCalls} toolCallCount=${'toolCalls' in assistantMsg ? (assistantMsg.toolCalls?.length ?? 0) : 0}`);
 
     await session.addMessages([{ message: assistantMsg.toJSON() }]);
 
     if ('toolCalls' in assistantMsg && assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0) {
-      // Check if any tool call is submit_answer
-      const submitAnswerCall = assistantMsg.toolCalls.find((tc) => tc.name === 'submit_answer');
+      // Check if any tool call is submit_result
+      const submitAnswerCall = assistantMsg.toolCalls.find((tc) => tc.name === 'submit_result');
       if (submitAnswerCall) {
-        console.log(`[DecideAction.post] submit_answer tool call detected, routing to submit_answer`);
+        console.log(`[DecideAction.post] submit_result tool call detected, routing to submit_result`);
         return packet({
-          data: submitAnswerCall.args.answer as string,
+          data: submitAnswerCall.args.result as string,
           context: p.context,
-          branch: 'submit_answer',
+          branch: 'submit_result',
           deps: p.deps,
         });
       }
@@ -132,15 +136,13 @@ export class DecideAction extends Node<
       });
     }
 
-    // Plain text response (unexpected — tools are required) — loop with error message
+    // Plain text response — LLM is asking the user something
     const text = assistantMsg.toJSON().content || '';
-    const errorMsg = `${text}\n\nPlease call one of the available tools instead of providing plain text.`;
-    await session.addMessages([{ message: new UserMessage(errorMsg).toJSON() }]);
-    console.log(`[DecideAction.run] Plain text response (unexpected), looping back`);
+    console.log(`[DecideAction.run] Plain text response, routing to ask_user`);
     return packet({
-      data: undefined,
+      data: text,
       context: p.context,
-      branch: 'loop',
+      branch: 'ask_user',
       deps: p.deps,
     });
   }
@@ -149,10 +151,6 @@ export class DecideAction extends Node<
     const { session } = p.context;
     const onError = session.agentLoopConfig?.onError ?? 'retry';
     console.warn(`[DecideAction.fallback] ${err.message}, strategy: ${onError}`);
-    if (onError === 'retry') {
-      await session.addMessages([{ message: new UserMessage(`Error: ${err.message}. Retrying...`).toJSON() }]);
-      return packet({ data: undefined, branch: 'loop', context: p.context, deps: p.deps });
-    }
     return packet({ data: err.message, branch: 'ask_user', context: p.context, deps: p.deps });
   }
 }
@@ -217,9 +215,10 @@ export class ToolCalls extends Node<App, AgenticLoopContext, LLMToolCall[], { de
   ): Promise<SinglePacket<ToolCallsExecResult, App, AgenticLoopContext>> {
     const toolCall = p.data!;
     const { name, args, id } = toolCall;
-    const { tools } = p.context;
+    const sessionTools = p.context.session.tools;
 
-    const tool = tools.find((t) => t.name === name);
+    console.log(`[ToolCalls.exec] Executing tool='${name}' id='${id}' availableTools=[${sessionTools.map((t) => t.name).join(', ')}]`);
+    const tool = sessionTools.find((t) => t.name === name);
     if (!tool) {
       console.warn(`[ToolCalls.exec] Tool '${name}' not found in session`);
       return packet({
@@ -300,14 +299,14 @@ export class SubmitAnswer extends Node<App, AgenticLoopContext, string, { defaul
 
 /**
  * BestAnswer: Called when maxLoopEntering is exceeded and loopExit is 'bestAnswer'.
- * Makes one final LLM call with only the submit_answer tool, forced required.
+ * Makes one final LLM call with only the submit_result tool, forced required.
  * Input is the loop-exceeded error, outputs the best answer or throws.
  */
 export class BestAnswer extends Node<App, AgenticLoopContext, Error, { default: string }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session, user } = p.context;
     const conversation = session.activeMessages.map((m) => m.message);
-    const submitSchema = session.toolSchemas.find((t) => t.name === 'submit_answer')!;
+    const submitSchema = session.toolSchemas.find((t) => t.name === 'submit_result')!;
     const tools: OpenAI.ChatCompletionTool[] = [
       {
         type: 'function',
@@ -322,23 +321,23 @@ export class BestAnswer extends Node<App, AgenticLoopContext, Error, { default: 
       new SystemMessage(session.systemPrompt).toJSON(),
       ...conversation,
       new UserMessage(
-        'You have exceeded your iteration limit. Provide the best answer you can right now using all information you have gathered so far. Call submit_answer with your answer.',
+        'You have exceeded your iteration limit. Provide the best answer you can right now using all information you have gathered so far. Call submit_result with your answer.',
       ).toJSON(),
     ];
-    console.log(`[BestAnswer.run] Calling LLM with submit_answer only, toolChoice: required`);
+    console.log(`[BestAnswer.run] Calling LLM with submit_result only, toolChoice: required`);
     const response = await callLlmWithTools(messages, tools, { ...session.callLlmOptions, toolChoice: 'required' });
     const assistantMsg = AssistantMessage.from(response[0].message);
     await session.addMessages([{ message: assistantMsg.toJSON() }]);
     if (!('toolCalls' in assistantMsg) || !assistantMsg.toolCalls) {
-      throw new Error('BestAnswer: LLM did not call submit_answer despite toolChoice: required');
+      throw new Error('BestAnswer: LLM did not call submit_result despite toolChoice: required');
     }
-    const submitCall = assistantMsg.toolCalls.find((tc: LLMToolCall) => tc.name === 'submit_answer');
+    const submitCall = assistantMsg.toolCalls.find((tc: LLMToolCall) => tc.name === 'submit_result');
     if (!submitCall) {
-      throw new Error('BestAnswer: submit_answer tool not called');
+      throw new Error('BestAnswer: submit_result tool not called');
     }
-    const answer = submitCall.args.answer as string;
-    await session.respond(user, answer);
+    const result = submitCall.args.result as string;
+    await session.respond(user, result);
     await session.complete();
-    return exit({ data: answer, context: p.context, deps: p.deps });
+    return exit({ data: result, context: p.context, deps: p.deps });
   }
 }

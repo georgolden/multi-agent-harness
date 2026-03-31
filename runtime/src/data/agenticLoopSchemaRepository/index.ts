@@ -24,7 +24,7 @@ export class AgenticLoopSchemaRepository {
   async stop(): Promise<void> {}
 
   private mapRow(row: any): StoredAgenticLoopSchema {
-    return {
+    const schema = {
       userId: row.userId ?? undefined,
       flowName: row.flowName,
       description: row.description,
@@ -37,6 +37,8 @@ export class AgenticLoopSchemaRepository {
       messageWindowConfig: row.messageWindowConfig as any,
       agentLoopConfig: row.agentLoopConfig as any,
     };
+    console.log(`[AgenticLoopSchemaRepository.mapRow] flowName='${schema.flowName}' toolNames=${JSON.stringify(schema.toolNames)} skillNames=${JSON.stringify(schema.skillNames)} agentLoopConfig=${JSON.stringify(schema.agentLoopConfig)} contextPaths=${JSON.stringify(schema.contextPaths)} callLlmOptions=${JSON.stringify(schema.callLlmOptions)} messageWindowConfig=${JSON.stringify(schema.messageWindowConfig)}`);
+    return schema;
   }
 
   async createSchema(params: { userId?: string; schema: AgenticLoopSchema }): Promise<StoredAgenticLoopSchema> {
