@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Layers, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
+import { Layers, RefreshCw, ChevronDown, ChevronUp, X, Check, MinusCircle } from 'lucide-react';
 import { trpc } from '../../trpcClient.js';
 import { SessionStatusBadge } from './SessionStatusBadge.js';
 import type { AgentSession, AgentStatus, SessionStatus } from '../../types.js';
@@ -58,16 +58,23 @@ interface AgentSessionCardProps {
   agentSession: AgentSession;
   activeSessionId: string | null;
   onSelectSession: (agentSession: AgentSession, flowSessionId: string) => void;
+  onDeleted: (agentSessionId: string) => void;
 }
 
-function AgentSessionCard({ agentSession, activeSessionId, onSelectSession }: AgentSessionCardProps) {
+function AgentSessionCard({ agentSession, activeSessionId, onSelectSession, onDeleted }: AgentSessionCardProps) {
   const hasFlows = agentSession.flowSessions.length > 0;
   const isAnyFlowActive = agentSession.flowSessions.some((fs) => fs.id === activeSessionId);
 
   const [expanded, setExpanded] = useState(isAnyFlowActive);
+  const [confirming, setConfirming] = useState(false);
+
+  const deleteSession = trpc.deleteAgentSession.useMutation({
+    onSuccess: () => onDeleted(agentSession.id),
+  });
 
   // Pick first flow session as default when clicking the agent row
   function handleAgentClick() {
+    if (confirming) return;
     if (!hasFlows) return;
     const first = agentSession.flowSessions[0];
     onSelectSession(agentSession, first.id);
@@ -79,25 +86,54 @@ function AgentSessionCard({ agentSession, activeSessionId, onSelectSession }: Ag
       {/* Agent row — click opens first flow */}
       <button
         onClick={handleAgentClick}
-        className={`w-full px-3 py-2.5 flex items-center gap-2 transition-colors ${
-          isAnyFlowActive ? 'bg-blue-50' : 'hover:bg-gray-50'
+        className={`w-full px-3 py-2.5 flex items-center gap-2 transition-colors rounded-t-xl ${
+          confirming ? 'bg-red-50' : isAnyFlowActive ? 'bg-blue-50' : 'hover:bg-gray-50'
         }`}
       >
         <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 ${statusColor(agentSession.status)}`}>
-          <Layers size={11} className={agentSession.status === 'running' || agentSession.status === 'paused' ? 'text-white' : 'text-gray-400'} />
+          <Layers size={11} className={agentSession.status === 'running' || agentSession.status === 'paused' ? 'text-white' : 'text-gray-600'} />
         </div>
         <div className="flex-1 min-w-0 text-left">
-          <p className={`text-xs font-semibold truncate ${isAnyFlowActive ? 'text-blue-700' : 'text-gray-700'}`}>{agentSession.agentName}</p>
-          <p className="text-[10px] text-gray-400">{timeAgo(agentSession.startedAt)}</p>
+          <p className={`text-xs font-semibold truncate ${confirming ? 'text-red-600' : isAnyFlowActive ? 'text-blue-700' : 'text-gray-700'}`}>{agentSession.agentName}</p>
+          <p className={`text-[10px] ${confirming ? 'text-red-400' : 'text-gray-600'}`}>{confirming ? 'Delete session?' : timeAgo(agentSession.startedAt)}</p>
         </div>
-        <SessionStatusBadge status={agentSession.status as SessionStatus} />
-        {hasFlows && (
-          <span
-            onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
-            className="w-6 h-6 flex items-center justify-center rounded-md bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition-all duration-150 flex-shrink-0"
-          >
-            {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-          </span>
+
+        {confirming ? (
+          <>
+            <span
+              onClick={(e) => { e.stopPropagation(); deleteSession.mutate({ agentSessionId: agentSession.id }); }}
+              title="Confirm delete"
+              className="w-6 h-6 flex items-center justify-center rounded-md bg-green-100 hover:bg-green-200 text-green-600 hover:text-green-700 transition-all duration-150 flex-shrink-0"
+            >
+              <Check size={13} />
+            </span>
+            <span
+              onClick={(e) => { e.stopPropagation(); setConfirming(false); }}
+              title="Cancel"
+              className="w-6 h-6 flex items-center justify-center rounded-md bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition-all duration-150 flex-shrink-0"
+            >
+              <MinusCircle size={13} />
+            </span>
+          </>
+        ) : (
+          <>
+            <SessionStatusBadge status={agentSession.status as SessionStatus} />
+            <span
+              onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
+              title="Delete session"
+              className="w-6 h-6 flex items-center justify-center rounded-md text-gray-500 hover:bg-red-50 hover:text-red-400 transition-all duration-150 flex-shrink-0"
+            >
+              <X size={13} />
+            </span>
+            {hasFlows && (
+              <span
+                onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
+                className="w-6 h-6 flex items-center justify-center rounded-md bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition-all duration-150 flex-shrink-0"
+              >
+                {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              </span>
+            )}
+          </>
         )}
       </button>
 
@@ -115,7 +151,7 @@ function AgentSessionCard({ agentSession, activeSessionId, onSelectSession }: Ag
               <div className="w-1 self-stretch rounded-full flex-shrink-0 bg-gray-200 ml-1" />
               <div className="flex-1 min-w-0">
                 <p className={`text-xs font-medium truncate ${fs.id === activeSessionId ? 'text-blue-700' : 'text-gray-600'}`}>{fs.flowName}</p>
-                <p className="text-[10px] text-gray-400">{timeAgo(fs.startedAt)}</p>
+                <p className="text-[10px] text-gray-600">{timeAgo(fs.startedAt)}</p>
               </div>
               <SessionStatusBadge status={fs.status as SessionStatus} />
             </button>
@@ -231,7 +267,7 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-4 border-b border-gray-100">
         <div className="flex items-center gap-2">
-          <Layers size={16} className="text-gray-400" />
+          <Layers size={16} className="text-gray-600" />
           <h3 className="text-sm font-semibold text-gray-800">Sessions</h3>
           {runningCount > 0 && (
             <span className="flex items-center justify-center w-5 h-5 rounded-full bg-green-100 text-green-700 text-[10px] font-bold">
@@ -241,7 +277,7 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
         </div>
         <button
           onClick={() => refetch()}
-          className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-all duration-150"
+          className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-600 hover:text-gray-700 hover:bg-gray-100 transition-all duration-150"
           title="Refresh sessions"
         >
           <RefreshCw size={13} />
@@ -259,12 +295,12 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
               className={`flex-shrink-0 px-2.5 py-1 rounded-lg text-xs font-medium transition-all duration-150 ${
                 filter === tab.key
                   ? 'bg-blue-500 text-white'
-                  : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+                  : 'text-gray-600 hover:text-gray-700 hover:bg-gray-100'
               }`}
             >
               {tab.label}
               {count > 0 && (
-                <span className={`ml-1 ${filter === tab.key ? 'text-white/70' : 'text-gray-300'}`}>
+                <span className={`ml-1 ${filter === tab.key ? 'text-white/70' : 'text-gray-500'}`}>
                   {count}
                 </span>
               )}
@@ -278,11 +314,11 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-center py-12">
             <div className="w-12 h-12 rounded-2xl bg-gray-50 flex items-center justify-center">
-              <Layers size={20} className="text-gray-200" />
+              <Layers size={20} className="text-gray-600" />
             </div>
             <div>
-              <p className="text-sm font-medium text-gray-300">No sessions</p>
-              <p className="text-xs text-gray-200 mt-0.5">
+              <p className="text-sm font-medium text-gray-500">No sessions</p>
+              <p className="text-xs text-gray-600 mt-0.5">
                 {filter === 'all' ? 'Start a chat to create a session' : `No ${filter} sessions`}
               </p>
             </div>
@@ -294,13 +330,14 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
               agentSession={as}
               activeSessionId={activeSessionId}
               onSelectSession={onSelectSession}
+              onDeleted={(id) => setAgentSessions((prev) => prev.filter((s) => s.id !== id))}
             />
           ))
         )}
         <button
           onClick={loadMoreHistory}
           disabled={loadingMore}
-          className="w-full py-2 text-xs text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-xl border border-dashed border-gray-200 hover:border-gray-300 transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full py-2 text-xs text-gray-600 hover:text-gray-700 hover:bg-gray-50 rounded-xl border border-dashed border-gray-200 hover:border-gray-300 transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loadingMore ? 'Loading…' : 'Show previous 24 hours'}
         </button>
@@ -308,7 +345,7 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
 
       {/* Footer hint */}
       <div className="px-4 py-3 border-t border-gray-100">
-        <p className="text-[10px] text-gray-300 text-center leading-relaxed">
+        <p className="text-[10px] text-gray-500 text-center leading-relaxed">
           Agent flows run in the background and create sessions automatically
         </p>
       </div>

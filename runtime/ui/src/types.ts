@@ -40,8 +40,9 @@ export interface ToolCallInfo {
 
 export interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant' | 'tool_call' | 'tool_result';
+  role: 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'result';
   content: string;
+  resultData?: Record<string, unknown>;
   tempFiles?: TempFile[];
   toolCalls?: ToolCallInfo[];   // for role=tool_call messages
   toolCallId?: string;          // for role=tool_result, links back to tool_call

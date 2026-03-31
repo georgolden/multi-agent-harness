@@ -142,6 +142,13 @@ export const appRouter = router({
       return { sessionId: agent.allSessions[0].id };
     }),
 
+  deleteAgentSession: publicProcedure
+    .input(z.object({ agentSessionId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      await ctx.app.data.agentSessionRepository.deleteWithFlowSessions(input.agentSessionId);
+      return { ok: true };
+    }),
+
   sendMessage: publicProcedure
     .input(z.object({ sessionId: z.string(), message: z.string() }))
     .mutation(async ({ ctx, input }) => {
@@ -170,15 +177,35 @@ export const appRouter = router({
     const { sessionId } = input;
     const abortSignal = signal ?? new AbortController().signal;
 
+    console.log(`[streamEvents] subscription started userId=${userId} sessionId=${sessionId ?? 'any'}`);
+
     for await (const [eventName, data] of mergeEvents(bus, BUS_EVENT_NAMES, abortSignal)) {
+      console.log(`[streamEvents] raw event name=${eventName} data=${JSON.stringify(data).slice(0, 200)}`);
       if (eventName === 'session:statusChange' || eventName === 'session:message:update') {
-        if (data['userId'] !== userId) continue;
-        if (sessionId && data['sessionId'] !== sessionId) continue;
+        if (data['userId'] !== userId) {
+          console.log(`[streamEvents] skip ${eventName}: userId mismatch (event=${data['userId']} ctx=${userId})`);
+          continue;
+        }
+        // session:statusChange is not filtered by sessionId — child sessions complete
+        // under a different id than the root session the client subscribed to.
+        // session:message:update is filtered so the client only refetches relevant sessions.
+        if (eventName === 'session:message:update' && sessionId && data['sessionId'] !== sessionId) {
+          console.log(`[streamEvents] skip ${eventName}: sessionId mismatch (event=${data['sessionId']} filter=${sessionId})`);
+          continue;
+        }
+        console.log(`[streamEvents] yield ${eventName} sessionId=${data['sessionId']}`);
         yield { type: eventName, ...data } as BusEvent;
       } else if (eventName === 'session:message') {
         const sess = data['session'] as Record<string, unknown> | undefined;
-        if (sess?.['userId'] !== userId) continue;
-        if (sessionId && sess?.['id'] !== sessionId) continue;
+        if (sess?.['userId'] !== userId) {
+          console.log(`[streamEvents] skip session:message: userId mismatch (event=${sess?.['userId']} ctx=${userId})`);
+          continue;
+        }
+        if (sessionId && sess?.['id'] !== sessionId) {
+          console.log(`[streamEvents] skip session:message: sessionId mismatch (event=${sess?.['id']} filter=${sessionId})`);
+          continue;
+        }
+        console.log(`[streamEvents] yield session:message sessionId=${sess?.['id']} message=${String(data['message']).slice(0, 80)}`);
         yield {
           type: 'session:message',
           sessionId: sess?.['id'] as string,

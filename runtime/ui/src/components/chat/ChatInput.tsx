@@ -58,7 +58,7 @@ export function ChatInput({ onSend, disabled, loading, placeholder }: ChatInputP
           className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-150 mb-0.5 ${
             canSend
               ? 'bg-blue-500 text-white hover:bg-blue-600 active:scale-95 shadow-sm'
-              : 'bg-gray-100 text-gray-300'
+              : 'bg-gray-100 text-gray-500'
           }`}
         >
           {loading ? (
@@ -68,7 +68,7 @@ export function ChatInput({ onSend, disabled, loading, placeholder }: ChatInputP
           )}
         </button>
       </div>
-      <p className="text-[10px] text-gray-300 text-center mt-2">
+      <p className="text-[10px] text-gray-500 text-center mt-2">
         Press Enter to send · Shift+Enter for new line
       </p>
     </div>

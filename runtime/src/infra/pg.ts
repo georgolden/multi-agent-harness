@@ -19,6 +19,24 @@ export class Pg {
   }
 
   async stop(): Promise<void> {
+    // Terminate all active backend connections immediately so in-flight
+    // transactions are rolled back rather than waiting for their timeout.
+    try {
+      const client = await this.pool.connect();
+      try {
+        await client.query(`
+          SELECT pg_terminate_backend(pid)
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND pid <> pg_backend_pid()
+            AND state <> 'idle'
+        `);
+      } finally {
+        client.release();
+      }
+    } catch (_) {
+      // best-effort — proceed to pool shutdown regardless
+    }
     await this.pool.end();
     console.log('[Pg] Database connection pool closed');
   }

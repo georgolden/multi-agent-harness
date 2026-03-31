@@ -15,7 +15,7 @@ export function FeaturesSection({ collapsed }: FeaturesSectionProps) {
 
   return (
     <div className="px-3 py-2">
-      <p className="text-xs font-medium text-gray-400 uppercase tracking-widest px-1 mb-2">Features</p>
+      <p className="text-xs font-medium text-gray-600 uppercase tracking-widest px-1 mb-2">Features</p>
       <div className="flex gap-2">
         {FEATURES.map(({ icon: Icon, label, color, bg }) => (
           <div
@@ -27,7 +27,7 @@ export function FeaturesSection({ collapsed }: FeaturesSectionProps) {
           </div>
         ))}
       </div>
-      <p className="text-[10px] text-gray-300 text-center mt-2">More features coming soon</p>
+      <p className="text-[10px] text-gray-500 text-center mt-2">More features coming soon</p>
     </div>
   );
 }

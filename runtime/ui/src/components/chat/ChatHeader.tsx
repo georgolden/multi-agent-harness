@@ -24,7 +24,7 @@ export function ChatHeader({ agentName, flowSessions, activeSessionId, onSelectS
           <BrainCircuit size={18} className="text-white" />
         </div>
         <div>
-          <p className="text-[10px] font-medium text-gray-400 uppercase tracking-widest leading-none mb-0.5">Agent</p>
+          <p className="text-[10px] font-medium text-gray-600 uppercase tracking-widest leading-none mb-0.5">Agent</p>
           {agentName && <h2 className="text-base font-semibold text-gray-900 leading-tight">{agentName}</h2>}
         </div>
       </div>

@@ -14,18 +14,18 @@ export function FlowsSection({ flows, loading, selectedFlow, collapsed, onSelect
   return (
     <div className="flex-1 overflow-y-auto px-3 py-2">
       {!collapsed && (
-        <p className="text-xs font-medium text-gray-400 uppercase tracking-widest px-1 mb-2">Agent Flows</p>
+        <p className="text-xs font-medium text-gray-600 uppercase tracking-widest px-1 mb-2">Agent Flows</p>
       )}
 
       {loading && (
         <div className="flex items-center justify-center py-8">
-          <Loader2 size={20} className="text-gray-300 animate-spin" />
+          <Loader2 size={20} className="text-gray-500 animate-spin" />
         </div>
       )}
 
       {!loading && (!flows || flows.length === 0) && (
         <div className="text-center py-8 px-2">
-          <p className="text-xs text-gray-300">No agent flows found</p>
+          <p className="text-xs text-gray-500">No agent flows found</p>
         </div>
       )}
 

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { X, Copy, Check, FileText } from 'lucide-react';
 import { trpc } from '../../trpcClient.js';
 import { ChatHeader } from './ChatHeader.js';
 import { ChatBubble } from './ChatBubble.js';
 import { ChatInput } from './ChatInput.js';
 import { ChatEmptyState } from './ChatEmptyState.js';
+import { MarkdownRenderer } from './MarkdownRenderer.js';
 import type { ChatMessage, TempFile, ToolCallInfo } from '../../types.js';
 import type { AgentFlowSession } from '../../types.js';
 
@@ -71,7 +72,15 @@ function parseMessages(rawMessages: RawMessage[], tempFiles: TempFile[]): ChatMe
 
     if (role === 'assistant') {
       if (tool_calls && Array.isArray(tool_calls) && tool_calls.length > 0) {
-        const calls: ToolCallInfo[] = (tool_calls as Array<{ id: string; function: { name: string; arguments: string } }>).map((tc) => ({
+        const rawCalls = tool_calls as Array<{ id: string; function: { name: string; arguments: string } }>;
+        // submit_result is a terminal tool — render it as a result message, not a tool call
+        const submitCall = rawCalls.find((tc) => tc.function.name === 'submit_result');
+        if (submitCall) {
+          const resultData = (() => { try { return JSON.parse(submitCall.function.arguments) as Record<string, unknown>; } catch { return {}; } })();
+          msgs.push({ id: `msg-${i}`, role: 'result', content: '', resultData, timestamp: ts });
+          continue;
+        }
+        const calls: ToolCallInfo[] = rawCalls.map((tc) => ({
           id: tc.id,
           name: tc.function.name,
           args: (() => { try { return JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch { return {}; } })(),
@@ -110,10 +119,20 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
   const [sessionTempFiles, setSessionTempFiles] = useState<TempFile[]>([]);
   const [openTempFile, setOpenTempFile] = useState<TempFile | null>(null);
   const [activeTempFileName, setActiveTempFileName] = useState<string | null>(null);
+  const [fileDialogRaw, setFileDialogRaw] = useState(false);
+  const [fileCopied, setFileCopied] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const copyFile = (content: string) => {
+    void navigator.clipboard.writeText(content).then(() => {
+      setFileCopied(true);
+      setTimeout(() => setFileCopied(false), 1500);
+    });
+  };
 
   const runFlow = trpc.runFlow.useMutation();
   const sendMessage = trpc.sendMessage.useMutation();
+  const utils = trpc.useUtils();
 
   const activeFlowSessionId = selectedSession?.id ?? sessionId;
 
@@ -138,12 +157,17 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
     {
       enabled: !!sessionId,
       onData(event) {
+        console.log('[ChatPanel] streamEvents onData', event);
         if (event.type === 'session:message') {
           setWaitingForResponse(false);
           setMessages((prev) => [
             ...prev,
             { id: `${Date.now()}-${Math.random()}`, role: 'assistant', content: event.message, timestamp: new Date() },
           ]);
+        }
+        if (event.type === 'session:message:update') {
+          console.log('[ChatPanel] session:message:update — refetching session', sessionId);
+          void utils.getSession.invalidate({ sessionId: sessionId ?? '' });
         }
         if (event.type === 'session:statusChange') {
           const e = event as { type: string; to: string };
@@ -166,7 +190,7 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
   }, [messages, waitingForResponse]);
 
   const handleSend = async (text: string) => {
-    if (!selectedFlow) return;
+    if (!selectedFlow && !sessionId) return;
 
     setMessages((prev) => [
       ...prev,
@@ -176,12 +200,12 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
     setWaitingForResponse(true);
 
     try {
-      if (!sessionId) {
+      if (!sessionId && selectedFlow) {
         const result = await runFlow.mutateAsync({ flowName: selectedFlow, message: text });
         setSessionId(result.sessionId);
         onSessionCreated(result.sessionId, selectedFlow);
       } else {
-        await sendMessage.mutateAsync({ sessionId, message: text });
+        await sendMessage.mutateAsync({ sessionId: sessionId!, message: text });
       }
     } catch (err) {
       setWaitingForResponse(false);
@@ -253,19 +277,42 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
               ))}
             </div>
           )}
-          {openTempFile && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => { setOpenTempFile(null); setActiveTempFileName(null); }}>
-              <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col mx-4" onClick={(e) => e.stopPropagation()}>
-                <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
-                  <span className="text-sm font-semibold text-gray-800">{openTempFile.name}</span>
-                  <button onClick={() => { setOpenTempFile(null); setActiveTempFileName(null); }} className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors">
-                    <X size={15} />
-                  </button>
+          {openTempFile && (() => {
+            const isMarkdown = openTempFile.name.endsWith('.md') || openTempFile.name.endsWith('.mdx');
+            return (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => { setOpenTempFile(null); setActiveTempFileName(null); setFileDialogRaw(false); }}>
+                <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col mx-4" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
+                    <span className="text-sm font-semibold text-gray-800">{openTempFile.name}</span>
+                    <div className="flex items-center gap-1">
+                      {isMarkdown && (
+                        <button
+                          onClick={() => setFileDialogRaw((r) => !r)}
+                          className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${fileDialogRaw ? 'bg-gray-100 text-gray-700' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-700'}`}
+                        >
+                          <FileText size={12} />
+                          Raw
+                        </button>
+                      )}
+                      <button onClick={() => copyFile(openTempFile.content)} className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-gray-100 text-gray-600 hover:text-gray-700 transition-colors">
+                        {fileCopied ? <Check size={14} /> : <Copy size={14} />}
+                      </button>
+                      <button onClick={() => { setOpenTempFile(null); setActiveTempFileName(null); setFileDialogRaw(false); }} className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-gray-100 text-gray-600 hover:text-gray-700 transition-colors">
+                        <X size={15} />
+                      </button>
+                    </div>
+                  </div>
+                  {isMarkdown && !fileDialogRaw ? (
+                    <div className="flex-1 overflow-auto px-5 py-4">
+                      <MarkdownRenderer content={openTempFile.content} />
+                    </div>
+                  ) : (
+                    <pre className="flex-1 overflow-auto px-5 py-4 text-xs text-gray-700 font-mono leading-relaxed whitespace-pre-wrap">{openTempFile.content}</pre>
+                  )}
                 </div>
-                <pre className="flex-1 overflow-auto px-5 py-4 text-xs text-gray-700 font-mono leading-relaxed whitespace-pre-wrap">{openTempFile.content}</pre>
               </div>
-            </div>
-          )}
+            );
+          })()}
           <ChatInput onSend={handleSend} loading={sending} />
         </>
       ) : (

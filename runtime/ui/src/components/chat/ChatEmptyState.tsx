@@ -20,11 +20,11 @@ export function ChatEmptyState({ flowName, description }: ChatEmptyStateProps) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-8">
         <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center">
-          <BrainCircuit size={28} className="text-gray-300" />
+          <BrainCircuit size={28} className="text-gray-500" />
         </div>
         <div>
-          <p className="text-base font-semibold text-gray-400">No Agent Flow Selected</p>
-          <p className="text-sm text-gray-300 mt-1">Select an agent flow from the sidebar to get started</p>
+          <p className="text-base font-semibold text-gray-600">No Agent Flow Selected</p>
+          <p className="text-sm text-gray-500 mt-1">Select an agent flow from the sidebar to get started</p>
         </div>
       </div>
     );
@@ -42,9 +42,9 @@ export function ChatEmptyState({ flowName, description }: ChatEmptyStateProps) {
           {flowName}
         </p>
         {descriptionText && (
-          <p className="text-sm text-gray-400 mt-1.5">{descriptionText}</p>
+          <p className="text-sm text-gray-600 mt-1.5">{descriptionText}</p>
         )}
-        <p className="text-sm text-gray-300 mt-3">
+        <p className="text-sm text-gray-500 mt-3">
           Send a message to start this agent flow
         </p>
       </div>

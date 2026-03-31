@@ -16,7 +16,8 @@ export class PrismaService {
   }
 
   async stop(): Promise<void> {
-    // Pool lifecycle is owned by Pg — do not call $disconnect here
+    // Disconnect prisma before the pool shuts down so it stops issuing queries.
+    await this.client.$disconnect();
     console.log('[PrismaService] Stopped');
   }
 }

@@ -46,7 +46,7 @@ export function SessionCard({ session, isNew, isActive, onClick }: SessionCardPr
           >
             <BrainCircuit
               size={14}
-              className={session.status === 'running' ? 'text-white' : 'text-gray-400'}
+              className={session.status === 'running' ? 'text-white' : 'text-gray-600'}
             />
           </div>
           <p className="text-sm font-medium text-gray-800 truncate">{session.flowName}</p>
@@ -55,12 +55,12 @@ export function SessionCard({ session, isNew, isActive, onClick }: SessionCardPr
       </div>
 
       <div className="flex items-center gap-1 mt-2 ml-9">
-        <Clock size={10} className="text-gray-300 flex-shrink-0" />
-        <span className="text-[11px] text-gray-300">{timeAgo(session.startedAt)}</span>
+        <Clock size={10} className="text-gray-500 flex-shrink-0" />
+        <span className="text-[11px] text-gray-500">{timeAgo(session.startedAt)}</span>
       </div>
 
       {session.id && (
-        <p className="text-[10px] text-gray-200 mt-1 ml-9 font-mono truncate">{session.id.slice(0, 16)}…</p>
+        <p className="text-[10px] text-gray-600 mt-1 ml-9 font-mono truncate">{session.id.slice(0, 16)}…</p>
       )}
     </button>
   );
