@@ -39,7 +39,7 @@
   - Session: temp files history
   - [x] Agent: parallel flow execution and schema extention for it
   - [x] Schema agents recovery is not working
-  - [ ] All Agents: continue agent after completed
+  - [x] All Agents: continue agent after completed
   - [/] Edit schema agents
   - [ ] Correct visuals for schema agents
   - Agent Builder: update builder to support parallel
