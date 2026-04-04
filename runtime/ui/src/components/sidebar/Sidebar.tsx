@@ -1,24 +1,28 @@
 import { SidebarHeader } from './SidebarHeader.js';
 import { FeaturesSection } from './FeaturesSection.js';
 import { FlowsSection } from './FlowsSection.js';
-import type { AgentFlow } from '../../types.js';
+import type { Agent } from '../../types.js';
 
 interface SidebarProps {
-  flows: AgentFlow[] | undefined;
-  loadingFlows: boolean;
-  selectedFlow: string | null;
+  builtinAgents: Agent[] | undefined;
+  schemaAgents: Agent[] | undefined;
+  loadingAgents: boolean;
+  selectedAgent: string | null;
   collapsed: boolean;
   onToggleCollapse: () => void;
-  onSelectFlow: (name: string) => void;
+  onSelectAgent: (name: string) => void;
+  onEditAgent: (name: string) => void;
 }
 
 export function Sidebar({
-  flows,
-  loadingFlows,
-  selectedFlow,
+  builtinAgents,
+  schemaAgents,
+  loadingAgents,
+  selectedAgent,
   collapsed,
   onToggleCollapse,
-  onSelectFlow,
+  onSelectAgent,
+  onEditAgent,
 }: SidebarProps) {
   return (
     <aside
@@ -35,11 +39,13 @@ export function Sidebar({
       {!collapsed && <div className="mx-3 h-px bg-gray-100 my-1" />}
 
       <FlowsSection
-        flows={flows}
-        loading={loadingFlows}
-        selectedFlow={selectedFlow}
+        builtinAgents={builtinAgents}
+        schemaAgents={schemaAgents}
+        loading={loadingAgents}
+        selectedAgent={selectedAgent}
         collapsed={collapsed}
-        onSelectFlow={onSelectFlow}
+        onSelectAgent={onSelectAgent}
+        onEditAgent={onEditAgent}
       />
     </aside>
   );

@@ -1,7 +1,7 @@
 export type SessionStatus = 'created' | 'running' | 'completed' | 'failed' | 'paused';
 export type AgentStatus = 'running' | 'completed' | 'failed' | 'paused';
 
-export interface AgentFlow {
+export interface Agent {
   name: string;
   description: string;
 }

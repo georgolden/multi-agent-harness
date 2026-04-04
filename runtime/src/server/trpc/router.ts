@@ -84,12 +84,12 @@ async function* mergeEvents(
 export const appRouter = router({
   // ─── Queries ──────────────────────────────────────────────────────────────
 
-  listFlows: publicProcedure.query(({ ctx }) => {
-    const builtin = ctx.app.agents.getAgents().map((f) => ({ name: f.name, description: f.description }));
-    const schemas = ctx.app.agents
-      .getAgenticLoopSchemas()
-      .map((s) => ({ name: s.flowName, description: s.description }));
-    return [...builtin, ...schemas];
+  listBuiltinAgents: publicProcedure.query(({ ctx }) => {
+    return ctx.app.agents.getAgents().map((f) => ({ name: f.name, description: f.description }));
+  }),
+
+  listSchemaAgents: publicProcedure.query(({ ctx }) => {
+    return ctx.app.agents.getAgenticLoopSchemas().map((s) => ({ name: s.flowName, description: s.description }));
   }),
 
   listActiveSessions: publicProcedure.query(({ ctx }) => {
@@ -128,6 +128,46 @@ export const appRouter = router({
         }),
       );
       return result;
+    }),
+
+  getSchema: publicProcedure
+    .input(z.object({ flowName: z.string() }))
+    .query(async ({ ctx, input }) => {
+      return ctx.app.data.agenticLoopSchemaRepository.getSchema(input.flowName);
+    }),
+
+  updateSchema: publicProcedure
+    .input(
+      z.object({
+        flowName: z.string(),
+        schema: z.object({
+          description: z.string().optional(),
+          userPromptTemplate: z.string().optional(),
+          systemPrompt: z.string().optional(),
+          toolNames: z.array(z.string()).optional(),
+          skillNames: z.array(z.string()).optional(),
+          contextPaths: z
+            .object({
+              files: z.array(z.string()),
+              folders: z.array(z.string()),
+            })
+            .optional(),
+          callLlmOptions: z.record(z.unknown()).optional(),
+          messageWindowConfig: z.record(z.unknown()).optional(),
+          agentLoopConfig: z
+            .object({
+              onError: z.enum(['askUser', 'retry']),
+              maxLoopEntering: z.number(),
+              loopExit: z.enum(['failure', 'bestAnswer']),
+              useMemory: z.boolean(),
+              useKnowledgeBase: z.boolean(),
+            })
+            .optional(),
+        }),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return ctx.app.data.agenticLoopSchemaRepository.updateSchema(input.flowName, input.schema as any);
     }),
 
   // ─── Mutations ────────────────────────────────────────────────────────────

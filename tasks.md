@@ -38,8 +38,10 @@
   - [x] UI
   - Session: temp files history
   - [x] Agent: parallel flow execution and schema extention for it
-  - [ ] Schema agents recovery is not working
-  - All Agents: continue agent after completed
+  - [x] Schema agents recovery is not working
+  - [ ] All Agents: continue agent after completed
+  - [/] Edit schema agents
+  - [ ] Correct visuals for schema agents
   - Agent Builder: update builder to support parallel
   - [ ] Telegram Channel
   - autonomous mode - mimic user is the best way to not tweak agent. agent could be user of another agent

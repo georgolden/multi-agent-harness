@@ -1,45 +1,86 @@
 import { Loader2 } from 'lucide-react';
 import { FlowCard } from './FlowCard.js';
-import type { AgentFlow } from '../../types.js';
+import type { Agent } from '../../types.js';
 
 interface FlowsSectionProps {
-  flows: AgentFlow[] | undefined;
+  builtinAgents: Agent[] | undefined;
+  schemaAgents: Agent[] | undefined;
   loading: boolean;
-  selectedFlow: string | null;
+  selectedAgent: string | null;
   collapsed: boolean;
-  onSelectFlow: (name: string) => void;
+  onSelectAgent: (name: string) => void;
+  onEditAgent: (name: string) => void;
 }
 
-export function FlowsSection({ flows, loading, selectedFlow, collapsed, onSelectFlow }: FlowsSectionProps) {
+export function FlowsSection({
+  builtinAgents,
+  schemaAgents,
+  loading,
+  selectedAgent,
+  collapsed,
+  onSelectAgent,
+  onEditAgent,
+}: FlowsSectionProps) {
+  const hasBuiltin = builtinAgents && builtinAgents.length > 0;
+  const hasSchema = schemaAgents && schemaAgents.length > 0;
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 size={20} className="text-gray-500 animate-spin" />
+      </div>
+    );
+  }
+
   return (
-    <div className="flex-1 overflow-y-auto px-3 py-2">
-      {!collapsed && (
-        <p className="text-xs font-medium text-gray-600 uppercase tracking-widest px-1 mb-2">Agent Flows</p>
-      )}
-
-      {loading && (
-        <div className="flex items-center justify-center py-8">
-          <Loader2 size={20} className="text-gray-500 animate-spin" />
+    <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-2">
+      {/* Built-in agents */}
+      {hasBuiltin && (
+        <div>
+          {!collapsed && (
+            <p className="text-xs font-medium text-gray-600 uppercase tracking-widest px-1 mb-2">Agents</p>
+          )}
+          <div className="flex flex-col gap-1">
+            {builtinAgents!.map((agent) => (
+              <FlowCard
+                key={agent.name}
+                agent={agent}
+                selected={selectedAgent === agent.name}
+                collapsed={collapsed}
+                onClick={() => onSelectAgent(agent.name)}
+              />
+            ))}
+          </div>
         </div>
       )}
 
-      {!loading && (!flows || flows.length === 0) && (
+      {/* Schema agents */}
+      {hasSchema && (
+        <div>
+          {!collapsed && (
+            <p className="text-xs font-medium text-gray-600 uppercase tracking-widest px-1 mb-2 mt-1">
+              Schema Agents
+            </p>
+          )}
+          <div className="flex flex-col gap-1">
+            {schemaAgents!.map((agent) => (
+              <FlowCard
+                key={agent.name}
+                agent={agent}
+                selected={selectedAgent === agent.name}
+                collapsed={collapsed}
+                editable
+                onClick={() => onSelectAgent(agent.name)}
+                onEdit={() => onEditAgent(agent.name)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!hasBuiltin && !hasSchema && (
         <div className="text-center py-8 px-2">
-          <p className="text-xs text-gray-500">No agent flows found</p>
-        </div>
-      )}
-
-      {!loading && flows && flows.length > 0 && (
-        <div className="flex flex-col gap-1">
-          {flows.map((flow) => (
-            <FlowCard
-              key={flow.name}
-              flow={flow}
-              selected={selectedFlow === flow.name}
-              collapsed={collapsed}
-              onClick={() => onSelectFlow(flow.name)}
-            />
-          ))}
+          <p className="text-xs text-gray-500">No agents found</p>
         </div>
       )}
     </div>
