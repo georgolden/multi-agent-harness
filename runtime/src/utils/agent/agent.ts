@@ -197,11 +197,18 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
   /** ID of the current AgentSession DB record (set by run(), cleared on finish). */
   agentSessionId: string | null = null;
 
+  /** Resolves with the first session created (or restored) by this agent. */
+  readonly firstSession: Promise<TSession>;
+  private _resolveFirstSession: (session: TSession) => void;
+
   constructor(app: TApp, user: TUser, parent?: TSession, schemaOverride?: AgentSchema) {
     this.app = app;
     this.user = user;
     this.parent = parent;
     if (schemaOverride) this.schema = schemaOverride;
+    let resolve!: (session: TSession) => void;
+    this.firstSession = new Promise<TSession>((r) => { resolve = r; });
+    this._resolveFirstSession = resolve;
   }
 
   /**
@@ -424,6 +431,7 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
       }
     }
 
+    if (this.allSessions.length === 0) this._resolveFirstSession(session);
     this.allSessions.push(session);
     this.activeSessions.push(session);
     this.activeFlows.push(flow);
@@ -571,26 +579,28 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
     );
 
     // Paused — waiting for user input. Do NOT re-run the pausing node (e.g. AskUser).
-    // Look up its pause handler from the stored flow schema and run from there directly.
-    if (flowSession && status === 'paused' && nodeName) {
+    if (flowSession && status === 'paused') {
       const schema = flowSession.sessionData.flowSchema as { nodes: Record<string, unknown> } | undefined;
-      const nodeWiring = schema?.nodes?.[nodeName];
+      const nodeWiring = nodeName ? schema?.nodes?.[nodeName] : undefined;
       const pauseHandlerName =
         typeof nodeWiring === 'object' && nodeWiring !== null && 'pause' in nodeWiring
           ? (nodeWiring as Record<string, string>)['pause']
           : undefined;
-      console.log(`[Agent.restore] session '${flowSession.id}' is paused at '${nodeName}' — waiting for user message`);
+      console.log(`[Agent.restore] session '${flowSession.id}' is paused at '${nodeName ?? 'unknown'}' — waiting for user message`);
+      if (this.allSessions.length === 0) this._resolveFirstSession(flowSession);
+      this.allSessions.push(flowSession);
       this.runPromise = new Promise<unknown>((resolve, reject) => {
         flowSession.onUserMessage(({ message }: { message: string }) => {
           if (pauseHandlerName) {
-            // Resume from the pause handler node directly — skip re-running the pausing node
             flowSession.sessionData.currentNodeName = pauseHandlerName;
             flowSession.sessionData.currentPacketData = message;
             this.resume(step.flow, flowSession).then(resolve).catch(reject);
-          } else {
-            // Fallback: no pause handler wired, resume from pausing node
+          } else if (nodeName) {
             flowSession.sessionData.currentPacketData = message;
             this.resume(step.flow, flowSession).then(resolve).catch(reject);
+          } else {
+            // No node checkpoint — re-enter the flow from scratch reusing the existing session
+            this.runFrom(step.flow, message, flowSession).then(resolve).catch(reject);
           }
         });
       });
@@ -599,7 +609,7 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
 
     return status === 'running' && nodeName && flowSession
       ? this.resume(step.flow, flowSession)
-      : this.runFrom(step.flow, item.input);
+      : this.runFrom(step.flow, item.input, flowSession ?? undefined);
   }
 
   private async _restoreParallel(step: AgentStep, flowSessions: TSession[]): Promise<unknown> {
@@ -619,26 +629,31 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
           `[Agent.restore] parallel item[${index}] flow='${step.flow}' session=${flowSession ? `id='${flowSession.id}' status='${sessionStatus}' nodeName='${nodeName}'` : 'none'}`,
         );
 
-        // Paused — same fix as _restoreSingle: resume from pause handler, not the pausing node
-        if (flowSession && sessionStatus === 'paused' && nodeName) {
+        // Paused — waiting for user input
+        if (flowSession && sessionStatus === 'paused') {
           const schema = flowSession.sessionData.flowSchema as { nodes: Record<string, unknown> } | undefined;
-          const nodeWiring = schema?.nodes?.[nodeName];
+          const nodeWiring = nodeName ? schema?.nodes?.[nodeName] : undefined;
           const pauseHandlerName =
             typeof nodeWiring === 'object' && nodeWiring !== null && 'pause' in nodeWiring
               ? (nodeWiring as Record<string, string>)['pause']
               : undefined;
           console.log(
-            `[Agent.restore] parallel item[${index}] session '${flowSession.id}' is paused at '${nodeName}' — waiting for user message`,
+            `[Agent.restore] parallel item[${index}] session '${flowSession.id}' is paused at '${nodeName ?? 'unknown'}' — waiting for user message`,
           );
+          if (this.allSessions.length === 0) this._resolveFirstSession(flowSession);
+          this.allSessions.push(flowSession);
           return new Promise<unknown>((resolve, reject) => {
             flowSession.onUserMessage(({ message }: { message: string }) => {
               if (pauseHandlerName) {
                 flowSession.sessionData.currentNodeName = pauseHandlerName;
                 flowSession.sessionData.currentPacketData = message;
-              } else {
+                this.resume(step.flow, flowSession).then(resolve).catch(reject);
+              } else if (nodeName) {
                 flowSession.sessionData.currentPacketData = message;
+                this.resume(step.flow, flowSession).then(resolve).catch(reject);
+              } else {
+                this.runFrom(step.flow, message, flowSession).then(resolve).catch(reject);
               }
-              this.resume(step.flow, flowSession).then(resolve).catch(reject);
             });
           });
         }
@@ -646,7 +661,7 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
         return (
           sessionStatus === 'running' && nodeName && flowSession
             ? this.resume(step.flow, flowSession)
-            : this.runFrom(step.flow, item.input)
+            : this.runFrom(step.flow, item.input, flowSession ?? undefined)
         ).then(
           async (result) => {
             if (this.checkpointer && this.agentSessionId) {
