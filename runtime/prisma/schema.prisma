@@ -95,7 +95,7 @@ model AgentSession {
 }
 
 model AgenticLoopSchema {
-  flowName            String  @id @map("flow_name") @db.VarChar(255)
+  name                String  @id @map("name") @db.VarChar(255)
   userId              String? @map("user_id") @db.VarChar(255)
   description         String
   userPromptTemplate  String? @map("user_prompt_template")

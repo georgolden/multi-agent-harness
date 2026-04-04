@@ -11,7 +11,7 @@ import { Session } from '../../services/sessionService/session.js';
 import { Type, type Static } from '@sinclair/typebox';
 
 export interface AgenticLoopSchema {
-  flowName: string;
+  name: string;
   description: string;
   userPromptTemplate?: string;
   systemPrompt: string;
@@ -35,39 +35,7 @@ export type AgentLoopConfig = {
 };
 
 export const agentFlowParametersSchema = Type.Object({
-  schema: Type.Object(
-    {
-      flowName: Type.String({ description: 'Name of the agentic loop flow' }),
-      userPromptTemplate: Type.Optional(Type.String({ description: 'Template for user prompt' })),
-      systemPrompt: Type.String({ description: 'System prompt for the LLM' }),
-      toolNames: Type.Array(Type.String(), { description: 'Array of tool names to use' }),
-      skillNames: Type.Array(Type.String(), { description: 'Array of skill names to use' }),
-      contextPaths: Type.Object(
-        {
-          files: Type.Array(Type.String(), { description: 'Context file paths' }),
-          folders: Type.Array(Type.String(), { description: 'Context folder paths' }),
-        },
-        { description: 'Context paths for files and folders' },
-      ),
-      callLlmOptions: Type.Object({}, { description: 'LLM call options' }),
-      messageWindowConfig: Type.Object({}, { description: 'Message window configuration' }),
-      agentLoopConfig: Type.Object(
-        {
-          onError: Type.Union([Type.Literal('askUser'), Type.Literal('retry')], {
-            description: 'Error handling strategy',
-          }),
-          maxLoopEntering: Type.Number({ description: 'Maximum loop iterations' }),
-          loopExit: Type.Union([Type.Literal('failure'), Type.Literal('bestAnswer')], {
-            description: 'Loop exit strategy',
-          }),
-          useMemory: Type.Boolean({ description: 'Enable memory' }),
-          useKnowledgeBase: Type.Boolean({ description: 'Enable knowledge base' }),
-        },
-        { description: 'Agentic loop configuration' },
-      ),
-    },
-    { description: 'Agentic loop schema configuration' },
-  ),
+  name: Type.String({ description: 'Name of the agentic loop schema to run' }),
   message: Type.String({ description: 'User message to send to the flow' }),
 });
 
@@ -109,8 +77,11 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
     _parent: Session | undefined,
     input: AgentFlowParameters,
   ): Promise<Session> {
+    const schema = await app.data.agenticLoopSchemaRepository.getSchema(input.name);
+    if (!schema) throw new Error(`AgenticLoopFlow: schema '${input.name}' not found`);
+
     const {
-      flowName,
+      name: flowName,
       systemPrompt,
       toolNames,
       skillNames,
@@ -119,10 +90,10 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
       messageWindowConfig,
       userPromptTemplate,
       agentLoopConfig,
-    } = input.schema;
+    } = schema;
 
     console.log(
-      `[AgenticLoopFlow.createSession] raw input.schema: toolNames=${JSON.stringify(toolNames)} agentLoopConfig=${JSON.stringify(agentLoopConfig)} messageWindowConfig=${JSON.stringify(messageWindowConfig)} contextPaths=${JSON.stringify(contextPaths)}`,
+      `[AgenticLoopFlow.createSession] schema='${input.name}' toolNames=${JSON.stringify(toolNames)} agentLoopConfig=${JSON.stringify(agentLoopConfig)}`,
     );
 
     const filledSystemPrompt = `Current datetime: ${new Date().toISOString()}\nUser timezone: ${user.timezone ?? 'UTC'}\n\n${systemPrompt}`;

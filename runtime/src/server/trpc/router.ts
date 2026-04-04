@@ -89,7 +89,7 @@ export const appRouter = router({
   }),
 
   listSchemaAgents: publicProcedure.query(({ ctx }) => {
-    return ctx.app.agents.getAgenticLoopSchemas().map((s) => ({ name: s.flowName, description: s.description }));
+    return ctx.app.agents.getAgenticLoopSchemas().map((s) => ({ name: s.name, description: s.description }));
   }),
 
   listActiveSessions: publicProcedure.query(({ ctx }) => {
@@ -124,7 +124,9 @@ export const appRouter = router({
       const result = await Promise.all(
         agentSessions.map(async (as) => {
           const flowSessions = await ctx.app.data.flowSessionRepository.getByAgentSessionId(as.id);
-          return { ...as, flowSessions };
+          const inp = (as.currentStep?.items[0]?.input as any);
+          const schemaFlowName = inp?.name ?? inp?.schema?.name ?? null;
+          return { ...as, flowSessions, schemaFlowName };
         }),
       );
       return result;
@@ -152,8 +154,8 @@ export const appRouter = router({
               folders: z.array(z.string()),
             })
             .optional(),
-          callLlmOptions: z.record(z.unknown()).optional(),
-          messageWindowConfig: z.record(z.unknown()).optional(),
+          callLlmOptions: z.record(z.string(), z.unknown()).optional(),
+          messageWindowConfig: z.record(z.string(), z.unknown()).optional(),
           agentLoopConfig: z
             .object({
               onError: z.enum(['askUser', 'retry']),
@@ -180,6 +182,29 @@ export const appRouter = router({
       ctx.webChannel.markUserActive(ctx.userId);
       const agent = await ctx.app.agents.runAgent(input.flowName, { user }, { message: input.message });
       return { sessionId: agent.allSessions[0].id };
+    }),
+
+  continueAgent: publicProcedure
+    .input(z.object({ agentName: z.string(), message: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const user = await ctx.app.data.userRepository.getUser(ctx.userId);
+      if (!user) throw new Error(`User '${ctx.userId}' not found`);
+      ctx.webChannel.markUserActive(ctx.userId);
+      const agent = await ctx.app.agents.continueAgent(input.agentName, { user }, { message: input.message });
+      return { sessionId: agent.allSessions[0]?.id ?? null };
+    }),
+
+  continueSchemaAgent: publicProcedure
+    .input(z.object({ flowName: z.string(), message: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      console.log(`[router.continueSchemaAgent] flowName='${input.flowName}' message='${input.message}'`);
+      if (input.flowName === 'Agentic Loop') throw new Error(`[router.continueSchemaAgent] flowName is 'Agentic Loop' — UI failed to resolve schemaFlowName`);
+      const user = await ctx.app.data.userRepository.getUser(ctx.userId);
+      if (!user) throw new Error(`User '${ctx.userId}' not found`);
+      ctx.webChannel.markUserActive(ctx.userId);
+      const agent = await ctx.app.agents.continueAgent('Agentic Loop', { user }, { name: input.flowName, message: input.message });
+      console.log(`[router.continueSchemaAgent] agent session id='${agent.allSessions[0]?.id}'`);
+      return { sessionId: agent.allSessions[0]?.id ?? null };
     }),
 
   deleteAgentSession: publicProcedure

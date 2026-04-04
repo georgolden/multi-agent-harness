@@ -199,12 +199,16 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
       onData(event) {
         if (event.type === 'session:statusChange') {
           setAgentSessions((prev) =>
-            prev.map((as) => ({
-              ...as,
-              flowSessions: as.flowSessions.map((fs) =>
+            prev.map((as) => {
+              const updatedFlowSessions = as.flowSessions.map((fs) =>
                 fs.id === event.sessionId ? { ...fs, status: event.to as SessionStatus } : fs,
-              ),
-            })),
+              );
+              // If all flow sessions are done, mark the agent session completed/failed too
+              const allDone = updatedFlowSessions.length > 0 && updatedFlowSessions.every((fs) => fs.status === 'completed' || fs.status === 'failed');
+              const anyFailed = updatedFlowSessions.some((fs) => fs.status === 'failed');
+              const agentStatus = allDone ? (anyFailed ? 'failed' : 'completed') : as.status;
+              return { ...as, status: agentStatus as typeof as.status, flowSessions: updatedFlowSessions };
+            }),
           );
         }
       },

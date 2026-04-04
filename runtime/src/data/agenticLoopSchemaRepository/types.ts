@@ -7,5 +7,5 @@ export interface StoredAgenticLoopSchema extends AgenticLoopSchema {
 export type RepositoryHook = {
   onInsert?: (schema: StoredAgenticLoopSchema) => void | Promise<void>;
   onUpdate?: (schema: StoredAgenticLoopSchema) => void | Promise<void>;
-  onDelete?: (flowName: string) => void | Promise<void>;
+  onDelete?: (name: string) => void | Promise<void>;
 };

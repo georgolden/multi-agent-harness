@@ -172,7 +172,7 @@ export class SubmitAnswer extends Node<App, AgentBuilderContext, string, { defau
 
     try {
       await app.data.agenticLoopSchemaRepository.createSchema({ userId: user.id, schema: parsed });
-      console.log(`[agentBuilder.SubmitAnswer] Schema '${parsed.flowName}' saved to DB`);
+      console.log(`[agentBuilder.SubmitAnswer] Schema '${parsed.name}' saved to DB`);
     } catch (e) {
       console.error(`[agentBuilder.SubmitAnswer] Failed to save schema to DB: ${e}`);
     }

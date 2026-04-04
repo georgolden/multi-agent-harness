@@ -17,6 +17,8 @@ interface ChatPanelProps {
   flowDescription: string | null;
   agentName: string | null;
   flowSessions: AgentFlowSession[];
+  agentSessionStatus?: string | null;
+  isSchemaAgent?: boolean;
 }
 
 function extractText(content: unknown): string {
@@ -111,11 +113,12 @@ function parseMessages(rawMessages: RawMessage[], tempFiles: TempFile[]): ChatMe
   return msgs;
 }
 
-export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onSelectFlowSession, flowDescription, agentName, flowSessions }: ChatPanelProps) {
+export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onSelectFlowSession, flowDescription, agentName, flowSessions, agentSessionStatus, isSchemaAgent }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [waitingForResponse, setWaitingForResponse] = useState(false);
   const [sending, setSending] = useState(false);
+  const [localAgentStatus, setLocalAgentStatus] = useState<string | null>(agentSessionStatus ?? null);
   const [sessionTempFiles, setSessionTempFiles] = useState<TempFile[]>([]);
   const [openTempFile, setOpenTempFile] = useState<TempFile | null>(null);
   const [activeTempFileName, setActiveTempFileName] = useState<string | null>(null);
@@ -132,6 +135,8 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
 
   const runFlow = trpc.runFlow.useMutation();
   const sendMessage = trpc.sendMessage.useMutation();
+  const continueAgent = trpc.continueAgent.useMutation();
+  const continueSchemaAgent = trpc.continueSchemaAgent.useMutation();
   const utils = trpc.useUtils();
 
   const activeFlowSessionId = selectedSession?.id ?? sessionId;
@@ -171,11 +176,19 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
         }
         if (event.type === 'session:statusChange') {
           const e = event as { type: string; to: string };
-          if (e.to === 'completed' || e.to === 'failed') setWaitingForResponse(false);
+          if (e.to === 'completed' || e.to === 'failed') {
+            setWaitingForResponse(false);
+            setLocalAgentStatus(e.to);
+            console.log('[ChatPanel] agent status updated to', e.to);
+          }
         }
       },
     },
   );
+
+  useEffect(() => {
+    setLocalAgentStatus(agentSessionStatus ?? null);
+  }, [agentSessionStatus]);
 
   useEffect(() => {
     if (selectedSession) return;
@@ -183,6 +196,7 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
     setSessionId(null);
     setSessionTempFiles([]);
     setWaitingForResponse(false);
+    setLocalAgentStatus(null);
   }, [selectedFlow, selectedSession]);
 
   useEffect(() => {
@@ -204,6 +218,18 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
         const result = await runFlow.mutateAsync({ flowName: selectedFlow, message: text });
         setSessionId(result.sessionId);
         onSessionCreated(result.sessionId, selectedFlow);
+      } else if (agentName && (localAgentStatus === 'completed' || localAgentStatus === 'failed')) {
+        console.log('[ChatPanel.handleSend] continuing agent', { agentName, isSchemaAgent, localAgentStatus });
+        if (isSchemaAgent && agentName === 'Agentic Loop') {
+          throw new Error(`[ChatPanel] isSchemaAgent=true but agentName is "Agentic Loop" — schemaFlowName was not resolved, cannot continue`);
+        }
+        const result = isSchemaAgent
+          ? await continueSchemaAgent.mutateAsync({ flowName: agentName, message: text })
+          : await continueAgent.mutateAsync({ agentName, message: text });
+        if (result.sessionId) {
+          setSessionId(result.sessionId);
+          onSessionCreated(result.sessionId, agentName);
+        }
       } else {
         await sendMessage.mutateAsync({ sessionId: sessionId!, message: text });
       }

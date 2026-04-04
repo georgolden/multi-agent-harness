@@ -24,6 +24,7 @@ function Main() {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<{ id: string; flowName: string } | null>(null);
   const [activeAgentSession, setActiveAgentSession] = useState<AgentSession | null>(null);
+  const [activeSchemaFlowName, setActiveSchemaFlowName] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [newSession, setNewSession] = useState<{ sessionId: string; flowName: string } | null>(null);
   const [editingAgent, setEditingAgent] = useState<string | null>(null);
@@ -33,7 +34,9 @@ function Main() {
 
   const allAgents = [...(builtinAgents ?? []), ...(schemaAgents ?? [])];
   const flowSessions: AgentFlowSession[] = activeAgentSession?.flowSessions ?? [];
-  const agentName: string | null = activeAgentSession?.agentName ?? selectedAgent;
+  const agentName: string | null = activeSchemaFlowName ?? activeAgentSession?.agentName ?? selectedAgent;
+  const isSchemaAgent = !!(selectedAgent && schemaAgents?.some((a) => a.name === selectedAgent)) || !!activeSchemaFlowName;
+  console.log('[App] state', { selectedAgent, activeSchemaFlowName, agentName, isSchemaAgent, agentSessionStatus: activeAgentSession?.status ?? null, schemaFlowName: activeAgentSession?.schemaFlowName ?? null });
   const selectedAgentDescription = allAgents.find((a) => a.name === selectedAgent)?.description ?? null;
 
   const handleSessionCreated = (sessionId: string, flowName: string) => {
@@ -46,6 +49,9 @@ function Main() {
     setActiveAgentSession(agentSession);
     setSelectedSession({ id: flowSessionId, flowName: fs.flowName });
     setSelectedAgent(null);
+    const resolvedSchemaFlowName = agentSession.schemaFlowName ?? null;
+    console.log('[App.handleSelectSession] agentSession.schemaFlowName=', resolvedSchemaFlowName, 'agentSession=', agentSession);
+    setActiveSchemaFlowName(resolvedSchemaFlowName);
   };
 
   return (
@@ -62,6 +68,7 @@ function Main() {
           setSelectedSession(null);
           setActiveAgentSession(null);
           setEditingAgent(null);
+          setActiveSchemaFlowName(schemaAgents?.some((a) => a.name === name) ? name : null);
         }}
         onEditAgent={(name) => {
           setEditingAgent(name);
@@ -85,6 +92,8 @@ function Main() {
           flowDescription={selectedAgentDescription}
           agentName={agentName}
           flowSessions={flowSessions}
+          agentSessionStatus={activeAgentSession?.status ?? null}
+          isSchemaAgent={isSchemaAgent}
         />
       )}
 

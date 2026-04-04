@@ -1,5 +1,5 @@
 export type SessionStatus = 'created' | 'running' | 'completed' | 'failed' | 'paused';
-export type AgentStatus = 'running' | 'completed' | 'failed' | 'paused';
+export type AgentStatus = 'running' | 'completed' | 'failed' | 'paused' | 'continuing';
 
 export interface Agent {
   name: string;
@@ -24,6 +24,7 @@ export interface AgentSession {
   startedAt: string | Date;
   endedAt?: string | Date;
   flowSessions: AgentFlowSession[];
+  schemaFlowName?: string | null;
 }
 
 export interface TempFile {
