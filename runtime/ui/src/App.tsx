@@ -46,6 +46,7 @@ function Main() {
   const handleSelectSession = (agentSession: AgentSession, flowSessionId: string) => {
     const fs = agentSession.flowSessions.find((f) => f.id === flowSessionId);
     if (!fs) return;
+    setEditingAgent(null);
     setActiveAgentSession(agentSession);
     setSelectedSession({ id: flowSessionId, flowName: fs.flowName });
     setSelectedAgent(null);

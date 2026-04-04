@@ -23,8 +23,8 @@ export function ChatEmptyState({ flowName, description }: ChatEmptyStateProps) {
           <BrainCircuit size={28} className="text-gray-500" />
         </div>
         <div>
-          <p className="text-base font-semibold text-gray-600">No Agent Flow Selected</p>
-          <p className="text-sm text-gray-500 mt-1">Select an agent flow from the sidebar to get started</p>
+          <p className="text-base font-semibold text-gray-600">No Agent Selected</p>
+          <p className="text-sm text-gray-500 mt-1">Select an agent from the sidebar to get started</p>
         </div>
       </div>
     );
@@ -45,7 +45,7 @@ export function ChatEmptyState({ flowName, description }: ChatEmptyStateProps) {
           <p className="text-sm text-gray-600 mt-1.5">{descriptionText}</p>
         )}
         <p className="text-sm text-gray-500 mt-3">
-          Send a message to start this agent flow
+          Send a message to start this agent
         </p>
       </div>
     </div>

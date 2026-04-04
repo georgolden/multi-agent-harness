@@ -174,14 +174,15 @@ export const appRouter = router({
 
   // ─── Mutations ────────────────────────────────────────────────────────────
 
-  runFlow: publicProcedure
-    .input(z.object({ flowName: z.string(), message: z.string() }))
+  runAgent: publicProcedure
+    .input(z.object({ agentName: z.string(), message: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const user = await ctx.app.data.userRepository.getUser(ctx.userId);
       if (!user) throw new Error(`User '${ctx.userId}' not found`);
       ctx.webChannel.markUserActive(ctx.userId);
-      const agent = await ctx.app.agents.runAgent(input.flowName, { user }, { message: input.message });
-      return { sessionId: agent.allSessions[0].id };
+      const agent = await ctx.app.agents.runAgent(input.agentName, { user }, { message: input.message });
+      const firstSession = await agent.firstSession;
+      return { sessionId: firstSession.id };
     }),
 
   continueAgent: publicProcedure
@@ -191,7 +192,8 @@ export const appRouter = router({
       if (!user) throw new Error(`User '${ctx.userId}' not found`);
       ctx.webChannel.markUserActive(ctx.userId);
       const agent = await ctx.app.agents.continueAgent(input.agentName, { user }, { message: input.message });
-      return { sessionId: agent.allSessions[0]?.id ?? null };
+      const firstSession = await agent.firstSession;
+      return { sessionId: firstSession.id };
     }),
 
   continueSchemaAgent: publicProcedure
@@ -203,8 +205,9 @@ export const appRouter = router({
       if (!user) throw new Error(`User '${ctx.userId}' not found`);
       ctx.webChannel.markUserActive(ctx.userId);
       const agent = await ctx.app.agents.continueAgent('Agentic Loop', { user }, { name: input.flowName, message: input.message });
-      console.log(`[router.continueSchemaAgent] agent session id='${agent.allSessions[0]?.id}'`);
-      return { sessionId: agent.allSessions[0]?.id ?? null };
+      const firstSession = await agent.firstSession;
+      console.log(`[router.continueSchemaAgent] agent session id='${firstSession.id}'`);
+      return { sessionId: firstSession.id };
     }),
 
   deleteAgentSession: publicProcedure

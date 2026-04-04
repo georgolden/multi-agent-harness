@@ -49,7 +49,7 @@ export function ChatInput({ onSend, disabled, loading, placeholder }: ChatInputP
           onKeyDown={handleKeyDown}
           onInput={handleInput}
           disabled={loading}
-          placeholder={placeholder ?? 'Message the agent flow…'}
+          placeholder={placeholder ?? 'Message the agent…'}
           className="flex-1 resize-none bg-transparent text-sm text-gray-800 placeholder-gray-400 outline-none py-0.5 max-h-40 leading-relaxed disabled:opacity-50"
         />
         <button

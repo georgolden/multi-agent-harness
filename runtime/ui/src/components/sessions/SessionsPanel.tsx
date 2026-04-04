@@ -192,7 +192,7 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
     });
   }, [currentWindowData]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Status updates from subscription
+  // Status updates from subscription — update status optimistically and refetch for new sessions
   trpc.streamEvents.useSubscription(
     {},
     {
@@ -203,13 +203,17 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
               const updatedFlowSessions = as.flowSessions.map((fs) =>
                 fs.id === event.sessionId ? { ...fs, status: event.to as SessionStatus } : fs,
               );
-              // If all flow sessions are done, mark the agent session completed/failed too
               const allDone = updatedFlowSessions.length > 0 && updatedFlowSessions.every((fs) => fs.status === 'completed' || fs.status === 'failed');
               const anyFailed = updatedFlowSessions.some((fs) => fs.status === 'failed');
               const agentStatus = allDone ? (anyFailed ? 'failed' : 'completed') : as.status;
               return { ...as, status: agentStatus as typeof as.status, flowSessions: updatedFlowSessions };
             }),
           );
+          // Refetch to pick up any new flow sessions spawned during the run
+          void refetch();
+        }
+        if (event.type === 'session:message:update') {
+          void refetch();
         }
       },
     },
@@ -350,7 +354,7 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
       {/* Footer hint */}
       <div className="px-4 py-3 border-t border-gray-100">
         <p className="text-[10px] text-gray-500 text-center leading-relaxed">
-          Agent flows run in the background and create sessions automatically
+          Agents run in the background and create sessions automatically
         </p>
       </div>
     </aside>

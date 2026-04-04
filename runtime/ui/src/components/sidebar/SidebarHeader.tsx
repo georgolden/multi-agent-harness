@@ -11,7 +11,7 @@ export function SidebarHeader({ collapsed, onToggle }: SidebarHeaderProps) {
       {!collapsed && (
         <div>
           <h1 className="text-lg font-semibold tracking-tight text-gray-900">AGI Runtime</h1>
-          <p className="text-xs text-gray-600 mt-0.5">Agent Flows</p>
+          <p className="text-xs text-gray-600 mt-0.5">Agents</p>
         </div>
       )}
       <button

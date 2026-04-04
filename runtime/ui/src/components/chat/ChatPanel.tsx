@@ -133,7 +133,7 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
     });
   };
 
-  const runFlow = trpc.runFlow.useMutation();
+  const runAgent = trpc.runAgent.useMutation();
   const sendMessage = trpc.sendMessage.useMutation();
   const continueAgent = trpc.continueAgent.useMutation();
   const continueSchemaAgent = trpc.continueSchemaAgent.useMutation();
@@ -163,20 +163,16 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
       enabled: !!sessionId,
       onData(event) {
         console.log('[ChatPanel] streamEvents onData', event);
-        if (event.type === 'session:message') {
-          setWaitingForResponse(false);
-          setMessages((prev) => [
-            ...prev,
-            { id: `${Date.now()}-${Math.random()}`, role: 'assistant', content: event.message, timestamp: new Date() },
-          ]);
-        }
         if (event.type === 'session:message:update') {
-          console.log('[ChatPanel] session:message:update — refetching session', sessionId);
-          void utils.getSession.invalidate({ sessionId: sessionId ?? '' });
+          const sid = (event as { sessionId?: string }).sessionId ?? sessionId ?? '';
+          console.log('[ChatPanel] session:message:update — refetching session', sid);
+          void utils.getSession.invalidate({ sessionId: sid });
         }
         if (event.type === 'session:statusChange') {
-          const e = event as { type: string; to: string };
-          if (e.to === 'completed' || e.to === 'failed') {
+          const e = event as { type: string; to: string; sessionId?: string };
+          const sid = e.sessionId ?? sessionId ?? '';
+          if (sid) void utils.getSession.invalidate({ sessionId: sid });
+          if (e.to === 'completed' || e.to === 'failed' || e.to === 'paused') {
             setWaitingForResponse(false);
             setLocalAgentStatus(e.to);
             console.log('[ChatPanel] agent status updated to', e.to);
@@ -191,7 +187,11 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
   }, [agentSessionStatus]);
 
   useEffect(() => {
-    if (selectedSession) return;
+    if (selectedSession) {
+      // Switching to a different session — clear stale waiting state
+      setWaitingForResponse(false);
+      return;
+    }
     setMessages([]);
     setSessionId(null);
     setSessionTempFiles([]);
@@ -215,9 +215,12 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
 
     try {
       if (!sessionId && selectedFlow) {
-        const result = await runFlow.mutateAsync({ flowName: selectedFlow, message: text });
+        const result = await runAgent.mutateAsync({ agentName: selectedFlow, message: text });
+        // Set sessionId first so subscription can start, then notify parent
         setSessionId(result.sessionId);
         onSessionCreated(result.sessionId, selectedFlow);
+        // Immediately fetch session data — events may have already fired before subscription started
+        void utils.getSession.invalidate({ sessionId: result.sessionId });
       } else if (agentName && (localAgentStatus === 'completed' || localAgentStatus === 'failed')) {
         console.log('[ChatPanel.handleSend] continuing agent', { agentName, isSchemaAgent, localAgentStatus });
         if (isSchemaAgent && agentName === 'Agentic Loop') {
@@ -229,9 +232,12 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
         if (result.sessionId) {
           setSessionId(result.sessionId);
           onSessionCreated(result.sessionId, agentName);
+          void utils.getSession.invalidate({ sessionId: result.sessionId });
         }
       } else {
         await sendMessage.mutateAsync({ sessionId: sessionId!, message: text });
+        // Immediately refetch after sending — agent may already have responded
+        void utils.getSession.invalidate({ sessionId: sessionId! });
       }
     } catch (err) {
       setWaitingForResponse(false);
