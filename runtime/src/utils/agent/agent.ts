@@ -298,10 +298,14 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
     const ctx = context ?? this.buildContext(session, packetData);
     const inPacket = { data: packetData, deps: this.app, context: ctx };
 
-    const promise = flow.runFrom(nodeName, inPacket).finally(() => {
-      this.activeFlows = this.activeFlows.filter((f) => f !== flow);
-      this.activeSessions = this.activeSessions.filter((s) => s !== session);
-    });
+    const restorePromise = flow.restoreSession ? flow.restoreSession(this.app, this.user, session) : Promise.resolve();
+
+    const promise = restorePromise
+      .then(() => flow.runFrom(nodeName, inPacket))
+      .finally(() => {
+        this.activeFlows = this.activeFlows.filter((f) => f !== flow);
+        this.activeSessions = this.activeSessions.filter((s) => s !== session);
+      });
 
     this.runPromise = promise;
     return promise;
@@ -328,7 +332,7 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
 
     // Validate input against flow parameters schema
     if (!Value.Check(flow.parameters as TObject, input)) {
-      console.log({ input, params: flow.parameters })
+      console.log({ input, params: flow.parameters });
       const errors = [...Value.Errors(flow.parameters as TObject, input)];
       throw new Error(
         `Agent "${this.constructor.name}": input validation failed for flow "${flowName}":\n` +
@@ -366,7 +370,9 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
     }
 
     const context = this.buildContext(session, input);
-    console.log(`[Agent._executeFrom] flow.run data type=${typeof input} keys=${typeof input === 'object' && input !== null ? Object.keys(input as object).join(',') : 'n/a'} value=${JSON.stringify(input)?.slice(0, 200)}`);
+    console.log(
+      `[Agent._executeFrom] flow.run data type=${typeof input} keys=${typeof input === 'object' && input !== null ? Object.keys(input as object).join(',') : 'n/a'} value=${JSON.stringify(input)?.slice(0, 200)}`,
+    );
     const result = (await flow.run({
       deps: this.app,
       context: context as Record<string, unknown>,
@@ -506,9 +512,10 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
     if (flowSession && status === 'paused' && nodeName) {
       const schema = flowSession.sessionData.flowSchema as { nodes: Record<string, unknown> } | undefined;
       const nodeWiring = schema?.nodes?.[nodeName];
-      const pauseHandlerName = typeof nodeWiring === 'object' && nodeWiring !== null && 'pause' in nodeWiring
-        ? (nodeWiring as Record<string, string>)['pause']
-        : undefined;
+      const pauseHandlerName =
+        typeof nodeWiring === 'object' && nodeWiring !== null && 'pause' in nodeWiring
+          ? (nodeWiring as Record<string, string>)['pause']
+          : undefined;
       console.log(`[Agent.restore] session '${flowSession.id}' is paused at '${nodeName}' — waiting for user message`);
       this.runPromise = new Promise<unknown>((resolve, reject) => {
         flowSession.onUserMessage(({ message }: { message: string }) => {
@@ -516,15 +523,11 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
             // Resume from the pause handler node directly — skip re-running the pausing node
             flowSession.sessionData.currentNodeName = pauseHandlerName;
             flowSession.sessionData.currentPacketData = message;
-            this.resume(step.flow, flowSession)
-              .then(resolve)
-              .catch(reject);
+            this.resume(step.flow, flowSession).then(resolve).catch(reject);
           } else {
             // Fallback: no pause handler wired, resume from pausing node
             flowSession.sessionData.currentPacketData = message;
-            this.resume(step.flow, flowSession)
-              .then(resolve)
-              .catch(reject);
+            this.resume(step.flow, flowSession).then(resolve).catch(reject);
           }
         });
       });
@@ -557,10 +560,13 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
         if (flowSession && sessionStatus === 'paused' && nodeName) {
           const schema = flowSession.sessionData.flowSchema as { nodes: Record<string, unknown> } | undefined;
           const nodeWiring = schema?.nodes?.[nodeName];
-          const pauseHandlerName = typeof nodeWiring === 'object' && nodeWiring !== null && 'pause' in nodeWiring
-            ? (nodeWiring as Record<string, string>)['pause']
-            : undefined;
-          console.log(`[Agent.restore] parallel item[${index}] session '${flowSession.id}' is paused at '${nodeName}' — waiting for user message`);
+          const pauseHandlerName =
+            typeof nodeWiring === 'object' && nodeWiring !== null && 'pause' in nodeWiring
+              ? (nodeWiring as Record<string, string>)['pause']
+              : undefined;
+          console.log(
+            `[Agent.restore] parallel item[${index}] session '${flowSession.id}' is paused at '${nodeName}' — waiting for user message`,
+          );
           return new Promise<unknown>((resolve, reject) => {
             flowSession.onUserMessage(({ message }: { message: string }) => {
               if (pauseHandlerName) {

@@ -604,6 +604,14 @@ export abstract class Flow<
    */
   abstract createSession(app: TDeps, user: unknown, parent: unknown, input: unknown): Promise<FlowSessionRef>;
 
+  /**
+   * Optional. Rehydrate a recovered session after a crash/restart.
+   * Called by Agent.resume() instead of createSession() — the session already
+   * exists in DB, but any in-memory state (e.g. live tool objects) must be
+   * re-attached here.
+   */
+  restoreSession?(app: TDeps, user: unknown, session: FlowSessionRef): Promise<void>;
+
   // ── Session reference — set by Agent after createSession() ───────────────
 
   /**
