@@ -165,6 +165,12 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
     return session;
   }
 
+  override async restoreSession(app: App, _user: User, session: Session): Promise<void> {
+    const toolNames = session.toolSchemas.map((t) => t.name).filter((n) => n !== SUBMIT_RESULT_SCHEMA.name);
+    const tools = app.tools.getSlice(toolNames);
+    session.tools = tools as any;
+  }
+
   async fallback(p: this['InError'], err: Error): Promise<this['Out']> {
     const { session } = p.context;
     const loopExit = session.agentLoopConfig?.loopExit ?? 'failure';

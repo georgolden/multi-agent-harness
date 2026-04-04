@@ -49,6 +49,10 @@ export class ExploreFlow extends Flow<App, ExploreContext, ExploreInput, { exit:
 
     return session;
   }
+
+  override async restoreSession(_app: App, _user: User, session: Session): Promise<void> {
+    session.addAgentTools(AGENT_TOOLS as any);
+  }
 }
 
 export type ExploreFlowType = ExploreFlow;

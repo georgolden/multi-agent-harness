@@ -45,10 +45,15 @@ export class OrchestratorFlow extends Flow<App, OrchestratorContext>
     session.addAgentTools(AGENT_TOOLS as any);
 
     await session.addMessages([{ message: new SystemMessage(systemPrompt).toJSON() }]);
+
     await session.addUserMessage(new UserMessage(input.message));
     await session.setFlowSchema(this.toSchema());
 
     return session;
+  }
+
+  override async restoreSession(_app: App, _user: User, session: Session): Promise<void> {
+    session.addAgentTools(AGENT_TOOLS as any);
   }
 }
 
