@@ -40,8 +40,10 @@
   - [x] Agent: parallel flow execution and schema extention for it
   - [x] Schema agents recovery is not working
   - [x] All Agents: continue agent after completed
-  - [/] Edit schema agents
-  - [ ] Correct visuals for schema agents
+  - [x] Edit schema agents
+  - [ ] Tool use path issue - agent glitches folder name in path - always stick with absolute paths only everywhere - agent builder, context files, context folder infos, schema agents
+  - [x] Correct visuals for schema agents
+  - [ ] Fix continue agent restoration issues
   - Agent Builder: update builder to support parallel
   - [ ] Telegram Channel
   - autonomous mode - mimic user is the best way to not tweak agent. agent could be user of another agent

@@ -49,37 +49,33 @@ function parseUserMessage(raw: string): { text: string; tempFiles: TempFile[] } 
 
 type RawMessage = { message: { role: string; content: unknown; tool_calls?: unknown; tool_call_id?: string }; timestamp: string };
 
-function parseMessages(rawMessages: RawMessage[], tempFiles: TempFile[]): ChatMessage[] {
+function parseMessages(rawMessages: RawMessage[], tempFiles: TempFile[], sessionPrefix = ''): ChatMessage[] {
   const msgs: ChatMessage[] = [];
-
-  // First pass: collect tool_call messages indexed by tool call id → message index
-  // so tool_result messages can be attached as result on the tool_call entry
   const toolCallMsgByCallId = new Map<string, ChatMessage>();
 
   for (let i = 0; i < rawMessages.length; i++) {
     const m = rawMessages[i];
     const { role, content, tool_calls, tool_call_id } = m.message;
     const ts = new Date(m.timestamp);
+    const id = `${sessionPrefix}msg-${i}`;
 
     if (role === 'system') continue;
 
     if (role === 'user') {
       const { text, tempFiles: tf } = parseUserMessage(extractText(content));
       if (!text) continue;
-      // Only attach tempFiles to the first user message (they come from session)
       const attachFiles = msgs.length === 0 && tempFiles.length > 0 ? tempFiles : tf;
-      msgs.push({ id: `msg-${i}`, role: 'user', content: text, tempFiles: attachFiles.length > 0 ? attachFiles : undefined, timestamp: ts });
+      msgs.push({ id, role: 'user', content: text, tempFiles: attachFiles.length > 0 ? attachFiles : undefined, timestamp: ts });
       continue;
     }
 
     if (role === 'assistant') {
       if (tool_calls && Array.isArray(tool_calls) && tool_calls.length > 0) {
         const rawCalls = tool_calls as Array<{ id: string; function: { name: string; arguments: string } }>;
-        // submit_result is a terminal tool — render it as a result message, not a tool call
         const submitCall = rawCalls.find((tc) => tc.function.name === 'submit_result');
         if (submitCall) {
           const resultData = (() => { try { return JSON.parse(submitCall.function.arguments) as Record<string, unknown>; } catch { return {}; } })();
-          msgs.push({ id: `msg-${i}`, role: 'result', content: '', resultData, timestamp: ts });
+          msgs.push({ id, role: 'result', content: '', resultData, timestamp: ts });
           continue;
         }
         const calls: ToolCallInfo[] = rawCalls.map((tc) => ({
@@ -87,36 +83,47 @@ function parseMessages(rawMessages: RawMessage[], tempFiles: TempFile[]): ChatMe
           name: tc.function.name,
           args: (() => { try { return JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch { return {}; } })(),
         }));
-        const msg: ChatMessage = { id: `msg-${i}`, role: 'tool_call', content: extractText(content), toolCalls: calls, timestamp: ts };
+        const msg: ChatMessage = { id, role: 'tool_call', content: extractText(content), toolCalls: calls, timestamp: ts };
         msgs.push(msg);
         for (const tc of calls) toolCallMsgByCallId.set(tc.id, msg);
         continue;
       }
       const text = extractText(content);
-      if (text) msgs.push({ id: `msg-${i}`, role: 'assistant', content: text, timestamp: ts });
+      if (text) msgs.push({ id, role: 'assistant', content: text, timestamp: ts });
       continue;
     }
 
     if (role === 'tool' && tool_call_id) {
       const resultText = extractText(content);
-      // Attach result to the parent tool_call message's toolCalls entry
       const parent = toolCallMsgByCallId.get(tool_call_id as string);
       if (parent?.toolCalls) {
         const tc = parent.toolCalls.find((c) => c.id === tool_call_id);
         if (tc) { tc.result = resultText; continue; }
       }
-      // Fallback: standalone tool result message
-      msgs.push({ id: `msg-${i}`, role: 'tool_result', content: resultText, toolCallId: tool_call_id as string, timestamp: ts });
+      msgs.push({ id, role: 'tool_result', content: resultText, toolCallId: tool_call_id as string, timestamp: ts });
     }
   }
 
   return msgs;
 }
 
+// Returns true if the last user message has no assistant or result message after it.
+function isAwaitingResponse(messages: ChatMessage[]): boolean {
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') { lastUserIdx = i; break; }
+  }
+  if (lastUserIdx === -1) return false;
+  for (let i = lastUserIdx + 1; i < messages.length; i++) {
+    if (messages[i].role === 'assistant' || messages[i].role === 'result') return false;
+  }
+  return true;
+}
+
 export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onSelectFlowSession, flowDescription, agentName, flowSessions, agentSessionStatus, isSchemaAgent }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [waitingForResponse, setWaitingForResponse] = useState(false);
+  const sessionIdRef = useRef<string | null>(null);
   const [sending, setSending] = useState(false);
   const [localAgentStatus, setLocalAgentStatus] = useState<string | null>(agentSessionStatus ?? null);
   const [sessionTempFiles, setSessionTempFiles] = useState<TempFile[]>([]);
@@ -125,6 +132,15 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
   const [fileDialogRaw, setFileDialogRaw] = useState(false);
   const [fileCopied, setFileCopied] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Compute the effective session ID for rendering/queries.
+  // NOTE: sessionIdRef.current is set synchronously in handleSend (before state updates),
+  // and also kept in sync here — but only when activeFlowSessionId is non-null, so we
+  // never overwrite the ref with null between the mutateAsync resolve and the next re-render.
+  const activeFlowSessionId = selectedSession?.id ?? sessionId;
+  if (activeFlowSessionId && sessionIdRef.current !== activeFlowSessionId) {
+    sessionIdRef.current = activeFlowSessionId;
+  }
 
   const copyFile = (content: string) => {
     void navigator.clipboard.writeText(content).then(() => {
@@ -139,44 +155,62 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
   const continueSchemaAgent = trpc.continueSchemaAgent.useMutation();
   const utils = trpc.useUtils();
 
-  const activeFlowSessionId = selectedSession?.id ?? sessionId;
-
   const { data: sessionData } = trpc.getSession.useQuery(
     { sessionId: activeFlowSessionId ?? '' },
     { enabled: !!activeFlowSessionId },
   );
 
+  // Identify flow sessions that ran before the active one (continued sessions = same agent thread)
+  const activeIdx = flowSessions.findIndex((fs) => fs.id === activeFlowSessionId);
+  const previousSessionIds = activeIdx > 0 ? flowSessions.slice(0, activeIdx).map((fs) => fs.id) : [];
+
+  // Fetch each previous session's data so we can show their messages as history
+  const previousSessionQueries = trpc.useQueries((t) =>
+    previousSessionIds.map((id) => t.getSession({ sessionId: id })),
+  );
+  const prevQueriesReady = previousSessionIds.length === 0 || previousSessionQueries.every((q) => !!q.data);
+
   useEffect(() => {
-    if (!sessionData) return;
-    const data = sessionData as { messages?: RawMessage[]; tempFiles?: TempFile[] };
+    if (!sessionData || !prevQueriesReady) return;
+    const data = sessionData as { messages?: RawMessage[]; tempFiles?: TempFile[]; status?: string };
     const tempFiles = data.tempFiles ?? [];
-    const parsed = parseMessages(data.messages ?? [], tempFiles);
-    setMessages(parsed);
+
+    // Build history from previous sessions (oldest first), then current session messages
+    const historyMessages: ChatMessage[] = [];
+    for (let qi = 0; qi < previousSessionQueries.length; qi++) {
+      const q = previousSessionQueries[qi];
+      if (!q.data) continue;
+      const prev = q.data as { messages?: RawMessage[]; tempFiles?: TempFile[] };
+      historyMessages.push(...parseMessages(prev.messages ?? [], prev.tempFiles ?? [], `${previousSessionIds[qi]}-`));
+    }
+
+    const current = parseMessages(data.messages ?? [], tempFiles, `${activeFlowSessionId}-`);
+    setMessages([...historyMessages, ...current]);
     setSessionTempFiles(tempFiles);
     setSessionId(activeFlowSessionId);
-    setWaitingForResponse(false);
-  }, [sessionData, activeFlowSessionId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionData, activeFlowSessionId, prevQueriesReady]);
 
+  // Subscribe to ALL user events (no sessionId filter) so that when continueAgent creates a new
+  // flow session, events for that new session are received without needing to reconnect.
+  // We filter client-side: session:message:update only refetches the relevant session.
   trpc.streamEvents.useSubscription(
-    { sessionId: sessionId ?? undefined },
+    {},
     {
-      enabled: !!sessionId,
       onData(event) {
-        console.log('[ChatPanel] streamEvents onData', event);
         if (event.type === 'session:message:update') {
-          const sid = (event as { sessionId?: string }).sessionId ?? sessionId ?? '';
-          console.log('[ChatPanel] session:message:update — refetching session', sid);
-          void utils.getSession.invalidate({ sessionId: sid });
+          const sid = (event as { sessionId?: string }).sessionId ?? '';
+          // Only refetch sessions we're currently displaying (active + previous flow sessions)
+          const trackedIds = new Set([activeFlowSessionId, ...flowSessions.map((fs) => fs.id)].filter(Boolean));
+          if (sid && trackedIds.has(sid)) {
+            void utils.getSession.invalidate({ sessionId: sid });
+          }
         }
         if (event.type === 'session:statusChange') {
           const e = event as { type: string; to: string; sessionId?: string };
-          const sid = e.sessionId ?? sessionId ?? '';
+          const sid = e.sessionId ?? '';
           if (sid) void utils.getSession.invalidate({ sessionId: sid });
-          if (e.to === 'completed' || e.to === 'failed' || e.to === 'paused') {
-            setWaitingForResponse(false);
-            setLocalAgentStatus(e.to);
-            console.log('[ChatPanel] agent status updated to', e.to);
-          }
+          setLocalAgentStatus(e.to);
         }
       },
     },
@@ -187,21 +221,19 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
   }, [agentSessionStatus]);
 
   useEffect(() => {
-    if (selectedSession) {
-      // Switching to a different session — clear stale waiting state
-      setWaitingForResponse(false);
-      return;
-    }
+    if (selectedSession) return;
     setMessages([]);
     setSessionId(null);
+    sessionIdRef.current = null;
     setSessionTempFiles([]);
-    setWaitingForResponse(false);
     setLocalAgentStatus(null);
   }, [selectedFlow, selectedSession]);
 
+  const waitingForResponse = isAwaitingResponse(messages);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, waitingForResponse]);
+  }, [messages]);
 
   const handleSend = async (text: string) => {
     if (!selectedFlow && !sessionId) return;
@@ -211,12 +243,13 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
       { id: `${Date.now()}-user`, role: 'user', content: text, timestamp: new Date() },
     ]);
     setSending(true);
-    setWaitingForResponse(true);
 
     try {
       if (!sessionId && selectedFlow) {
         const result = await runAgent.mutateAsync({ agentName: selectedFlow, message: text });
-        // Set sessionId first so subscription can start, then notify parent
+        // Set ref synchronously so subscription input changes on this render cycle,
+        // before the batched state update from setSessionId takes effect.
+        sessionIdRef.current = result.sessionId;
         setSessionId(result.sessionId);
         onSessionCreated(result.sessionId, selectedFlow);
         // Immediately fetch session data — events may have already fired before subscription started
@@ -230,6 +263,7 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
           ? await continueSchemaAgent.mutateAsync({ flowName: agentName, message: text })
           : await continueAgent.mutateAsync({ agentName, message: text });
         if (result.sessionId) {
+          sessionIdRef.current = result.sessionId;
           setSessionId(result.sessionId);
           onSessionCreated(result.sessionId, agentName);
           void utils.getSession.invalidate({ sessionId: result.sessionId });
@@ -240,7 +274,6 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
         void utils.getSession.invalidate({ sessionId: sessionId! });
       }
     } catch (err) {
-      setWaitingForResponse(false);
       setMessages((prev) => [
         ...prev,
         { id: `${Date.now()}-err`, role: 'assistant', content: `Error: ${err instanceof Error ? err.message : 'Something went wrong'}`, timestamp: new Date() },

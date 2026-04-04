@@ -222,8 +222,19 @@ export function SessionsPanel({ newSession, activeSessionId, onSelectSession }: 
   useEffect(() => {
     if (!newSession || newSession.sessionId === newSessionRef.current) return;
     newSessionRef.current = newSession.sessionId;
-    refetch();
-  }, [newSession, refetch]);
+    refetch().then((result) => {
+      if (!result.data) return;
+      const sessions = result.data as AgentSession[];
+      // Find the agent session that contains the new flow session and auto-select it
+      for (const as of sessions) {
+        const fs = as.flowSessions.find((f) => f.id === newSession.sessionId);
+        if (fs) {
+          onSelectSession(as, fs.id);
+          break;
+        }
+      }
+    });
+  }, [newSession, refetch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load the next 24h window on demand using the tRPC utils
   const utils = trpc.useUtils();
