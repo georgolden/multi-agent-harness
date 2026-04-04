@@ -29,14 +29,25 @@ export interface AgentSession extends FlowSessionRef {
 export interface AgentCheckpointer {
   /** Create a new AgentSession record and return its id. */
   createAgentSession(agentName: string, agentSchema: unknown, userId: string): Promise<string>;
-  /** Atomically checkpoint the current step (single or parallel). */
-  checkpointStep(agentSessionId: string, step: AgentStep): Promise<void>;
-  /** Update a single item within the current parallel step. */
+  /** Open a transaction for the upcoming step checkpoint. */
+  beginStepTransaction(agentSessionId: string): Promise<void>;
+  /**
+   * Atomically commit: write currentStep (with sessionId) and link the flow session — one transaction.
+   */
+  commitStepTransaction(agentSessionId: string, step: AgentStep, flowSessionId: string): Promise<void>;
+  /** Roll back an open step transaction (e.g. on createSession failure). */
+  rollbackStepTransaction(agentSessionId: string): Promise<void>;
+  /** Write the initial parallel step shape (all items start with sessionId=null). No transaction — items link themselves via commitStepTransaction. */
+  checkpointParallelStep(agentSessionId: string, step: AgentStep): Promise<void>;
+  /** Update a single item within the current parallel step (parallel batch path). */
   updateStepItem(agentSessionId: string, index: number, update: Partial<AgentStepItem>): Promise<void>;
   /** Mark the AgentSession terminal (completed / failed). */
   finalizeAgentSession(agentSessionId: string, status: 'completed' | 'failed'): Promise<void>;
-  /** Link a FlowSession to this AgentSession. */
-  linkFlowSession(flowSessionId: string, agentSessionId: string): Promise<void>;
+  /**
+   * Atomically write status=continuing and the initial step (with the continue input).
+   * Must be called before any other work in continue() — crash-safe entry point.
+   */
+  markContinuing(agentSessionId: string, step: AgentStep): Promise<void>;
 }
 
 // ============================================================
@@ -215,6 +226,47 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
     return this.runPromise;
   }
 
+  /**
+   * Continue a completed or failed agent session from the schema start node.
+   * Reuses the existing agentSessionId — no new AgentSession record is created.
+   * The last flow session from the previous run is linked as parent of the new flow session,
+   * so flows can call session.attachParentContext() to inject prior context.
+   *
+   * Atomically writes status=continuing before any other work — crash-safe.
+   */
+  continue(input: unknown): Promise<unknown> {
+    if (!this.agentSessionId) {
+      throw new Error(`Agent "${this.constructor.name}": cannot continue — no agentSessionId set`);
+    }
+    this.paused = false;
+    const schema = this._resolvedSchema();
+    this.runPromise = this._continueExecute(schema.start, input);
+    return this.runPromise;
+  }
+
+  private async _continueExecute(startFlow: string, input: unknown): Promise<unknown> {
+    if (this.checkpointer && this.agentSessionId) {
+      await this.checkpointer.markContinuing(this.agentSessionId, {
+        mode: 'single',
+        flow: startFlow,
+        collect: null,
+        items: [{ input, sessionId: null, status: 'running' }],
+      });
+    }
+    try {
+      const result = await this._executeFrom(startFlow, input);
+      if (this.checkpointer && this.agentSessionId) {
+        await this.checkpointer.finalizeAgentSession(this.agentSessionId, 'completed');
+      }
+      return result;
+    } catch (err) {
+      if (this.checkpointer && this.agentSessionId) {
+        await this.checkpointer.finalizeAgentSession(this.agentSessionId, 'failed').catch(() => {});
+      }
+      throw err;
+    }
+  }
+
   private async _initAndExecute(startFlow: string, input: unknown): Promise<unknown> {
     if (this.checkpointer && !this.agentSessionId) {
       const userId = (this.user as { id?: string })?.id ?? 'unknown';
@@ -340,25 +392,36 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
       );
     }
 
-    // Checkpoint: record which flow we're about to enter
-    if (this.checkpointer && this.agentSessionId) {
-      await this.checkpointer.checkpointStep(this.agentSessionId, {
-        mode: 'single',
-        flow: flowName,
-        collect: null,
-        items: [{ input, sessionId: null, status: 'running' }],
-      });
-    }
-
     // Reuse existing session if provided (restore path), otherwise create a new one
-    const session =
-      existingSession ?? ((await flow.createSession(this.app, this.user, this.parent, input)) as TSession);
-    flow.session = session;
-
-    // Link flow session to agent session (only for newly created sessions)
-    if (!existingSession && this.checkpointer && this.agentSessionId) {
-      await this.checkpointer.linkFlowSession(session.id, this.agentSessionId);
-      await this.checkpointer.updateStepItem(this.agentSessionId, 0, { sessionId: session.id });
+    // with a transactional checkpoint: begin → createSession → commit (step + link) atomically
+    let session: TSession;
+    if (existingSession) {
+      session = existingSession;
+    } else {
+      if (this.checkpointer && this.agentSessionId) {
+        await this.checkpointer.beginStepTransaction(this.agentSessionId);
+      }
+      // Find the last session for this flow from prior runs — passed as parent so
+      // the new session can call attachParentContext() to inject prior conversation context.
+      const lastSessionForFlow = [...this.allSessions].reverse().find(
+        (s) => s.sessionData.flowName === flowName,
+      );
+      const sessionParent = lastSessionForFlow ?? this.parent;
+      try {
+        session = (await flow.createSession(this.app, this.user, sessionParent, input)) as TSession;
+      } catch (err) {
+        if (this.checkpointer && this.agentSessionId) {
+          await this.checkpointer.rollbackStepTransaction(this.agentSessionId);
+        }
+        throw err;
+      }
+      if (this.checkpointer && this.agentSessionId) {
+        await this.checkpointer.commitStepTransaction(
+          this.agentSessionId,
+          { mode: 'single', flow: flowName, collect: null, items: [{ input, sessionId: session.id, status: 'running' }] },
+          session.id,
+        );
+      }
     }
 
     this.allSessions.push(session);
@@ -398,7 +461,7 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
 
   private async _executeBatch(batchBranch: BatchBranch, items: unknown[]): Promise<unknown> {
     if (this.checkpointer && this.agentSessionId) {
-      await this.checkpointer.checkpointStep(this.agentSessionId, {
+      await this.checkpointer.checkpointParallelStep(this.agentSessionId, {
         mode: 'parallel',
         flow: batchBranch.flow,
         collect: batchBranch.collect,
@@ -534,9 +597,9 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
       return this.runPromise;
     }
 
-    return nodeName && flowSession
+    return status === 'running' && nodeName && flowSession
       ? this.resume(step.flow, flowSession)
-      : this.runFrom(step.flow, item.input, flowSession);
+      : this.runFrom(step.flow, item.input);
   }
 
   private async _restoreParallel(step: AgentStep, flowSessions: TSession[]): Promise<unknown> {
@@ -581,9 +644,9 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
         }
 
         return (
-          nodeName && flowSession
+          sessionStatus === 'running' && nodeName && flowSession
             ? this.resume(step.flow, flowSession)
-            : this.runFrom(step.flow, item.input, flowSession)
+            : this.runFrom(step.flow, item.input)
         ).then(
           async (result) => {
             if (this.checkpointer && this.agentSessionId) {

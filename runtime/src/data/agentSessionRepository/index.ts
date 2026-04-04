@@ -50,12 +50,16 @@ export class AgentSessionRepository {
     });
   }
 
-  async commitTransaction(agentSessionId: string, currentStep: AgentStep): Promise<void> {
+  async commitTransaction(agentSessionId: string, currentStep: AgentStep, flowSessionId: string): Promise<void> {
     const state = this._txMap.get(agentSessionId);
     if (!state) return;
     await (state.tx as any).agentSession.update({
       where: { id: agentSessionId },
       data: { currentStep: currentStep as any },
+    });
+    await (state.tx as any).flowSession.update({
+      where: { id: flowSessionId },
+      data: { agentSessionId },
     });
     this._txMap.delete(agentSessionId);
     state.commit();
@@ -101,6 +105,13 @@ export class AgentSessionRepository {
     return this.mapRow(row);
   }
 
+  async markContinuing(agentSessionId: string, currentStep: AgentStep): Promise<void> {
+    await this.prisma.agentSession.update({
+      where: { id: agentSessionId },
+      data: { status: 'continuing', currentStep: currentStep as any },
+    });
+  }
+
   async updateCurrent(agentSessionId: string, currentStep: AgentStep): Promise<void> {
     const client = this._client(agentSessionId) as any;
     await client.agentSession.update({
@@ -143,7 +154,7 @@ export class AgentSessionRepository {
 
   async getIncomplete(): Promise<AgentSessionData[]> {
     const rows = await this.prisma.agentSession.findMany({
-      where: { status: { in: ['running', 'paused'] } },
+      where: { status: { in: ['running', 'paused', 'continuing'] } },
       orderBy: { startedAt: 'asc' },
     });
     return rows.map((r) => this.mapRow(r));

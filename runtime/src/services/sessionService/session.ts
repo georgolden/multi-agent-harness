@@ -41,6 +41,8 @@ export class Session {
   tools: AgentTool[] = [];
 
   private _userMessageCallbacks: Array<(payload: { session: SessionData; message: string; user: User }) => void> = [];
+  /** Pending parent context XML — prepended to the first user message then cleared. */
+  private _parentContextXml: string | null = null;
 
   constructor(sessionData: SessionData, app: App, hooks: SessionHooks = {}) {
     this.sessionData = sessionData;
@@ -169,8 +171,60 @@ export class Session {
   }
 
   /**
+   * Load parent session context into this session.
+   * The context (active messages excluding system, temp files, context files, context folders)
+   * is formatted as XML and prepended to the first user message added via addUserMessage().
+   * Call this after session creation but before the first addUserMessage().
+   */
+  async attachParentContext(): Promise<this> {
+    if (!this.sessionData.parentSessionId) return this;
+    const parent = await this.app.data.flowSessionRepository.getSession(this.sessionData.parentSessionId);
+    if (!parent) return this;
+
+    const parts: string[] = [];
+
+    const userAndAssistantMessages = parent.activeMessages.filter(
+      (m: SessionMessage) => (m.message as { role?: string }).role !== 'system',
+    );
+    if (userAndAssistantMessages.length > 0) {
+      const msgsXml = userAndAssistantMessages
+        .map((m: SessionMessage) => {
+          const msg = m.message as { role?: string; content?: string };
+          return `  <message role="${msg.role ?? 'unknown'}">${msg.content ?? ''}</message>`;
+        })
+        .join('\n');
+      parts.push(`<messages>\n${msgsXml}\n</messages>`);
+    }
+
+    if (parent.tempFiles && parent.tempFiles.length > 0) {
+      const filesXml = (parent.tempFiles as Array<{ name: string; content: string }>)
+        .map((f) => `  <file>\n    <name>${f.name}</name>\n    <content>${f.content}</content>\n  </file>`)
+        .join('\n');
+      parts.push(`<temp_files>\n${filesXml}\n</temp_files>`);
+    }
+
+    if (parent.contextFiles && parent.contextFiles.length > 0) {
+      const filesXml = (parent.contextFiles as Array<{ path: string }>)
+        .map((f) => `  <file path="${f.path}" />`).join('\n');
+      parts.push(`<context_files>\n${filesXml}\n</context_files>`);
+    }
+
+    if (parent.contextFoldersInfos && parent.contextFoldersInfos.length > 0) {
+      const foldersXml = (parent.contextFoldersInfos as Array<{ path: string }>)
+        .map((f) => `  <folder path="${f.path}" />`).join('\n');
+      parts.push(`<context_folders>\n${foldersXml}\n</context_folders>`);
+    }
+
+    if (parts.length > 0) {
+      this._parentContextXml = `<previous_session flowName="${parent.flowName}">\n${parts.join('\n')}\n</previous_session>`;
+    }
+    return this;
+  }
+
+  /**
    * Add a user message, prepending any existing temp files as formatted XML before the content.
    * Temp files are only attached when tempFiles is non-empty.
+   * If attachParentContext() was called, its XML is also prepended on the first call.
    */
   async addUserMessage(message: UserMessage): Promise<this> {
     const content = message.toJSON().content as string;
@@ -181,7 +235,12 @@ export class Session {
       const filesXml = tempFiles
         .map((f) => `  <file>\n    <name>${f.name}</name>\n    <content>${f.content}</content>\n  </file>`)
         .join('\n');
-      fullContent = `<temp_files>\n${filesXml}\n</temp_files>\n<user_message>${content}</user_message>`;
+      fullContent = `<temp_files>\n${filesXml}\n</temp_files>\n<user_message>${fullContent}</user_message>`;
+    }
+
+    if (this._parentContextXml) {
+      fullContent = `${this._parentContextXml}\n<user_message>${fullContent}</user_message>`;
+      this._parentContextXml = null;
     }
 
     return this.addMessages([{ message: new UserMessage(fullContent).toJSON() }]);

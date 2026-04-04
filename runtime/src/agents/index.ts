@@ -59,18 +59,18 @@ export class Agents {
   async start(): Promise<void> {
     const schemas = await this.app.data.agenticLoopSchemaRepository.getAllSchemas();
     schemas.forEach((schema) => {
-      this.agenticLoopSchemas.set(schema.flowName, schema);
+      this.agenticLoopSchemas.set(schema.name, schema);
     });
     console.log(`[Agents] Loaded ${schemas.length} agentic loop schemas from database`);
 
     this.app.data.agenticLoopSchemaRepository.registerHooks({
       onInsert: (schema) => {
-        this.agenticLoopSchemas.set(schema.flowName, schema);
-        console.log(`[Agents] Schema inserted: ${schema.flowName}`);
+        this.agenticLoopSchemas.set(schema.name, schema);
+        console.log(`[Agents] Schema inserted: ${schema.name}`);
       },
       onUpdate: (schema) => {
-        this.agenticLoopSchemas.set(schema.flowName, schema);
-        console.log(`[Agents] Schema updated: ${schema.flowName}`);
+        this.agenticLoopSchemas.set(schema.name, schema);
+        console.log(`[Agents] Schema updated: ${schema.name}`);
       },
       onDelete: (agentName) => {
         this.agenticLoopSchemas.delete(agentName);
@@ -108,7 +108,7 @@ export class Agents {
         console.log(`[Agents._recoverAgents] agentSession='${agentSession.id}' currentStep=`, agentSession.currentStep, `flowSessionData:`, flowSessionData.map(d => ({ id: d.id, flowName: d.flowName, status: d.status, currentNodeName: d.currentNodeName })));
         const flowSessions = flowSessionData.map((data) => new Session(data, this.app));
         const { bus } = this.app.infra;
-        const { agentSessionRepository, flowSessionRepository } = this.app.data;
+        const { agentSessionRepository } = this.app.data;
         const agent = new AgentClass(this.app, user, undefined, agentSession.agentSchema as AgentSchema);
         agent.agentSessionId = agentSession.id;
         agent.checkpointer = {
@@ -116,7 +116,16 @@ export class Agents {
             const record = await agentSessionRepository.create({ agentName: agent.name, agentSchema, userId });
             return record.id;
           },
-          checkpointStep: async (agentSessionId, step) => {
+          beginStepTransaction: async (agentSessionId) => {
+            await agentSessionRepository.beginTransaction(agentSessionId);
+          },
+          commitStepTransaction: async (agentSessionId, step, flowSessionId) => {
+            await agentSessionRepository.commitTransaction(agentSessionId, step, flowSessionId);
+          },
+          rollbackStepTransaction: async (agentSessionId) => {
+            await agentSessionRepository.rollbackTransaction(agentSessionId);
+          },
+          checkpointParallelStep: async (agentSessionId, step) => {
             await agentSessionRepository.updateCurrent(agentSessionId, step);
           },
           updateStepItem: async (agentSessionId, index, update) => {
@@ -130,8 +139,8 @@ export class Agents {
             console.log(`[Agents.checkpointer.finalizeAgentSession] id='${agentSessionId}' status='${status}'`, new Error('stack').stack);
             await agentSessionRepository.updateStatus(agentSessionId, status);
           },
-          linkFlowSession: async (flowSessionId, agentSessionId) => {
-            await flowSessionRepository.linkToAgentSession(flowSessionId, agentSessionId);
+          markContinuing: async (agentSessionId, step) => {
+            await agentSessionRepository.markContinuing(agentSessionId, step);
           },
         };
         agent.sessionHooks = {
@@ -142,9 +151,14 @@ export class Agents {
             bus.emit('session:message:update', { sessionId: s.id, flowName: s.flowName, userId: s.userId });
           },
         };
-        const promise = agent.restore(agentSession, flowSessions);
+        const isContinuing = agentSession.status === 'continuing';
+        const continueInput = agentSession.currentStep!.items[0].input;
+        console.log(`[Agents._recoverAgents] session='${agentSession.id}' isContinuing=${isContinuing} continueInput=`, JSON.stringify(continueInput));
+        const promise = isContinuing
+          ? agent.continue(continueInput)
+          : agent.restore(agentSession, flowSessions);
         this._wire(agent, promise);
-        console.log(`[Agents] Restored agent '${agentSession.agentName}' session '${agentSession.id}'`);
+        console.log(`[Agents] ${isContinuing ? 'Continuing' : 'Restored'} agent '${agentSession.agentName}' session '${agentSession.id}'`);
       }),
     );
   }
@@ -183,7 +197,7 @@ export class Agents {
       lines.push('  <schema_agents>');
       for (const schema of schemas) {
         lines.push('    <schema_agent>');
-        lines.push(`      <name>${escapeXml(schema.flowName)}</name>`);
+        lines.push(`      <name>${escapeXml(schema.name)}</name>`);
         lines.push(`      <description>${escapeXml(schema.description)}</description>`);
         lines.push('    </schema_agent>');
       }
@@ -204,22 +218,19 @@ export class Agents {
     }
     const schema = this.agenticLoopSchemas.get(agentName);
     if (schema) {
-      return this.runSchemaAgent(schema, context, parameters);
+      return this.runSchemaAgent(agentName, context, parameters);
     }
     const available = [...this.agentRegistry.keys(), ...this.agenticLoopSchemas.keys()].join(', ');
     throw new Error(`Agent '${agentName}' not found. Available: ${available || 'none'}`);
   }
 
   async runSchemaAgent(
-    schema: StoredAgenticLoopSchema,
+    schemaName: string,
     context: AgentContext,
     parameters: { message: string },
   ): Promise<Agent<App, User, Session>> {
-    const params: AgentFlowParameters = {
-      schema: schema as AgentFlowParameters['schema'],
-      message: parameters.message,
-    };
-    console.log(`[Agents.runSchemaAgent] flowName='${schema.flowName}' params.schema.agentLoopConfig=${JSON.stringify(params.schema.agentLoopConfig)} params.schema.toolNames=${JSON.stringify(params.schema.toolNames)}`);
+    const params: AgentFlowParameters = { name: schemaName, message: parameters.message };
+    console.log(`[Agents.runSchemaAgent] name='${schemaName}'`);
     return this._run(AgenticLoopAgent, context, params);
   }
 
@@ -231,14 +242,23 @@ export class Agents {
     const agent = new AgentClass(this.app, context.user, context.parent);
 
     const { bus } = this.app.infra;
-    const { agentSessionRepository, flowSessionRepository } = this.app.data;
+    const { agentSessionRepository } = this.app.data;
 
     agent.checkpointer = {
       createAgentSession: async (_agentName, agentSchema, userId) => {
         const record = await agentSessionRepository.create({ agentName: agent.name, agentSchema, userId });
         return record.id;
       },
-      checkpointStep: async (agentSessionId, step) => {
+      beginStepTransaction: async (agentSessionId) => {
+        await agentSessionRepository.beginTransaction(agentSessionId);
+      },
+      commitStepTransaction: async (agentSessionId, step, flowSessionId) => {
+        await agentSessionRepository.commitTransaction(agentSessionId, step, flowSessionId);
+      },
+      rollbackStepTransaction: async (agentSessionId) => {
+        await agentSessionRepository.rollbackTransaction(agentSessionId);
+      },
+      checkpointParallelStep: async (agentSessionId, step) => {
         await agentSessionRepository.updateCurrent(agentSessionId, step);
       },
       updateStepItem: async (agentSessionId, index, update) => {
@@ -251,8 +271,8 @@ export class Agents {
       finalizeAgentSession: async (agentSessionId, status) => {
         await agentSessionRepository.updateStatus(agentSessionId, status);
       },
-      linkFlowSession: async (flowSessionId, agentSessionId) => {
-        await flowSessionRepository.linkToAgentSession(flowSessionId, agentSessionId);
+      markContinuing: async (agentSessionId, step) => {
+        await agentSessionRepository.markContinuing(agentSessionId, step);
       },
     };
 
@@ -266,6 +286,69 @@ export class Agents {
     };
 
     const promise = agent.run(parameters);
+    this._wire(agent, promise);
+    return agent;
+  }
+
+  async continueAgent(
+    agentName: string,
+    context: AgentContext,
+    input: Record<string, unknown>,
+  ): Promise<Agent<App, User, Session>> {
+    console.log(`[Agents.continueAgent] agentName='${agentName}' input=`, JSON.stringify(input));
+    const { agentSessionRepository } = this.app.data;
+    const sessions = await agentSessionRepository.getByUserId(context.user.id);
+    const last = sessions.find((s) => s.agentName === agentName && (s.status === 'completed' || s.status === 'failed'));
+    console.log(`[Agents.continueAgent] last session=`, last ? `id='${last.id}' status='${last.status}' input=` + JSON.stringify(last.currentStep?.items[0]?.input) : 'none');
+    const AgentClass = this.agentRegistry.get(agentName) ?? AgenticLoopAgent;
+    if (!last) return this._run(AgentClass, context, input);
+    return this._continueWith(AgentClass, context, input, last.id);
+  }
+
+  private async _continueWith(
+    AgentClass: AnyAgentClass,
+    context: AgentContext,
+    input: unknown,
+    agentSessionId: string,
+  ): Promise<Agent<App, User, Session>> {
+    const { bus } = this.app.infra;
+    const { agentSessionRepository, flowSessionRepository } = this.app.data;
+    const agent = new AgentClass(this.app, context.user, context.parent);
+    agent.agentSessionId = agentSessionId;
+
+    const prevFlowSessionData = await flowSessionRepository.getByAgentSessionId(agentSessionId);
+    agent.allSessions = prevFlowSessionData.map((data) => new Session(data, this.app)) as Session[];
+
+    agent.checkpointer = {
+      createAgentSession: async (_agentName, agentSchema, userId) => {
+        const record = await agentSessionRepository.create({ agentName: agent.name, agentSchema, userId });
+        return record.id;
+      },
+      beginStepTransaction: async (id) => { await agentSessionRepository.beginTransaction(id); },
+      commitStepTransaction: async (id, step, flowSessionId) => { await agentSessionRepository.commitTransaction(id, step, flowSessionId); },
+      rollbackStepTransaction: async (id) => { await agentSessionRepository.rollbackTransaction(id); },
+      checkpointParallelStep: async (id, step) => { await agentSessionRepository.updateCurrent(id, step); },
+      updateStepItem: async (id, index, update) => {
+        const record = await agentSessionRepository.getById(id);
+        if (!record?.currentStep) return;
+        const items = [...record.currentStep.items];
+        items[index] = { ...items[index], ...update };
+        await agentSessionRepository.updateCurrent(id, { ...record.currentStep, items });
+      },
+      finalizeAgentSession: async (id, status) => { await agentSessionRepository.updateStatus(id, status); },
+      markContinuing: async (id, step) => { await agentSessionRepository.markContinuing(id, step); },
+    };
+
+    agent.sessionHooks = {
+      onStatusChange: async (s: Session, from: string, to: string) => {
+        bus.emit('session:statusChange', { sessionId: s.id, flowName: s.flowName, userId: s.userId, from, to });
+      },
+      onMessage: async (s: Session) => {
+        bus.emit('session:message:update', { sessionId: s.id, flowName: s.flowName, userId: s.userId });
+      },
+    };
+
+    const promise = agent.continue(input);
     this._wire(agent, promise);
     return agent;
   }

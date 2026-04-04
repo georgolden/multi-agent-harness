@@ -18,7 +18,7 @@ type MockSession = {
 };
 
 function mockSession(
-  overrides: { id?: string; currentNodeName?: string; currentPacketData?: unknown } = {},
+  overrides: { id?: string; currentNodeName?: string; currentPacketData?: unknown; status?: string } = {},
 ): MockSession {
   const id = overrides.id ?? 'sess-1';
   return {
@@ -26,6 +26,7 @@ function mockSession(
     hooks: {},
     sessionData: {
       id,
+      status: overrides.status ?? 'running',
       currentNodeName: overrides.currentNodeName,
       currentPacketData: overrides.currentPacketData,
     } as SessionData,
@@ -1181,14 +1182,19 @@ function makeCheckpointer() {
   const itemUpdates: { index: number; update: Partial<AgentStepItem> }[] = [];
   const checkpointer: AgentCheckpointer = {
     createAgentSession: vi.fn(async () => 'agent-sess-1'),
-    checkpointStep: vi.fn(async (_id, step) => {
+    beginStepTransaction: vi.fn(async () => {}),
+    commitStepTransaction: vi.fn(async (_id, step) => {
+      steps.push(structuredClone(step));
+    }),
+    rollbackStepTransaction: vi.fn(async () => {}),
+    checkpointParallelStep: vi.fn(async (_id, step) => {
       steps.push(structuredClone(step));
     }),
     updateStepItem: vi.fn(async (_id, index, update) => {
       itemUpdates.push({ index, update });
     }),
     finalizeAgentSession: vi.fn(async () => {}),
-    linkFlowSession: vi.fn(async () => {}),
+    markContinuing: vi.fn(async () => {}),
   };
   return { checkpointer, steps, itemUpdates };
 }

@@ -1,4 +1,4 @@
-export type AgentStatus = 'running' | 'completed' | 'failed' | 'paused';
+export type AgentStatus = 'running' | 'completed' | 'failed' | 'paused' | 'continuing';
 
 export type AgentStepItem = {
   input: unknown;
