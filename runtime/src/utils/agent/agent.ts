@@ -431,6 +431,8 @@ export abstract class Agent<TApp = unknown, TUser = unknown, TSession extends Ag
       }
     }
 
+    flow.session = session;
+
     if (this.allSessions.length === 0) this._resolveFirstSession(session);
     this.allSessions.push(session);
     this.activeSessions.push(session);

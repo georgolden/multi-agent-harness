@@ -42,7 +42,7 @@ export class AgentSessionRepository {
             state.commit = commit;
             state.rollback = rollback;
           });
-        })
+        }, { timeout: 60_000 })
         .catch((err) => {
           this._txMap.delete(agentSessionId);
           outerReject(err);
