@@ -3,6 +3,7 @@ import { TelegramService, config as telegramConfig } from './telegram/index.js';
 import { SandboxService } from './sandbox/index.js';
 import { SessionService } from './sessionService/index.js';
 import { ChannelService } from './channel/index.js';
+import { ComposioService } from './composio/index.js';
 import { App } from '../app.js';
 
 export class Services {
@@ -11,6 +12,7 @@ export class Services {
   sandbox: SandboxService;
   sessionService: SessionService;
   channel: ChannelService;
+  composio: ComposioService;
 
   constructor(app: App) {
     this.scheduler = new Scheduler(app, schedulerConfig);
@@ -18,6 +20,7 @@ export class Services {
     this.sandbox = new SandboxService(app);
     this.sessionService = new SessionService(app);
     this.channel = new ChannelService(app);
+    this.composio = new ComposioService(app);
   }
 
   async start() {
@@ -27,6 +30,7 @@ export class Services {
       this.sandbox.start(),
       this.sessionService.start(),
       this.channel.start(),
+      this.composio.start(),
     ]);
   }
 
@@ -37,6 +41,7 @@ export class Services {
       this.sandbox.stop(),
       this.sessionService.stop(),
       this.channel.stop(),
+      this.composio.stop(),
     ]);
   }
 }
