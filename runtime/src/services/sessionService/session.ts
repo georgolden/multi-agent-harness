@@ -14,7 +14,7 @@ import type {
   ToolLog,
   ToolSchema,
 } from './types.js';
-import { User } from '../../data/userRepository/types.js';
+import type { RuntimeUser } from '../userService/index.js';
 import { UserMessage } from '../../utils/message.js';
 
 /**
@@ -40,7 +40,7 @@ export class Session {
   hooks: SessionHooks;
   tools: AgentTool[] = [];
 
-  private _userMessageCallbacks: Array<(payload: { session: SessionData; message: string; user: User }) => void> = [];
+  private _userMessageCallbacks: Array<(payload: { session: SessionData; message: string; user: RuntimeUser }) => void> = [];
   /** Pending parent context XML — prepended to the first user message then cleared. */
   private _parentContextXml: string | null = null;
 
@@ -53,7 +53,7 @@ export class Session {
 
   private _attachUserMessageListener(): void {
     const eventName = `user:message:${this.userId}:${this.id}`;
-    this.app.infra.bus.on(eventName, (payload: { session: SessionData; message: string; user: User }) => {
+    this.app.infra.bus.on(eventName, (payload: { session: SessionData; message: string; user: RuntimeUser }) => {
       const callbacks = this._userMessageCallbacks.splice(0);
       for (const cb of callbacks) cb(payload);
     });
@@ -321,12 +321,12 @@ export class Session {
    * message so consumers have full context (flowName, userId, status, etc.).
    * Does NOT change status — call complete() / fail() separately if needed.
    */
-  async respond(user: User, message: string): Promise<this> {
+  async respond(user: RuntimeUser, message: string): Promise<this> {
     this.app.infra.bus.emit('session:message', { session: this.sessionData, message, user: user });
     return this;
   }
 
-  onUserMessage(cb: (payload: { session: SessionData; message: string; user: User }) => void) {
+  onUserMessage(cb: (payload: { session: SessionData; message: string; user: RuntimeUser }) => void) {
     this._userMessageCallbacks.push(cb);
     return this;
   }

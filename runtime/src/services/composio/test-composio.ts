@@ -68,10 +68,8 @@ async function step1_listCategories() {
 
 async function step2_listToolkits() {
   console.log('\n\n══ STEP 2: service.listToolkits() — no filter ══');
-  const result = await service.listToolkits();
-  const items = Array.isArray(result) ? result : (result as any)?.items ?? [];
-  console.log('Response type:', Array.isArray(result) ? 'plain array' : typeof result);
-  console.log('Response keys:', Object.keys(result as any));
+  const items = await service.listToolkits();
+  console.log('Type: ProviderToolkitInfo[]');
   logArray('toolkits', items);
   if (items[0]) log('single toolkit item — full shape', items[0]);
 }
@@ -84,7 +82,6 @@ async function step3_listToolkitsByCategory() {
   for (const cat of cats) {
     console.log(`  "${cat}": ${result[cat].length} toolkits`);
   }
-  // Show full toolkit list for the first category
   if (cats[0]) {
     log(`toolkits in "${cats[0]}"`, result[cats[0]].map((t: any) => ({ slug: t.slug, name: t.name })));
   }
@@ -105,64 +102,57 @@ async function step4_listAuthConfigs() {
 }
 
 async function step5_checkExistingConnection() {
-  console.log(`\n\n══ STEP 5: service.getConnectedAccount("${TEST_USER_ID}", "${TOOLKIT}") ══`);
-  const account = await service.getConnectedAccount(TEST_USER_ID, TOOLKIT);
-  log('result', account);
-  if (account) {
-    console.log('\nUser already has an active connection:', {
-      id: account.id,
-      status: account.status,
-      toolkit: (account as any).toolkit?.slug,
-    });
+  console.log(`\n\n══ STEP 5: service.getConnection({ userId: "${TEST_USER_ID}", toolkitSlug: "${TOOLKIT}" }) ══`);
+  const connection = await service.getConnection({ userId: TEST_USER_ID, toolkitSlug: TOOLKIT });
+  log('result', connection);
+  if (connection) {
+    console.log('\nUser already has an active connection:', connection);
   } else {
     console.log('\nNo active connection found.');
   }
-  return account;
+  return connection;
 }
 
 async function step6_initiateConnection(existing: any) {
-  console.log(`\n\n══ STEP 6: service.initiateConnection("${TEST_USER_ID}", "${TOOLKIT}") ══`);
+  console.log(`\n\n══ STEP 6: service.initiateConnection({ userId: "${TEST_USER_ID}", toolkitSlug: "${TOOLKIT}" }) ══`);
 
   if (existing) {
     const ans = await prompt('Already connected. Re-initiate anyway? (y/N):');
     if (ans.toLowerCase() !== 'y') {
       console.log('Skipping — using existing connection.');
-      return { id: existing.id, alreadyConnected: true };
+      return { externalUserId: existing.externalUserId, alreadyConnected: true };
     }
   }
 
-  const req = await service.initiateConnection(TEST_USER_ID, TOOLKIT);
-  log('ConnectionRequest full shape', req);
+  const req = await service.initiateConnection({ userId: TEST_USER_ID, toolkitSlug: TOOLKIT });
+  log('ProviderConnectionRequest full shape', req);
 
-  const redirectUrl = (req as any).redirectUrl ?? (req as any).url;
   console.log(`\n${'★'.repeat(60)}`);
   console.log('OPEN THIS URL IN YOUR BROWSER TO AUTHORIZE:');
-  console.log(`\n  ${redirectUrl}\n`);
+  console.log(`\n  ${req.redirectUrl}\n`);
   console.log(`${'★'.repeat(60)}`);
 
   await prompt('Press ENTER after completing authorization in the browser...');
-  return { id: (req as any).id ?? (req as any).connectedAccountId, alreadyConnected: false };
+  return { externalUserId: req.externalUserId, alreadyConnected: false };
 }
 
-async function step7_waitForConnection(id: string) {
-  console.log(`\n\n══ STEP 7: service.waitForConnection("${id}") ══`);
-  const account = await service.waitForConnection(id, 120_000);
-  log('Connected account after wait', account);
-  console.log('\nStatus:', (account as any).status);
-  return account;
+async function step7_waitForConnection(externalUserId: string) {
+  console.log(`\n\n══ STEP 7: service.waitForConnection({ externalUserId: "${externalUserId}" }) ══`);
+  const connection = await service.waitForConnection({ externalUserId, timeoutMs: 120_000 });
+  log('ProviderConnection after wait', connection);
+  console.log('\nStatus:', connection.status);
+  return connection;
 }
 
-async function step8_getToolsForUser() {
-  console.log(`\n\n══ STEP 8: service.getToolsForUser("${TEST_USER_ID}", { toolkits: ["${TOOLKIT}"] }) ══`);
-  const tools = await service.getToolsForUser(TEST_USER_ID, { toolkits: [TOOLKIT], limit: 10 });
-  const items: any[] = Array.isArray(tools) ? tools : (tools as any)?.items ?? [];
-  console.log('Response type:', Array.isArray(tools) ? 'plain array' : typeof tools);
-  console.log('Items count:', items.length);
-  if (items.length > 0) {
-    console.log('Tool slugs:', items.map((t: any) => t.slug ?? t.name));
-    log('First tool full schema', items[0]);
+async function step8_getToolSchemas(externalUserId: string, authConfigId: string) {
+  console.log(`\n\n══ STEP 8: service.getToolSchemas({ externalUserId, authConfigId, limit: 10 }) ══`);
+  const schemas = await service.getToolSchemas({ externalUserId, authConfigId, limit: 10 });
+  console.log('Schema count:', schemas.length);
+  if (schemas.length > 0) {
+    console.log('Tool slugs:', schemas.map((t) => t.slug));
+    log('First tool schema', schemas[0]);
   } else {
-    console.log('No tools returned — check that connection is ACTIVE.');
+    console.log('No schemas returned — check that connection is ACTIVE.');
   }
 }
 
@@ -177,32 +167,20 @@ async function step9_getTools() {
   }
 }
 
-async function step10_executeTool() {
+async function step10_executeTool(externalUserId: string) {
   console.log(`\n\n══ STEP 10: service.executeTool() — read-only call ══`);
   const toolSlug = TOOLKIT === 'github' ? 'GITHUB_GET_THE_AUTHENTICATED_USER' : 'GMAIL_GET_PROFILE';
   console.log(`Calling: ${toolSlug} for user=${TEST_USER_ID}`);
   try {
-    const result = await service.executeTool(toolSlug, {
+    const result = await service.executeTool({
+      toolSlug,
       userId: TEST_USER_ID,
+      externalUserId,
       arguments: {},
-      dangerouslySkipVersionCheck: true,
     });
-    log('executeTool result', result);
+    log('executeTool result (ProviderToolResult)', result);
   } catch (err: any) {
     console.error('\nexecuteTool error:', err?.message ?? err);
-    log('full error', { message: err?.message, code: err?.code, stack: err?.stack });
-  }
-}
-
-async function step11_executeToolForUser() {
-  console.log(`\n\n══ STEP 11: service.executeToolForUser() — via ToolRouter session ══`);
-  const toolSlug = TOOLKIT === 'github' ? 'GITHUB_GET_THE_AUTHENTICATED_USER' : 'GMAIL_GET_PROFILE';
-  console.log(`Calling: ${toolSlug} for user=${TEST_USER_ID} via session (toolkits: [${TOOLKIT}])`);
-  try {
-    const result = await service.executeToolForUser(TEST_USER_ID, toolSlug, {}, [TOOLKIT]);
-    log('executeToolForUser result', result);
-  } catch (err: any) {
-    console.error('\nexecuteToolForUser error:', err?.message ?? err);
     log('full error', { message: err?.message, code: err?.code, stack: err?.stack });
   }
 }
@@ -217,16 +195,18 @@ async function main() {
     await step4_listAuthConfigs();
 
     const existing = await step5_checkExistingConnection();
-    const { id: connectionId, alreadyConnected } = await step6_initiateConnection(existing);
+    const { externalUserId, alreadyConnected } = await step6_initiateConnection(existing);
 
-    if (!alreadyConnected && connectionId) {
-      await step7_waitForConnection(connectionId);
+    let authConfigId = existing?.authConfigId ?? '';
+
+    if (!alreadyConnected && externalUserId) {
+      const connection = await step7_waitForConnection(externalUserId);
+      authConfigId = connection.authConfigId;
     }
 
-    await step8_getToolsForUser();
+    await step8_getToolSchemas(externalUserId, authConfigId);
     await step9_getTools();
-    await step10_executeTool();
-    await step11_executeToolForUser();
+    await step10_executeTool(externalUserId);
 
     console.log('\n\n══ ALL STEPS COMPLETE ══\n');
   } catch (err: any) {

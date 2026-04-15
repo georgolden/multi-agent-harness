@@ -1,20 +1,22 @@
 import { Composio } from '@composio/core';
 import type {
+  ToolProvider,
+  ProviderToolkitInfo,
+  ProviderConnectionRequest,
+  ProviderConnection,
+  ProviderToolSchema,
+  ProviderToolResult,
+} from '../toolProviders/toolProvider.js';
+import type {
   GetToolsOptions,
-  ExecuteToolOptions,
-  InitiateConnectionOptions,
   ToolkitsByCategory,
-  ToolKitListResponse,
-  ConnectedAccountListResponse,
-  ConnectedAccountRetrieveResponse,
-  ConnectionRequest,
-  ToolList,
-  ToolExecuteResponse,
   AuthConfigListResponse,
   AuthConfigRetrieveResponse,
 } from './types.js';
 
-export class ComposioService {
+export class ComposioService implements ToolProvider {
+  readonly name = 'composio';
+
   private readonly composio: Composio;
 
   constructor(_app?: unknown) {
@@ -28,7 +30,7 @@ export class ComposioService {
   async start(): Promise<void> {}
   async stop(): Promise<void> {}
 
-  // ─── Toolkits ─────────────────────────────────────────────────────────────
+  // ─── ToolProvider: Discover ────────────────────────────────────────────────
 
   /**
    * List unique toolkit categories derived from the toolkits list.
@@ -36,7 +38,7 @@ export class ComposioService {
    * so we derive unique category names from the actual toolkits instead.
    */
   async listCategories(): Promise<string[]> {
-    const toolkits = await this.listToolkits();
+    const toolkits = await this.composio.toolkits.get({});
     const items = Array.isArray(toolkits) ? toolkits : (toolkits as any)?.items ?? [];
     const seen = new Set<string>();
     for (const toolkit of items) {
@@ -48,19 +50,159 @@ export class ComposioService {
   }
 
   /**
-   * List toolkits, optionally filtered by category.
+   * List toolkits as provider-agnostic ProviderToolkitInfo[], optionally filtered by category.
    */
-  async listToolkits(category?: string): Promise<ToolKitListResponse> {
-    return this.composio.toolkits.get(category ? { category } : {});
+  async listToolkits(params: { category?: string } = {}): Promise<ProviderToolkitInfo[]> {
+    const raw = await this.composio.toolkits.get(params.category ? { category: params.category } : {});
+    const items = Array.isArray(raw) ? raw : (raw as any)?.items ?? [];
+
+    return items.map((t: any): ProviderToolkitInfo => ({
+      slug: t.slug,
+      name: t.name ?? t.slug,
+      description: t.meta?.description ?? '',
+      logo: t.meta?.logo ?? '',
+      categories: (t.meta?.categories ?? []).map((c: any) => c.name as string),
+      authSchemes: t.authSchemes ?? [],
+      noAuth: t.noAuth ?? false,
+    }));
   }
+
+  // ─── ToolProvider: Auth ────────────────────────────────────────────────────
+
+  /**
+   * Initiate an OAuth/auth connection for a user and toolkit.
+   * Uses Composio-managed auth (works for most popular toolkits, zero config).
+   * Returns externalUserId (the connected account ID, e.g. ca_xxxxx) and redirectUrl.
+   */
+  async initiateConnection(params: {
+    userId: string;
+    toolkitSlug: string;
+  }): Promise<ProviderConnectionRequest> {
+    const { userId, toolkitSlug } = params;
+    const req = await this.composio.toolkits.authorize(userId, toolkitSlug);
+    console.log(`[ComposioService] Initiated connection for user=${userId} toolkit=${toolkitSlug} externalUserId=${req.id}`);
+    return {
+      externalUserId: req.id,
+      redirectUrl: req.redirectUrl ?? '',
+    };
+  }
+
+  /**
+   * Wait for a connection to become ACTIVE after the user completes OAuth.
+   */
+  async waitForConnection(params: {
+    externalUserId: string;
+    timeoutMs?: number;
+  }): Promise<ProviderConnection> {
+    const { externalUserId, timeoutMs = 60_000 } = params;
+    const account = await this.composio.connectedAccounts.waitForConnection(externalUserId, timeoutMs);
+    return {
+      externalUserId: account.id,
+      authConfigId: account.authConfig?.id ?? '',
+      status: account.status as ProviderConnection['status'],
+      toolkitSlug: (account as any).toolkit?.slug ?? '',
+    };
+  }
+
+  /**
+   * Get the user's active connected account for a given toolkit, or null if not connected.
+   */
+  async getConnection(params: {
+    userId: string;
+    toolkitSlug: string;
+  }): Promise<ProviderConnection | null> {
+    const { userId, toolkitSlug } = params;
+    const response = await this.composio.connectedAccounts.list({
+      userIds: [userId],
+      toolkitSlugs: [toolkitSlug],
+      statuses: ['ACTIVE'],
+    });
+
+    const account = response.items[0];
+    if (!account) return null;
+
+    return {
+      externalUserId: account.id,
+      authConfigId: account.authConfig?.id ?? '',
+      status: account.status as ProviderConnection['status'],
+      toolkitSlug: (account as any).toolkit?.slug ?? toolkitSlug,
+    };
+  }
+
+  /**
+   * Disconnect a user from a specific connected account.
+   */
+  async disconnectAccount(params: { externalUserId: string }): Promise<void> {
+    await this.composio.connectedAccounts.delete(params.externalUserId);
+    console.log(`[ComposioService] Deleted connected account ${params.externalUserId}`);
+  }
+
+  // ─── ToolProvider: Schemas ─────────────────────────────────────────────────
+
+  /**
+   * Get raw tool schemas for a user's connected account.
+   * Uses authConfigId (AuthConfigIdsOnlyParams) to scope tools to that user.
+   */
+  async getToolSchemas(params: {
+    externalUserId: string;
+    authConfigId: string;
+    limit?: number;
+  }): Promise<ProviderToolSchema[]> {
+    const { authConfigId, limit } = params;
+
+    const tools = await this.composio.tools.getRawComposioTools({
+      authConfigIds: [authConfigId],
+      ...(limit ? { limit } : {}),
+    });
+
+    const arr = Array.isArray(tools) ? tools : (tools as any)?.items ?? [];
+    return arr.map((t: any): ProviderToolSchema => ({
+      slug: t.slug,
+      name: t.name,
+      description: t.description,
+      inputParameters: t.inputParameters,
+      outputParameters: t.outputParameters,
+      tags: t.tags ?? [],
+      version: t.version ?? '',
+    }));
+  }
+
+  // ─── ToolProvider: Execute ─────────────────────────────────────────────────
+
+  /**
+   * Execute a tool for a specific user.
+   * userId is your app's user ID; externalUserId is the Composio connected account ID.
+   */
+  async executeTool(params: {
+    toolSlug: string;
+    userId: string;
+    externalUserId: string;
+    arguments: Record<string, unknown>;
+  }): Promise<ProviderToolResult> {
+    const { toolSlug, userId, arguments: args } = params;
+
+    const result = await this.composio.tools.execute(toolSlug, {
+      userId,
+      arguments: args,
+      dangerouslySkipVersionCheck: true,
+    });
+
+    return {
+      data: result.data,
+      error: result.error ?? null,
+      successful: result.successful,
+    };
+  }
+
+  // ─── Composio-specific helpers (not part of ToolProvider interface) ────────
 
   /**
    * List all toolkits grouped by their categories.
    * Fetches toolkits once and groups them client-side by meta.categories.
    */
   async listToolkitsByCategory(): Promise<ToolkitsByCategory> {
-    const toolkits = await this.listToolkits();
-    const items = Array.isArray(toolkits) ? toolkits : (toolkits as any)?.items ?? [];
+    const raw = await this.composio.toolkits.get({});
+    const items = Array.isArray(raw) ? raw : (raw as any)?.items ?? [];
     const result: ToolkitsByCategory = {};
 
     for (const toolkit of items) {
@@ -77,11 +219,8 @@ export class ComposioService {
     return result;
   }
 
-  // ─── Auth Configs ─────────────────────────────────────────────────────────
-
   /**
    * List auth configs for the project, optionally filtered by toolkit slug.
-   * Most popular toolkits have a Composio-managed auth config by default.
    */
   async listAuthConfigs(toolkit?: string): Promise<AuthConfigListResponse> {
     return this.composio.authConfigs.list(toolkit ? { toolkit } : undefined);
@@ -94,213 +233,31 @@ export class ComposioService {
     return this.composio.authConfigs.get(authConfigId);
   }
 
-  // ─── Connected Accounts ───────────────────────────────────────────────────
-
   /**
-   * Check if a user has an active connected account for a given toolkit.
+   * Get raw tool schemas using flexible filter options (helper for internal use).
    */
-  async getConnectedAccount(
-    userId: string,
-    toolkitSlug: string,
-  ): Promise<ConnectedAccountRetrieveResponse | null> {
-    const response = await this.composio.connectedAccounts.list({
-      userIds: [userId],
-      toolkitSlugs: [toolkitSlug],
-      statuses: ['ACTIVE'],
-    });
-
-    return response.items[0] ?? null;
-  }
-
-  /**
-   * List all active connected accounts for a user.
-   * Pass toolkitSlugs to filter to specific toolkits.
-   */
-  async listConnectedAccounts(
-    userId: string,
-    toolkitSlugs?: string[],
-  ): Promise<ConnectedAccountListResponse> {
-    return this.composio.connectedAccounts.list({
-      userIds: [userId],
-      ...(toolkitSlugs ? { toolkitSlugs } : {}),
-      statuses: ['ACTIVE'],
-    });
-  }
-
-  /**
-   * Disconnect a user from a specific connected account.
-   */
-  async disconnectAccount(connectedAccountId: string): Promise<void> {
-    await this.composio.connectedAccounts.delete(connectedAccountId);
-    console.log(`[ComposioService] Deleted connected account ${connectedAccountId}`);
-  }
-
-  // ─── Auth Flow ────────────────────────────────────────────────────────────
-
-  /**
-   * Initiate an OAuth/auth connection for a user and toolkit.
-   *
-   * Returns a ConnectionRequest with a redirectUrl — send the user there to
-   * authorize with their third-party account (e.g. Google, GitHub, Slack).
-   *
-   * If no authConfigId is provided, Composio's managed auth config is used
-   * (works out of the box for most popular toolkits).
-   */
-  async initiateConnection(
-    userId: string,
-    toolkitSlug: string,
-    options: InitiateConnectionOptions = {},
-  ): Promise<ConnectionRequest> {
-    const { authConfigId, callbackUrl } = options;
-
-    if (authConfigId) {
-      const req = await this.composio.connectedAccounts.initiate(userId, authConfigId, {
-        ...(callbackUrl ? { callbackUrl } : {}),
-      });
-      console.log(`[ComposioService] Initiated connection for user=${userId} toolkit=${toolkitSlug} authConfig=${authConfigId}`);
-      return req;
-    }
-
-    // Use Composio-managed auth (default for most toolkits)
-    const req = await this.composio.toolkits.authorize(userId, toolkitSlug);
-    console.log(`[ComposioService] Initiated managed connection for user=${userId} toolkit=${toolkitSlug}`);
-    return req;
-  }
-
-  /**
-   * Wait for a connection to become ACTIVE after the user completes OAuth.
-   * Useful for flows where you need to confirm auth before proceeding.
-   *
-   * @param connectedAccountId - The ID from the ConnectionRequest returned by initiateConnection
-   * @param timeoutMs - Max time to wait in ms (default: 60000)
-   */
-  async waitForConnection(
-    connectedAccountId: string,
-    timeoutMs = 60_000,
-  ): Promise<ConnectedAccountRetrieveResponse> {
-    return this.composio.connectedAccounts.waitForConnection(connectedAccountId, timeoutMs);
-  }
-
-  // ─── Tools ────────────────────────────────────────────────────────────────
-
-  /**
-   * Get raw (non-provider-wrapped) tool schemas, ready to pass to any LLM.
-   *
-   * These are standard JSON Schema tool definitions — not tied to any provider format.
-   * ToolListParams is a discriminated union: pass exactly one of toolkits, tools, or authConfigIds.
-   */
-  async getTools(options: GetToolsOptions = {}): Promise<ToolList> {
+  async getTools(options: GetToolsOptions = {}): Promise<any[]> {
     const { toolkits, tools, authConfigIds, limit } = options;
 
     if (tools?.length) {
-      return this.composio.tools.getRawComposioTools({ tools });
+      return this.composio.tools.getRawComposioTools({ tools }) as any;
     }
     if (authConfigIds?.length) {
       return this.composio.tools.getRawComposioTools({
         authConfigIds,
         ...(limit ? { limit } : {}),
-      });
+      }) as any;
     }
     if (toolkits?.length) {
       return this.composio.tools.getRawComposioTools({
         toolkits,
         ...(limit ? { limit } : {}),
-      });
+      }) as any;
     }
 
-    // No filter — fetch by limit only (returns popular/default tools)
     return this.composio.tools.getRawComposioTools({
       toolkits: [],
       ...(limit ? { limit } : {}),
-    });
-  }
-
-  /**
-   * Get raw tool schemas scoped to a specific user's connected accounts.
-   *
-   * Uses the user's active connected accounts to filter tools — only tools
-   * the user has authorized will be returned. Pass toolkits to narrow the result.
-   */
-  async getToolsForUser(userId: string, options: GetToolsOptions = {}): Promise<ToolList> {
-    const { toolkits, limit } = options;
-
-    // Resolve which auth configs belong to this user's connected accounts
-    const connectedAccounts = await this.composio.connectedAccounts.list({
-      userIds: [userId],
-      ...(toolkits ? { toolkitSlugs: toolkits } : {}),
-      statuses: ['ACTIVE'],
-    });
-
-    const authConfigIds = [
-      ...new Set(
-        connectedAccounts.items
-          .map((a) => a.authConfig?.id)
-          .filter(Boolean) as string[],
-      ),
-    ];
-
-    if (authConfigIds.length === 0) {
-      return [] as unknown as ToolList;
-    }
-
-    // AuthConfigIdsOnlyParams: toolkits/tools must be absent
-    return this.composio.tools.getRawComposioTools({
-      authConfigIds,
-      ...(limit ? { limit } : {}),
-    });
-  }
-
-  /**
-   * Execute a tool for a specific user.
-   *
-   * @param toolSlug - e.g. 'GMAIL_SEND_EMAIL'
-   * @param options.userId - Your app's user ID
-   * @param options.arguments - Tool input arguments
-   */
-  async executeTool(
-    toolSlug: string,
-    options: ExecuteToolOptions,
-  ): Promise<ToolExecuteResponse> {
-    const { userId, arguments: args, dangerouslySkipVersionCheck = false } = options;
-
-    return this.composio.tools.execute(toolSlug, {
-      userId,
-      arguments: args,
-      dangerouslySkipVersionCheck,
-    });
-  }
-
-  /**
-   * Execute a tool via a user-scoped ToolRouter session.
-   *
-   * Pass toolkitSlugs to tell the session which toolkits to include —
-   * the session won't pick up connected accounts automatically without this.
-   */
-  async executeToolForUser(
-    userId: string,
-    toolSlug: string,
-    args: Record<string, unknown>,
-    toolkitSlugs?: string[],
-  ): Promise<unknown> {
-    // Resolve connected account IDs — the ToolRouter session requires explicit
-    // connectedAccounts wiring, passing toolkits alone is not sufficient.
-    const connected = await this.composio.connectedAccounts.list({
-      userIds: [userId],
-      ...(toolkitSlugs?.length ? { toolkitSlugs } : {}),
-      statuses: ['ACTIVE'],
-    });
-
-    const connectedAccountsMap: Record<string, string> = {};
-    for (const account of connected.items) {
-      const slug = (account as any).toolkit?.slug;
-      if (slug && account.id) connectedAccountsMap[slug] = account.id;
-    }
-
-    const session = await this.composio.create(userId, {
-      ...(toolkitSlugs?.length ? { toolkits: toolkitSlugs } : {}),
-      ...(Object.keys(connectedAccountsMap).length ? { connectedAccounts: connectedAccountsMap } : {}),
-    });
-
-    return session.execute(toolSlug, args);
+    }) as any;
   }
 }

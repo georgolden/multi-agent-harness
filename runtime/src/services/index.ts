@@ -4,6 +4,9 @@ import { SandboxService } from './sandbox/index.js';
 import { SessionService } from './sessionService/index.js';
 import { ChannelService } from './channel/index.js';
 import { ComposioService } from './composio/index.js';
+import { UserService } from './userService/index.js';
+import { UserToolkitService } from './userToolkits/index.js';
+import { ToolProviderRegistry } from './toolProviders/toolProvider.js';
 import { App } from '../app.js';
 
 export class Services {
@@ -13,6 +16,9 @@ export class Services {
   sessionService: SessionService;
   channel: ChannelService;
   composio: ComposioService;
+  userService: UserService;
+  userToolkitService: UserToolkitService;
+  toolProviderRegistry: ToolProviderRegistry;
 
   constructor(app: App) {
     this.scheduler = new Scheduler(app, schedulerConfig);
@@ -20,7 +26,14 @@ export class Services {
     this.sandbox = new SandboxService(app);
     this.sessionService = new SessionService(app);
     this.channel = new ChannelService(app);
+
+    // Tool provider registry — register all providers here
+    this.toolProviderRegistry = new ToolProviderRegistry();
     this.composio = new ComposioService(app);
+    this.toolProviderRegistry.register(this.composio);
+
+    this.userService = new UserService(app);
+    this.userToolkitService = new UserToolkitService(app);
   }
 
   async start() {
@@ -31,6 +44,8 @@ export class Services {
       this.sessionService.start(),
       this.channel.start(),
       this.composio.start(),
+      this.userService.start(),
+      this.userToolkitService.start(),
     ]);
   }
 
@@ -42,6 +57,8 @@ export class Services {
       this.sessionService.stop(),
       this.channel.stop(),
       this.composio.stop(),
+      this.userService.stop(),
+      this.userToolkitService.stop(),
     ]);
   }
 }

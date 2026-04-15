@@ -32,6 +32,7 @@ export class AgenticLoopSchemaRepository {
       systemPrompt: row.systemPrompt,
       toolNames: row.toolNames,
       skillNames: row.skillNames,
+      toolkitSlugs: row.toolkitSlugs ?? [],
       contextPaths: row.contextPaths as any,
       callLlmOptions: row.callLlmOptions as any,
       messageWindowConfig: row.messageWindowConfig as any,
@@ -51,6 +52,7 @@ export class AgenticLoopSchemaRepository {
         systemPrompt: params.schema.systemPrompt,
         toolNames: params.schema.toolNames,
         skillNames: params.schema.skillNames,
+        toolkitSlugs: params.schema.toolkitSlugs ?? [],
         contextPaths: params.schema.contextPaths as any,
         callLlmOptions: params.schema.callLlmOptions as any,
         messageWindowConfig: params.schema.messageWindowConfig as any,
@@ -93,6 +95,7 @@ export class AgenticLoopSchemaRepository {
     if (params.systemPrompt !== undefined) data.systemPrompt = params.systemPrompt;
     if (params.toolNames !== undefined) data.toolNames = params.toolNames;
     if (params.skillNames !== undefined) data.skillNames = params.skillNames;
+    if (params.toolkitSlugs !== undefined) data.toolkitSlugs = params.toolkitSlugs;
     if (params.contextPaths !== undefined) data.contextPaths = params.contextPaths as any;
     if (params.callLlmOptions !== undefined) data.callLlmOptions = params.callLlmOptions as any;
     if (params.messageWindowConfig !== undefined) data.messageWindowConfig = params.messageWindowConfig as any;

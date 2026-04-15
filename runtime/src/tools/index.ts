@@ -109,14 +109,14 @@ import { createWriteTool, writeTool } from './write.js';
 import { createRunAgentTool, runAgentTool } from './runAgent.js';
 import { createWriteTempFileTool } from './writeTempFile.js';
 import { createSpawnAgentTool } from './spawnAgent.js';
-import { User } from '../data/userRepository/types.js';
+import { RuntimeUser } from '../services/userService/index.js';
 import { Session } from '../services/sessionService/session.js';
 
 /** Tool type (AgentTool from pi-ai) */
 export type Tool = AgentTool<any>;
 
 export type ToolCallContext = {
-  user: User;
+  user: RuntimeUser;
   parent?: Session;
   session: Session;
 };

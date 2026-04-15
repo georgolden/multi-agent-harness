@@ -3,12 +3,12 @@
  */
 
 import type { SessionData } from '../sessionService/types.js';
-import type { User } from '../../data/userRepository/types.js';
+import type { RuntimeUser } from '../userService/index.js';
 
 export interface MessageDto {
   message: string;
   session: SessionData;
-  user: User;
+  user: RuntimeUser;
   [key: string]: unknown;
 }
 
