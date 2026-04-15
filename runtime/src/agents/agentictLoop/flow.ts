@@ -1,7 +1,7 @@
 import { Flow, type FlowSchema, error } from '../../utils/agent/flow.js';
 import { App } from '../../app.js';
 import { MessageWindowConfig } from '../../services/sessionService/types.js';
-import { User } from '../../data/userRepository/types.js';
+import { RuntimeUser } from '../../services/userService/index.js';
 import { CallLlmOptions } from '../../utils/callLlm.js';
 import { fillSystemPrompt, readFilesWithLimit, readFoldersInfos } from './utils.js';
 import { SUBMIT_RESULT_SCHEMA } from './tools.js';
@@ -15,8 +15,9 @@ export interface AgenticLoopSchema {
   description: string;
   userPromptTemplate?: string;
   systemPrompt: string;
-  toolNames: string[];
+  toolNames: string[];          // built-in tool names, e.g. ['bash', 'read']
   skillNames: string[];
+  toolkitSlugs: string[];       // user's connected toolkit slugs, e.g. ['github', 'gmail']
   contextPaths: {
     files: string[];
     folders: string[];
@@ -73,7 +74,7 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
 
   async createSession(
     app: App,
-    user: User,
+    user: RuntimeUser,
     _parent: Session | undefined,
     input: AgentFlowParameters,
   ): Promise<Session> {
@@ -85,6 +86,7 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
       systemPrompt,
       toolNames,
       skillNames,
+      toolkitSlugs,
       contextPaths,
       callLlmOptions,
       messageWindowConfig,
@@ -93,12 +95,16 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
     } = schema;
 
     console.log(
-      `[AgenticLoopFlow.createSession] schema='${input.name}' toolNames=${JSON.stringify(toolNames)} agentLoopConfig=${JSON.stringify(agentLoopConfig)}`,
+      `[AgenticLoopFlow.createSession] schema='${input.name}' toolNames=${JSON.stringify(toolNames)} toolkitSlugs=${JSON.stringify(toolkitSlugs)} agentLoopConfig=${JSON.stringify(agentLoopConfig)}`,
     );
 
     const filledSystemPrompt = `Current datetime: ${new Date().toISOString()}\nUser timezone: ${user.timezone ?? 'UTC'}\n\n${systemPrompt}`;
 
-    const tools = app.tools.getSlice(toolNames);
+    const builtInTools = app.tools.getSlice(toolNames);
+    const userToolkitTools = toolkitSlugs?.length
+      ? await app.services.userService.loadUser(user.id).then((u) => u.buildAgentTools(toolkitSlugs))
+      : [];
+    const tools = [...builtInTools, ...userToolkitTools];
     const skills = app.skills.getSlice(skillNames);
 
     console.log(
@@ -136,10 +142,23 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
     return session;
   }
 
-  override async restoreSession(app: App, _user: User, session: Session): Promise<void> {
-    const toolNames = session.toolSchemas.map((t) => t.name).filter((n) => n !== SUBMIT_RESULT_SCHEMA.name);
-    const tools = app.tools.getSlice(toolNames);
-    session.tools = tools as any;
+  override async restoreSession(app: App, user: RuntimeUser, session: Session): Promise<void> {
+    const allSchemaNames = session.toolSchemas.map((t) => t.name).filter((n) => n !== SUBMIT_RESULT_SCHEMA.name);
+
+    // Re-split: built-in tools are in app.tools, provider tools have slugs that won't match
+    const builtInTools = app.tools.getSlice(allSchemaNames);
+    const builtInNames = new Set(builtInTools.map((t) => t.name));
+    const providerToolSlugs = allSchemaNames.filter((n) => !builtInNames.has(n));
+
+    let userTools: any[] = [];
+    if (providerToolSlugs.length > 0) {
+      const runtimeUser = await app.services.userService.loadUser(user.id);
+      // Build all user tools then filter to only those in the session
+      const allUserTools = await runtimeUser.buildAgentTools();
+      userTools = allUserTools.filter((t) => providerToolSlugs.includes(t.name));
+    }
+
+    session.tools = [...builtInTools, ...userTools] as any;
   }
 
   async fallback(p: this['InError'], err: Error): Promise<this['Out']> {

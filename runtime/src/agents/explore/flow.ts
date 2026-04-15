@@ -4,7 +4,7 @@ import { exploreInputSchema } from './types.js';
 import type { ExploreContext, ExploreInput, ExploreResult } from './types.js';
 import { App } from '../../app.js';
 import { Session } from '../../services/sessionService/session.js';
-import { User } from '../../data/userRepository/types.js';
+import { RuntimeUser } from '../../services/userService/index.js';
 import { createSystemPrompt, wrapUserPrompt } from './prompts/index.js';
 import { SystemMessage, UserMessage } from '../../utils/message.js';
 import { AGENT_TOOLS } from './tools.js';
@@ -30,7 +30,7 @@ export class ExploreFlow extends Flow<App, ExploreContext, ExploreInput, { exit:
 
   nodeConstructors = { PrepareInput, DecideAction, AskUser, UserResponse, ToolCalls, SubmitResult };
 
-  async createSession(app: App, user: User, parent: Session | undefined, input: ExploreInput): Promise<Session> {
+  async createSession(app: App, user: RuntimeUser, parent: Session | undefined, input: ExploreInput): Promise<Session> {
     const systemPrompt = createSystemPrompt();
     const userPrompt = wrapUserPrompt(input.message);
 
@@ -50,7 +50,7 @@ export class ExploreFlow extends Flow<App, ExploreContext, ExploreInput, { exit:
     return session;
   }
 
-  override async restoreSession(_app: App, _user: User, session: Session): Promise<void> {
+  override async restoreSession(_app: App, _user: RuntimeUser, session: Session): Promise<void> {
     session.addAgentTools(AGENT_TOOLS as any);
   }
 }

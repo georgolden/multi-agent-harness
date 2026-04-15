@@ -1,6 +1,6 @@
 import type { Session } from '../../services/sessionService/index.js';
 import { Type } from '@sinclair/typebox';
-import { User } from '../../data/userRepository/types.js';
+import type { RuntimeUser } from '../../services/userService/index.js';
 
 export const orchestratorInputSchema = Type.Object({
   message: Type.String({ description: "User's message or task description" }),
@@ -9,7 +9,7 @@ export const orchestratorInputSchema = Type.Object({
 export type OrchestratorInput = typeof orchestratorInputSchema;
 
 export interface OrchestratorContext {
-  user: User;
+  user: RuntimeUser;
   parent?: Session;
   session: Session;
 }

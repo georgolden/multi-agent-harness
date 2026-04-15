@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
@@ -10,10 +11,31 @@ model User {
   id       String  @id @db.VarChar(255)
   name     String? @db.VarChar(255)
   timezone String  @default("UTC") @db.VarChar(50)
-
-  tasks Task[]
+  tasks    Task[]
+  toolkits UserToolkit[]
 
   @@map("users")
+}
+
+model UserToolkit {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id") @db.VarChar(255)
+  provider     String   @db.VarChar(50)
+  toolkitSlug  String   @map("toolkit_slug") @db.VarChar(255)
+  name         String
+  description  String
+  logo         String
+  categories   String[]
+  providerData Json     @map("provider_data")
+  status       String   @default("active") @db.VarChar(20)
+  connectedAt  DateTime @default(now()) @map("connected_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider, toolkitSlug], name: "uq_user_toolkit")
+  @@index([userId], map: "idx_user_toolkits_user_id")
+  @@map("user_toolkits")
 }
 
 model Task {
@@ -29,84 +51,112 @@ model Task {
   timezone      String    @db.VarChar(50)
   createdAt     DateTime  @default(now()) @map("created_at")
   active        Boolean   @default(true)
+  user          User      @relation(fields: [userId], references: [id])
 
-  user User @relation(fields: [userId], references: [id])
-
-  @@index([userId, active], name: "idx_tasks_user_active")
+  @@index([userId, active], map: "idx_tasks_user_active")
   @@map("tasks")
 }
 
 model FlowSession {
-  id                 String       @id @db.VarChar(16)
-  userId             String       @map("user_id") @db.VarChar(255)
-  flowName           String       @map("flow_name") @db.VarChar(255)
-  systemPrompt       String       @map("system_prompt")
-  userPromptTemplate String?      @map("user_prompt_template")
-  status             String       @db.VarChar(20)
-  parentSessionId    String?      @map("parent_session_id") @db.VarChar(16)
-  agentSessionId     String?      @map("agent_session_id") @db.VarChar(16)
-  messages           Json         @default("[]")
-  activeMessages     Json         @default("[]") @map("active_messages")
-  messageWindowConfig Json        @map("message_window_config")
-  contextFiles       Json         @default("[]") @map("context_files")
-  contextFoldersInfos Json        @default("[]") @map("context_folders_infos")
-  toolSchemas        Json         @default("[]") @map("tool_schemas")
-  skillSchemas       Json         @default("[]") @map("skill_schemas")
-  callLlmOptions     Json         @default("{}") @map("call_llm_options")
-  agentLoopConfig    Json         @default("{}") @map("agent_loop_config")
-  tempFiles          Json         @default("[]") @map("temp_files")
-  toolLogs           Json         @default("[]") @map("tool_logs")
-  skillLogs          Json         @default("[]") @map("skill_logs")
-  flowSchema         Json?        @map("flow_schema")
-  currentNodeName    String?      @map("current_node_name") @db.VarChar(255)
-  currentPacketData  Json?        @map("current_packet_data")
-  startedAt          DateTime     @default(now()) @map("started_at")
-  endedAt            DateTime?    @map("ended_at")
+  id                  String        @id @db.VarChar(16)
+  userId              String        @map("user_id") @db.VarChar(255)
+  flowName            String        @map("flow_name") @db.VarChar(255)
+  systemPrompt        String        @map("system_prompt")
+  userPromptTemplate  String?       @map("user_prompt_template")
+  status              String        @db.VarChar(20)
+  parentSessionId     String?       @map("parent_session_id") @db.VarChar(16)
+  messages            Json          @default("[]")
+  activeMessages      Json          @default("[]") @map("active_messages")
+  messageWindowConfig Json          @map("message_window_config")
+  contextFiles        Json          @default("[]") @map("context_files")
+  contextFoldersInfos Json          @default("[]") @map("context_folders_infos")
+  toolSchemas         Json          @default("[]") @map("tool_schemas")
+  skillSchemas        Json          @default("[]") @map("skill_schemas")
+  callLlmOptions      Json          @default("{}") @map("call_llm_options")
+  agentLoopConfig     Json          @default("{}") @map("agent_loop_config")
+  tempFiles           Json          @default("[]") @map("temp_files")
+  toolLogs            Json          @default("[]") @map("tool_logs")
+  skillLogs           Json          @default("[]") @map("skill_logs")
+  startedAt           DateTime      @default(now()) @map("started_at")
+  endedAt             DateTime?     @map("ended_at")
+  agentSessionId      String?       @map("agent_session_id") @db.VarChar(16)
+  currentNodeName     String?       @map("current_node_name") @db.VarChar(255)
+  currentPacketData   Json?         @map("current_packet_data")
+  flowSchema          Json?         @map("flow_schema")
+  agentSession        AgentSession? @relation(fields: [agentSessionId], references: [id])
+  parent              FlowSession?  @relation("SessionTree", fields: [parentSessionId], references: [id])
+  children            FlowSession[] @relation("SessionTree")
 
-  parent       FlowSession?  @relation("SessionTree", fields: [parentSessionId], references: [id], onDelete: SetNull)
-  children     FlowSession[] @relation("SessionTree")
-  agentSession AgentSession? @relation(fields: [agentSessionId], references: [id], onDelete: SetNull)
-
-  @@index([userId], name: "idx_flow_sessions_user_id")
-  @@index([parentSessionId], name: "idx_flow_sessions_parent_id")
-  @@index([agentSessionId], name: "idx_flow_sessions_agent_session_id")
-  @@index([status], name: "idx_flow_sessions_status")
-  @@index([userId, status], name: "idx_flow_sessions_user_status")
-  @@index([parentSessionId, startedAt], name: "idx_flow_sessions_tree")
+  @@index([userId], map: "idx_flow_sessions_user_id")
+  @@index([parentSessionId], map: "idx_flow_sessions_parent_id")
+  @@index([agentSessionId], map: "idx_flow_sessions_agent_session_id")
+  @@index([status], map: "idx_flow_sessions_status")
+  @@index([userId, status], map: "idx_flow_sessions_user_status")
+  @@index([parentSessionId, startedAt], map: "idx_flow_sessions_tree")
   @@map("flow_sessions")
 }
 
 model AgentSession {
-  id               String    @id @db.VarChar(16)
-  userId           String    @map("user_id") @db.VarChar(255)
-  agentName        String    @map("agent_name") @db.VarChar(255)
-  agentSchema      Json      @map("agent_schema")
-  status           String    @default("running") @db.VarChar(20)
-  currentStep      Json?     @map("current_step")
-  startedAt        DateTime  @default(now()) @map("started_at")
-  endedAt          DateTime? @map("ended_at")
-
+  id           String        @id @db.VarChar(16)
+  userId       String        @map("user_id") @db.VarChar(255)
+  agentName    String        @map("agent_name") @db.VarChar(255)
+  agentSchema  Json          @map("agent_schema")
+  status       String        @default("running") @db.VarChar(20)
+  currentStep  Json?         @map("current_step")
+  startedAt    DateTime      @default(now()) @map("started_at")
+  endedAt      DateTime?     @map("ended_at")
   flowSessions FlowSession[]
 
-  @@index([userId], name: "idx_agent_sessions_user_id")
-  @@index([status], name: "idx_agent_sessions_status")
-  @@index([userId, status], name: "idx_agent_sessions_user_status")
+  @@index([userId], map: "idx_agent_sessions_user_id")
+  @@index([status], map: "idx_agent_sessions_status")
+  @@index([userId, status], map: "idx_agent_sessions_user_status")
   @@map("agent_sessions")
 }
 
 model AgenticLoopSchema {
-  name                String  @id @map("name") @db.VarChar(255)
-  userId              String? @map("user_id") @db.VarChar(255)
+  name                String   @id @map("name") @db.VarChar(255)
+  userId              String?  @map("user_id") @db.VarChar(255)
   description         String
-  userPromptTemplate  String? @map("user_prompt_template")
-  systemPrompt        String  @map("system_prompt")
+  userPromptTemplate  String?  @map("user_prompt_template")
+  systemPrompt        String   @map("system_prompt")
   toolNames           String[] @map("tool_names")
   skillNames          String[] @map("skill_names")
-  contextPaths        Json    @map("context_paths")
-  callLlmOptions      Json    @map("call_llm_options")
-  messageWindowConfig Json    @map("message_window_config")
-  agentLoopConfig     Json    @map("agent_loop_config")
+  toolkitSlugs        String[] @default([]) @map("toolkit_slugs")
+  contextPaths        Json     @map("context_paths")
+  callLlmOptions      Json     @map("call_llm_options")
+  messageWindowConfig Json     @map("message_window_config")
+  agentLoopConfig     Json     @map("agent_loop_config")
 
-  @@index([userId], name: "idx_agentic_loop_schemas_user")
+  @@index([userId], map: "idx_agentic_loop_schemas_user")
   @@map("agentic_loop_schemas")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model agenda_jobs {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                String    @unique(map: "agenda_jobs_single_job_idx", where: raw("((type)::text = 'single'::text)")) @db.VarChar(255)
+  priority            Int       @default(0)
+  next_run_at         DateTime? @db.Timestamptz(6)
+  type                String    @default("normal") @db.VarChar(10)
+  locked_at           DateTime? @db.Timestamptz(6)
+  last_finished_at    DateTime? @db.Timestamptz(6)
+  failed_at           DateTime? @db.Timestamptz(6)
+  fail_count          Int?
+  fail_reason         String?
+  repeat_timezone     String?   @db.VarChar(100)
+  last_run_at         DateTime? @db.Timestamptz(6)
+  repeat_interval     String?   @db.VarChar(255)
+  data                Json?     @default("{}")
+  repeat_at           String?   @db.VarChar(255)
+  disabled            Boolean?  @default(false)
+  progress            Float?    @db.Real
+  fork                Boolean?  @default(false)
+  last_modified_by    String?   @db.VarChar(255)
+  debounce_started_at DateTime? @db.Timestamptz(6)
+  created_at          DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([name, next_run_at, priority(sort: Desc), locked_at, disabled], map: "agenda_jobs_find_and_lock_idx", where: raw("(disabled = false)"))
+  @@index([locked_at], where: raw("(locked_at IS NOT NULL)"))
+  @@index([next_run_at], where: raw("(next_run_at IS NOT NULL)"))
 }

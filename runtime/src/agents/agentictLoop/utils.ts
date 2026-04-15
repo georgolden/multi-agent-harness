@@ -1,11 +1,11 @@
 import path from 'path';
 import { readFile, stat } from 'fs/promises';
 import type { FileInfo as ContextFile, FolderInfo as ContextFolderInfo } from '../../services/sessionService/types.js';
-import { User } from '../../data/userRepository/types.js';
+import type { RuntimeUser } from '../../services/userService/index.js';
 import { replaceVars } from '../../utils/readReplace.js';
 import { runTreeCommand } from '../../tools/tree.js';
 
-export function fillSystemPrompt(systemPrompt: string, user: User): string {
+export function fillSystemPrompt(systemPrompt: string, user: RuntimeUser): string {
   return replaceVars(systemPrompt, {
     userTimezone: user.timezone,
     currentDate: new Date().toISOString(),

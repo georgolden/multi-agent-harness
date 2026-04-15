@@ -1,6 +1,6 @@
 import type { App } from '../../app.js';
 import type { Session } from '../../services/sessionService/index.js';
-import type { User } from '../../data/userRepository/types.js';
+import type { RuntimeUser } from '../../services/userService/index.js';
 import type { FileInfo, FolderInfo } from '../../services/sessionService/types.js';
 import type { SubmitResult } from './tools.js';
 import type { LLMToolCall } from '../../utils/message.js';
@@ -23,7 +23,7 @@ export interface ExploreResult {
 export interface ExploreContext {
   session: Session;
   parent?: Session;
-  user: User;
+  user: RuntimeUser;
 }
 export interface ToolResult {
   output: string;

@@ -3,7 +3,7 @@ import { PrepareInput, DecideAction, ToolCalls, AskUser, UserResponse, SubmitRes
 import { AGENT_TOOLS } from './tools.js';
 import { orchestratorInputSchema, type OrchestratorContext } from './types.js';
 import { App } from '../../app.js';
-import { User } from '../../data/userRepository/types.js';
+import { RuntimeUser } from '../../services/userService/index.js';
 import { Session } from '../../services/sessionService/session.js';
 import { SystemMessage, UserMessage } from '../../utils/message.js';
 import { createSystemPrompt } from './prompts/index.js';
@@ -29,7 +29,7 @@ export class OrchestratorFlow extends Flow<App, OrchestratorContext>
 
   nodeConstructors = { PrepareInput, DecideAction, ToolCalls, AskUser, UserResponse, SubmitResult };
 
-  async createSession(app: App, user: User, parent: Session | undefined, input: { message: string }): Promise<Session> {
+  async createSession(app: App, user: RuntimeUser, parent: Session | undefined, input: { message: string }): Promise<Session> {
     const timezone = await app.data.taskRepository.getUserTimezone(user.id);
     const currentDate = new Date().toISOString();
     const agents = app.agents.getAgentsAsXml();
@@ -52,7 +52,7 @@ export class OrchestratorFlow extends Flow<App, OrchestratorContext>
     return session;
   }
 
-  override async restoreSession(_app: App, _user: User, session: Session): Promise<void> {
+  override async restoreSession(_app: App, _user: RuntimeUser, session: Session): Promise<void> {
     session.addAgentTools(AGENT_TOOLS as any);
   }
 }

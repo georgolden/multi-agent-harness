@@ -2,7 +2,7 @@ import { Flow, type FlowSchema } from '../../utils/agent/flow.js';
 import { PrepareInput, DecideAction, ToolCalls, Response } from './nodes.js';
 import { taskSchedulerInputSchema, type TaskSchedulerContext } from './types.js';
 import { App } from '../../app.js';
-import { User } from '../../data/userRepository/types.js';
+import { RuntimeUser } from '../../services/userService/index.js';
 import { Session } from '../../services/sessionService/session.js';
 import { createSystemPrompt } from './prompts/index.js';
 import { SystemMessage, UserMessage } from '../../utils/message.js';
@@ -26,7 +26,7 @@ export class TaskSchedulerFlow extends Flow<App, TaskSchedulerContext>
 
   nodeConstructors = { PrepareInput, DecideAction, ToolCalls, Response };
 
-  async createSession(app: App, user: User, _parent: Session | undefined, input: { message: string }): Promise<Session> {
+  async createSession(app: App, user: RuntimeUser, _parent: Session | undefined, input: { message: string }): Promise<Session> {
     const { data, services } = app;
 
     const userTasks = await data.taskRepository.getTasks(user.id);

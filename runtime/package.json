@@ -40,7 +40,7 @@
   },
   "dependencies": {
     "@agendajs/postgres-backend": "^2.0.0",
-    "@composio/core": "^0.6.8",
+    "@composio/core": "^0.6.10",
     "@fastify/cors": "^11.2.0",
     "@fastify/static": "^9.0.0",
     "@fastify/websocket": "^11.2.0",
@@ -60,7 +60,7 @@
     "openai": "^6.17.0",
     "pg": "^8.18.0",
     "pocketflow": "^1.0.4",
-    "prisma": "^7.5.0",
+    "prisma": "^6.19.3",
     "telegraf": "^4.16.3",
     "ws": "^8.19.0",
     "yaml": "^2.8.2",

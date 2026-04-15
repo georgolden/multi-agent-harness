@@ -3,7 +3,7 @@ import { PrepareInput, DecideAction, AskUser, SubmitTemplate, UserResponse, Writ
 import { fillTemplateInputSchema, type FillTemplateContext } from './types.js';
 import type { Static } from '@sinclair/typebox';
 import { App } from '../../app.js';
-import { User } from '../../data/userRepository/types.js';
+import { RuntimeUser } from '../../services/userService/index.js';
 import { Session } from '../../services/sessionService/session.js';
 import { createSystemPrompt } from './prompts/index.js';
 import { SystemMessage, UserMessage } from '../../utils/message.js';
@@ -29,7 +29,7 @@ export class FillTemplateFlow extends Flow<App, FillTemplateContext>
 
   nodeConstructors = { PrepareInput, DecideAction, WriteTempFile, AskUser, UserResponse, SubmitTemplate };
 
-  async createSession(app: App, user: User, parent: Session | undefined, input: Static<typeof fillTemplateInputSchema>): Promise<Session> {
+  async createSession(app: App, user: RuntimeUser, parent: Session | undefined, input: Static<typeof fillTemplateInputSchema>): Promise<Session> {
     const timezone = await app.data.taskRepository.getUserTimezone(user.id);
     const currentDate = new Date().toISOString();
     const systemPrompt = createSystemPrompt(currentDate, timezone, input.template);
