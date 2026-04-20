@@ -5,6 +5,7 @@ import { Sidebar } from './components/sidebar/Sidebar.js';
 import { ChatPanel } from './components/chat/ChatPanel.js';
 import { SessionsPanel } from './components/sessions/SessionsPanel.js';
 import { SchemaEditor } from './components/editor/SchemaEditor.js';
+import { ToolkitsView } from './components/toolkits/ToolkitsView.js';
 import type { AgentSession, AgentFlowSession } from './types.js';
 
 const queryClient = new QueryClient();
@@ -28,6 +29,7 @@ function Main() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [newSession, setNewSession] = useState<{ sessionId: string; flowName: string } | null>(null);
   const [editingAgent, setEditingAgent] = useState<string | null>(null);
+  const [showIntegrations, setShowIntegrations] = useState(false);
 
   const { data: builtinAgents, isLoading: loadingBuiltin } = trpc.listBuiltinAgents.useQuery();
   const { data: schemaAgents, isLoading: loadingSchema } = trpc.listSchemaAgents.useQuery();
@@ -69,6 +71,7 @@ function Main() {
           setSelectedSession(null);
           setActiveAgentSession(null);
           setEditingAgent(null);
+          setShowIntegrations(false);
           setActiveSchemaFlowName(schemaAgents?.some((a) => a.name === name) ? name : null);
         }}
         onEditAgent={(name) => {
@@ -76,10 +79,20 @@ function Main() {
           setSelectedAgent(null);
           setSelectedSession(null);
           setActiveAgentSession(null);
+          setShowIntegrations(false);
+        }}
+        onOpenToolkits={() => {
+          setShowIntegrations(true);
+          setEditingAgent(null);
+          setSelectedAgent(null);
+          setSelectedSession(null);
+          setActiveAgentSession(null);
         }}
       />
 
-      {editingAgent ? (
+      {showIntegrations ? (
+        <ToolkitsView onClose={() => setShowIntegrations(false)} />
+      ) : editingAgent ? (
         <SchemaEditor flowName={editingAgent} onClose={() => setEditingAgent(null)} />
       ) : (
         <ChatPanel

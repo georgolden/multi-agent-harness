@@ -6,22 +6,22 @@ import { AgenticLoopAgent } from './agentictLoop/index.js';
 import { AgentBuilderAgent } from './agentBuilder/index.js';
 import { OrchestratorAgent } from './orchestrator/index.js';
 import { type AgentFlowParameters } from './agentictLoop/flow.js';
-import { User } from '../data/userRepository/types.js';
+import { RuntimeUser } from '../services/userService/index.js';
 import { Session } from '../services/sessionService/session.js';
 import type { StoredAgenticLoopSchema } from '../data/agenticLoopSchemaRepository/types.js';
 import { Agent, type AgentSchema } from '../utils/agent/agent.js';
 
 export type AgentContext = {
-  user: User;
+  user: RuntimeUser;
   parent?: Session;
 };
 
 type AnyAgentClass = new (
   app: App,
-  user: User,
+  user: RuntimeUser,
   parent?: Session,
   schemaOverride?: AgentSchema,
-) => Agent<App, User, Session>;
+) => Agent<App, RuntimeUser, Session>;
 
 function escapeXml(str: string): string {
   return str
@@ -37,7 +37,7 @@ export class Agents {
 
   app: App;
   private agenticLoopSchemas: Map<string, StoredAgenticLoopSchema> = new Map();
-  private activeAgents: Set<Agent<App, User, Session>> = new Set();
+  private activeAgents: Set<Agent<App, RuntimeUser, Session>> = new Set();
 
   constructor(app: App) {
     this.app = app;
@@ -51,7 +51,7 @@ export class Agents {
     ];
     this.agentRegistry = new Map();
     for (const AgentClass of agentClasses) {
-      const instance = new AgentClass(app, null as unknown as User);
+      const instance = new AgentClass(app, null as unknown as RuntimeUser);
       this.agentRegistry.set(instance.name, AgentClass);
     }
   }
@@ -93,8 +93,10 @@ export class Agents {
           await this.app.data.agentSessionRepository.updateStatus(agentSession.id, 'failed');
           return;
         }
-        const user = await this.app.data.userRepository.getUser(agentSession.userId);
-        if (!user) {
+        let user: RuntimeUser;
+        try {
+          user = await this.app.services.userService.loadUser(agentSession.userId);
+        } catch {
           console.warn(`[Agents] Cannot restore agent session '${agentSession.id}': user not found`);
           await this.app.data.agentSessionRepository.updateStatus(agentSession.id, 'failed');
           return;
@@ -167,9 +169,9 @@ export class Agents {
     return Array.from(this.agenticLoopSchemas.values());
   }
 
-  getAgents(): Agent<App, User, Session>[] {
+  getAgents(): Agent<App, RuntimeUser, Session>[] {
     return Array.from(this.agentRegistry.values()).map(
-      (AgentClass) => new AgentClass(this.app, null as unknown as User),
+      (AgentClass) => new AgentClass(this.app, null as unknown as RuntimeUser),
     );
   }
 
@@ -181,7 +183,7 @@ export class Agents {
     const agents = agentNames
       ? agentNames.flatMap((n) => {
           const C = this.agentRegistry.get(n);
-          return C ? [new C(this.app, null as unknown as User)] : [];
+          return C ? [new C(this.app, null as unknown as RuntimeUser)] : [];
         })
       : this.getAgents();
 
@@ -211,7 +213,7 @@ export class Agents {
     agentName: string,
     context: AgentContext,
     parameters: { message: string },
-  ): Promise<Agent<App, User, Session>> {
+  ): Promise<Agent<App, RuntimeUser, Session>> {
     const AgentClass = this.agentRegistry.get(agentName);
     if (AgentClass) {
       return this._run(AgentClass, context, parameters);
@@ -228,7 +230,7 @@ export class Agents {
     schemaName: string,
     context: AgentContext,
     parameters: { message: string },
-  ): Promise<Agent<App, User, Session>> {
+  ): Promise<Agent<App, RuntimeUser, Session>> {
     const params: AgentFlowParameters = { name: schemaName, message: parameters.message };
     console.log(`[Agents.runSchemaAgent] name='${schemaName}'`);
     return this._run(AgenticLoopAgent, context, params);
@@ -238,7 +240,7 @@ export class Agents {
     AgentClass: AnyAgentClass,
     context: AgentContext,
     parameters: unknown,
-  ): Promise<Agent<App, User, Session>> {
+  ): Promise<Agent<App, RuntimeUser, Session>> {
     const agent = new AgentClass(this.app, context.user, context.parent);
 
     const { bus } = this.app.infra;
@@ -294,7 +296,7 @@ export class Agents {
     agentName: string,
     context: AgentContext,
     input: Record<string, unknown>,
-  ): Promise<Agent<App, User, Session>> {
+  ): Promise<Agent<App, RuntimeUser, Session>> {
     console.log(`[Agents.continueAgent] agentName='${agentName}' input=`, JSON.stringify(input));
     const { agentSessionRepository } = this.app.data;
     const sessions = await agentSessionRepository.getByUserId(context.user.id);
@@ -310,7 +312,7 @@ export class Agents {
     context: AgentContext,
     input: unknown,
     agentSessionId: string,
-  ): Promise<Agent<App, User, Session>> {
+  ): Promise<Agent<App, RuntimeUser, Session>> {
     const { bus } = this.app.infra;
     const { agentSessionRepository, flowSessionRepository } = this.app.data;
     const agent = new AgentClass(this.app, context.user, context.parent);
@@ -353,12 +355,12 @@ export class Agents {
     return agent;
   }
 
-  private _wire(agent: Agent<App, User, Session>, promise: Promise<unknown>): void {
+  private _wire(agent: Agent<App, RuntimeUser, Session>, promise: Promise<unknown>): void {
     this.activeAgents.add(agent);
     promise.finally(() => this.activeAgents.delete(agent));
   }
 
-  getActiveAgents(): Set<Agent<App, User, Session>> {
+  getActiveAgents(): Set<Agent<App, RuntimeUser, Session>> {
     return this.activeAgents;
   }
 }

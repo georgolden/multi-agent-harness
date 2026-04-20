@@ -1,6 +1,6 @@
 import { SidebarHeader } from './SidebarHeader.js';
 import { FeaturesSection } from './FeaturesSection.js';
-import { FlowsSection } from './FlowsSection.js';
+import { AgentsSection } from './AgentsSection.js';
 import type { Agent } from '../../types.js';
 
 interface SidebarProps {
@@ -12,6 +12,7 @@ interface SidebarProps {
   onToggleCollapse: () => void;
   onSelectAgent: (name: string) => void;
   onEditAgent: (name: string) => void;
+  onOpenToolkits: () => void;
 }
 
 export function Sidebar({
@@ -23,6 +24,7 @@ export function Sidebar({
   onToggleCollapse,
   onSelectAgent,
   onEditAgent,
+  onOpenToolkits,
 }: SidebarProps) {
   return (
     <aside
@@ -34,11 +36,11 @@ export function Sidebar({
 
       <div className="mx-3 h-px bg-gray-100" />
 
-      <FeaturesSection collapsed={collapsed} />
+      <FeaturesSection collapsed={collapsed} onOpenToolkits={onOpenToolkits} />
 
       {!collapsed && <div className="mx-3 h-px bg-gray-100 my-1" />}
 
-      <FlowsSection
+      <AgentsSection
         builtinAgents={builtinAgents}
         schemaAgents={schemaAgents}
         loading={loadingAgents}

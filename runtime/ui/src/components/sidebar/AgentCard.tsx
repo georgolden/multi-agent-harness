@@ -1,7 +1,7 @@
 import { ChevronRight, Pencil } from 'lucide-react';
 import type { Agent } from '../../types.js';
 
-interface FlowCardProps {
+interface AgentCardProps {
   agent: Agent;
   selected: boolean;
   collapsed: boolean;
@@ -22,7 +22,7 @@ function parseDescription(raw: string): { text: string; tags: string[] } {
   }
 }
 
-export function FlowCard({ agent, selected, collapsed, editable, onClick, onEdit }: FlowCardProps) {
+export function AgentCard({ agent, selected, collapsed, editable, onClick, onEdit }: AgentCardProps) {
   const { text, tags } = parseDescription(agent.description ?? '');
   const initials = agent.name
     .split(/[\s_-]+/)

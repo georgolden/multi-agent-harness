@@ -9,7 +9,7 @@ export const agentBuilderInputSchema = Type.Object({
 export type AgentBuilderInput = typeof agentBuilderInputSchema;
 
 export interface AgentBuilderContext {
-  user: User;
+  user: RuntimeUser;
   parent?: Session;
   session: Session;
 }

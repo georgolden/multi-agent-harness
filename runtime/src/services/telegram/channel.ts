@@ -14,8 +14,6 @@ import type { App } from '../../app.js';
 import { BaseChannel } from '../channel/baseChannel.js';
 import type { MessageDto, Channel } from '../channel/types.js';
 import type { SessionData } from '../sessionService/types.js';
-import type { User } from '../../data/userRepository/types.js';
-
 interface AuthState {
   authenticated: boolean;
   userId?: string;
@@ -28,11 +26,7 @@ export class TelegramChannel extends BaseChannel implements Channel {
   private receiveCallback?: (recipientId: string, message: MessageDto) => void;
 
   private readonly TEST_PASSWORD = 'test';
-  private readonly TEST_USER: User = {
-    id: 'test-user-1',
-    name: 'test',
-    timezone: 'UTC',
-  };
+  private readonly TEST_USER_ID = 'test-user-1';
 
   constructor(app: App, bot: Telegraf) {
     super('telegram', app);
@@ -72,7 +66,7 @@ export class TelegramChannel extends BaseChannel implements Channel {
         authenticated: true,
         userId: chatId.toString(),
       });
-      await ctx.reply(`Authenticated as user: ${this.TEST_USER.name}`);
+      await ctx.reply(`Authenticated as user: ${this.TEST_USER_ID}`);
     } else {
       await ctx.reply('Invalid password');
     }
@@ -104,10 +98,11 @@ export class TelegramChannel extends BaseChannel implements Channel {
       const sessionId = this.messageToSessionMap.get(messageKey);
 
       if (sessionId) {
+        const user = await this.app.services.userService.loadUser(this.TEST_USER_ID);
         const messageDto: MessageDto = {
           message: messageText,
           session: { id: sessionId } as SessionData,
-          user: this.TEST_USER,
+          user,
         };
 
         if (this.receiveCallback) {

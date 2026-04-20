@@ -82,6 +82,55 @@ async function* mergeEvents(
 }
 
 export const appRouter = router({
+  // ─── Toolkit / Integrations ───────────────────────────────────────────────
+
+  listToolkits: publicProcedure
+    .input(z.object({ provider: z.string().default('composio'), category: z.string().optional() }))
+    .query(async ({ ctx, input }) => {
+      return ctx.app.services.userToolkitService.listToolkits(input.provider, { category: input.category });
+    }),
+
+  listToolkitCategories: publicProcedure
+    .input(z.object({ provider: z.string().default('composio') }))
+    .query(async ({ ctx, input }) => {
+      return ctx.app.services.userToolkitService.listCategories(input.provider);
+    }),
+
+  getUserToolkits: publicProcedure.query(async ({ ctx }) => {
+    return ctx.app.services.userToolkitService.getUserToolkits(ctx.userId);
+  }),
+
+  initiateToolkitConnection: publicProcedure
+    .input(z.object({ provider: z.string().default('composio'), toolkitSlug: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      return ctx.app.services.userToolkitService.initiateConnection({
+        userId: ctx.userId,
+        provider: input.provider,
+        toolkitSlug: input.toolkitSlug,
+      });
+    }),
+
+  completeToolkitConnection: publicProcedure
+    .input(z.object({ provider: z.string().default('composio'), toolkitSlug: z.string(), externalUserId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      return ctx.app.services.userToolkitService.completeConnection({
+        userId: ctx.userId,
+        provider: input.provider,
+        toolkitSlug: input.toolkitSlug,
+        externalUserId: input.externalUserId,
+      });
+    }),
+
+  removeToolkit: publicProcedure
+    .input(z.object({ userToolkitId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      await ctx.app.services.userToolkitService.removeToolkit({
+        userId: ctx.userId,
+        userToolkitId: input.userToolkitId,
+      });
+      return { ok: true };
+    }),
+
   // ─── Queries ──────────────────────────────────────────────────────────────
 
   listBuiltinAgents: publicProcedure.query(({ ctx }) => {
@@ -177,8 +226,7 @@ export const appRouter = router({
   runAgent: publicProcedure
     .input(z.object({ agentName: z.string(), message: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const user = await ctx.app.data.userRepository.getUser(ctx.userId);
-      if (!user) throw new Error(`User '${ctx.userId}' not found`);
+      const user = await ctx.app.services.userService.loadUser(ctx.userId);
       ctx.webChannel.markUserActive(ctx.userId);
       const agent = await ctx.app.agents.runAgent(input.agentName, { user }, { message: input.message });
       const firstSession = await agent.firstSession;
@@ -188,8 +236,7 @@ export const appRouter = router({
   continueAgent: publicProcedure
     .input(z.object({ agentName: z.string(), message: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const user = await ctx.app.data.userRepository.getUser(ctx.userId);
-      if (!user) throw new Error(`User '${ctx.userId}' not found`);
+      const user = await ctx.app.services.userService.loadUser(ctx.userId);
       ctx.webChannel.markUserActive(ctx.userId);
       const agent = await ctx.app.agents.continueAgent(input.agentName, { user }, { message: input.message });
       const firstSession = await agent.firstSession;
@@ -201,8 +248,7 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       console.log(`[router.continueSchemaAgent] flowName='${input.flowName}' message='${input.message}'`);
       if (input.flowName === 'Agentic Loop') throw new Error(`[router.continueSchemaAgent] flowName is 'Agentic Loop' — UI failed to resolve schemaFlowName`);
-      const user = await ctx.app.data.userRepository.getUser(ctx.userId);
-      if (!user) throw new Error(`User '${ctx.userId}' not found`);
+      const user = await ctx.app.services.userService.loadUser(ctx.userId);
       ctx.webChannel.markUserActive(ctx.userId);
       const agent = await ctx.app.agents.continueAgent('Agentic Loop', { user }, { name: input.flowName, message: input.message });
       const firstSession = await agent.firstSession;
@@ -220,8 +266,7 @@ export const appRouter = router({
   sendMessage: publicProcedure
     .input(z.object({ sessionId: z.string(), message: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const user = await ctx.app.data.userRepository.getUser(ctx.userId);
-      if (!user) throw new Error(`User '${ctx.userId}' not found`);
+      const user = await ctx.app.services.userService.loadUser(ctx.userId);
       const session = await ctx.app.data.flowSessionRepository.getSession(input.sessionId);
       if (!session) throw new Error(`Session '${input.sessionId}' not found`);
       ctx.webChannel.markUserActive(ctx.userId);

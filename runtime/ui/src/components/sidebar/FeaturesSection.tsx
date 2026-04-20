@@ -1,33 +1,35 @@
-import { Zap, BrainCircuit, Workflow } from 'lucide-react';
-
-const FEATURES = [
-  { icon: BrainCircuit, label: 'AI Agents', color: 'text-violet-500', bg: 'bg-violet-50' },
-  { icon: Workflow, label: 'Flows', color: 'text-blue-500', bg: 'bg-blue-50' },
-  { icon: Zap, label: 'Real-time', color: 'text-amber-500', bg: 'bg-amber-50' },
-];
+import { Plug } from 'lucide-react';
 
 interface FeaturesSectionProps {
   collapsed: boolean;
+  onOpenToolkits: () => void;
 }
 
-export function FeaturesSection({ collapsed }: FeaturesSectionProps) {
-  if (collapsed) return null;
+export function FeaturesSection({ collapsed, onOpenToolkits }: FeaturesSectionProps) {
+  if (collapsed) {
+    return (
+      <div className="px-3 py-2 flex justify-center">
+        <button
+          onClick={onOpenToolkits}
+          className="p-2 rounded-xl text-gray-500 hover:text-violet-600 hover:bg-violet-50 transition-colors"
+          title="Toolkits"
+        >
+          <Plug size={18} />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="px-3 py-2">
-      <p className="text-xs font-medium text-gray-600 uppercase tracking-widest px-1 mb-2">Features</p>
-      <div className="flex gap-2">
-        {FEATURES.map(({ icon: Icon, label, color, bg }) => (
-          <div
-            key={label}
-            className={`flex flex-col items-center gap-1 flex-1 py-2 px-1 rounded-xl ${bg} opacity-60`}
-          >
-            <Icon size={16} className={color} />
-            <span className="text-xs text-gray-500 font-medium leading-none">{label}</span>
-          </div>
-        ))}
-      </div>
-      <p className="text-[10px] text-gray-500 text-center mt-2">More features coming soon</p>
+      <p className="text-xs font-medium text-gray-600 uppercase tracking-widest px-1 mb-2">Toolkits</p>
+      <button
+        onClick={onOpenToolkits}
+        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-violet-50 hover:bg-violet-100 text-violet-700 text-sm font-medium transition-colors"
+      >
+        <Plug size={15} />
+        Connect tools
+      </button>
     </div>
   );
 }

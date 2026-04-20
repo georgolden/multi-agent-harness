@@ -1,8 +1,8 @@
 import { Loader2 } from 'lucide-react';
-import { FlowCard } from './FlowCard.js';
+import { AgentCard } from './AgentCard.js';
 import type { Agent } from '../../types.js';
 
-interface FlowsSectionProps {
+interface AgentsSectionProps {
   builtinAgents: Agent[] | undefined;
   schemaAgents: Agent[] | undefined;
   loading: boolean;
@@ -12,7 +12,7 @@ interface FlowsSectionProps {
   onEditAgent: (name: string) => void;
 }
 
-export function FlowsSection({
+export function AgentsSection({
   builtinAgents,
   schemaAgents,
   loading,
@@ -20,7 +20,7 @@ export function FlowsSection({
   collapsed,
   onSelectAgent,
   onEditAgent,
-}: FlowsSectionProps) {
+}: AgentsSectionProps) {
   const hasBuiltin = builtinAgents && builtinAgents.length > 0;
   const hasSchema = schemaAgents && schemaAgents.length > 0;
 
@@ -42,7 +42,7 @@ export function FlowsSection({
           )}
           <div className="flex flex-col gap-1">
             {builtinAgents!.map((agent) => (
-              <FlowCard
+              <AgentCard
                 key={agent.name}
                 agent={agent}
                 selected={selectedAgent === agent.name}
@@ -64,7 +64,7 @@ export function FlowsSection({
           )}
           <div className="flex flex-col gap-1">
             {schemaAgents!.map((agent) => (
-              <FlowCard
+              <AgentCard
                 key={agent.name}
                 agent={agent}
                 selected={selectedAgent === agent.name}

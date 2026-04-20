@@ -20,11 +20,7 @@ async function runAgentFlow(
   { flowName, userId, message }: { flowName: string; userId: string; message: string },
 ) {
   try {
-    const user = await app.data.userRepository.getUser(userId);
-    if (!user) {
-      console.error(`[runAgentFlow] User "${userId}" not found`);
-      return;
-    }
+    const user = await app.services.userService.loadUser(userId);
     const agent = await app.agents.runAgent(flowName, { user }, { message });
     await agent.runPromise;
   } catch (error) {
