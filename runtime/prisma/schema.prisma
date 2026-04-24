@@ -121,7 +121,7 @@ model AgenticLoopSchema {
   systemPrompt        String   @map("system_prompt")
   toolNames           String[] @map("tool_names")
   skillNames          String[] @map("skill_names")
-  toolkitSlugs        String[] @default([]) @map("toolkit_slugs")
+  toolkits            Json     @default("[]") @map("toolkit_slugs")
   contextPaths        Json     @map("context_paths")
   callLlmOptions      Json     @map("call_llm_options")
   messageWindowConfig Json     @map("message_window_config")
