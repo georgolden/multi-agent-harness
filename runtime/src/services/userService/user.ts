@@ -3,6 +3,7 @@ import type { UserToolkitData } from '../../data/userToolkitRepository/types.js'
 import type { App } from '../../app.js';
 import type { AgentTool } from '../../types.js';
 import { providerToolToAgentTool } from '../toolProviders/toAgentTool.js';
+import type { ToolkitConfig } from '../../agents/agentictLoop/flow.js';
 
 /**
  * RuntimeUser wraps the DB User record with their connected toolkits.
@@ -37,12 +38,17 @@ export class RuntimeUser {
 
   /**
    * Fetch tool schemas from each provider and convert to AgentTool[].
-   * Pass toolkitSlugs to limit which toolkits are included.
-   * If toolkitSlugs is undefined, all connected toolkits are included.
+   * Pass toolkitConfigs to limit which toolkits and which tools within each toolkit are included.
+   * If toolkitConfigs is undefined, all tools from all connected toolkits are included.
+   * If a ToolkitConfig has an empty allowedTools array, all tools from that toolkit are included.
    */
-  async buildAgentTools(toolkitSlugs?: string[]): Promise<(AgentTool & { toolkitSlug: string })[]> {
-    const filtered = toolkitSlugs
-      ? this.toolkits.filter((t) => toolkitSlugs.includes(t.toolkitSlug))
+  async buildAgentTools(toolkitConfigs?: ToolkitConfig[]): Promise<(AgentTool & { toolkitSlug: string })[]> {
+    const configMap = toolkitConfigs
+      ? new Map(toolkitConfigs.map((c) => [c.slug, c.allowedTools]))
+      : undefined;
+
+    const filtered = configMap
+      ? this.toolkits.filter((t) => configMap.has(t.toolkitSlug))
       : this.toolkits;
 
     if (filtered.length === 0) return [];
@@ -57,9 +63,11 @@ export class RuntimeUser {
         const provider = this.app.services.toolProviderRegistry.get(toolkit.provider);
         const providerData = toolkit.providerData as { externalUserId: string; authConfigId: string };
 
+        const allowedTools = configMap?.get(toolkit.toolkitSlug);
         const schemas = await provider.getToolSchemas({
           externalUserId: providerData.externalUserId,
           authConfigId: providerData.authConfigId,
+          ...(allowedTools && allowedTools.length > 0 ? { toolSlugs: allowedTools } : {}),
         });
 
         return schemas.map((schema) =>

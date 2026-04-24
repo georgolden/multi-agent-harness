@@ -15,7 +15,7 @@ import type {
   ToolSchema,
 } from './types.js';
 import type { RuntimeUser } from '../userService/index.js';
-import { UserMessage } from '../../utils/message.js';
+import { AssistantTextMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
 
 /**
  * Session — a live, self-updating object backed by the SessionDataRepository.
@@ -154,6 +154,17 @@ export class Session {
     await this.app.data.flowSessionRepository.rollbackNodeTransaction(this.sessionData.id);
   }
 
+  /**
+   * Replace (or insert) the system prompt as the first message.
+   * Also updates `session.systemPrompt` so callers see the new value immediately.
+   */
+  async upsertSystemPrompt(content: string): Promise<this> {
+    const activeMessages = await this.app.data.flowSessionRepository.upsertSystemPrompt(this.sessionData.id, content);
+    this.sessionData.systemPrompt = content;
+    this.sessionData.activeMessages = activeMessages;
+    return this;
+  }
+
   async setFlowSchema(schema: unknown): Promise<this> {
     await this.app.data.flowSessionRepository.setFlowSchema(this.sessionData.id, schema);
     this.sessionData.flowSchema = schema;
@@ -246,6 +257,18 @@ export class Session {
     return this.addMessages([{ message: new UserMessage(fullContent).toJSON() }]);
   }
 
+  /** Add a tool result message carrying a JSON-encoded error payload for the given tool call. */
+  async addToolError(toolCallId: string, error: string): Promise<this> {
+    return this.addMessages([
+      {
+        message: new ToolResultMessage({
+          toolCallId,
+          content: JSON.stringify({ error }),
+        }).toJSON(),
+      },
+    ]);
+  }
+
   // ─── Context / schema mutations ───────────────────────────────────────────
 
   async addContextFiles(files: FileInfo[]): Promise<this> {
@@ -322,7 +345,12 @@ export class Session {
    * Does NOT change status — call complete() / fail() separately if needed.
    */
   async respond(user: RuntimeUser, message: string): Promise<this> {
+    console.log(`[Session.respond] sessionId=${this.sessionData.id} message=${message.slice(0, 80)}`);
+    await this.addMessages([{ message: new AssistantTextMessage({ text: message }).toJSON() }]);
+    const listenerCount = this.app.infra.bus.listenerCount('session:message');
+    console.log(`[Session.respond] emitting session:message listenerCount=${listenerCount}`);
     this.app.infra.bus.emit('session:message', { session: this.sessionData, message, user: user });
+    console.log(`[Session.respond] emitted session:message`);
     return this;
   }
 

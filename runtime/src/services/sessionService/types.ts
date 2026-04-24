@@ -41,7 +41,7 @@ export interface CreateSessionParams {
   sessionId?: string;
   userId: string;
   flowName: string;
-  systemPrompt: string;
+  systemPrompt?: string;
   userPromptTemplate?: string;
   parentSessionId?: string;
   messageWindowConfig?: MessageWindowConfig;

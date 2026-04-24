@@ -146,14 +146,16 @@ export class ComposioService implements ToolProvider {
   async getToolSchemas(params: {
     externalUserId: string;
     authConfigId: string;
+    toolSlugs?: string[];
     limit?: number;
   }): Promise<ProviderToolSchema[]> {
-    const { authConfigId, limit } = params;
+    const { authConfigId, toolSlugs, limit } = params;
 
-    const tools = await this.composio.tools.getRawComposioTools({
-      authConfigIds: [authConfigId],
-      ...(limit ? { limit } : {}),
-    });
+    const tools = await this.composio.tools.getRawComposioTools(
+      toolSlugs && toolSlugs.length > 0
+        ? { tools: toolSlugs }
+        : { authConfigIds: [authConfigId], ...(limit ? { limit } : {}) },
+    );
 
     const arr = Array.isArray(tools) ? tools : (tools as any)?.items ?? [];
     return arr.map((t: any): ProviderToolSchema => ({

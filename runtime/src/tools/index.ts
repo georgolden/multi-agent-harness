@@ -239,4 +239,14 @@ export class Tools {
   getSlice(names: string[]): Tool[] {
     return names.filter((name) => name in this.toolsMap).map((name) => this.toolsMap[name]);
   }
+
+  /**
+   * Returns a formatted string listing all built-in tool names and descriptions.
+   * Used to inject available tools into system prompts.
+   */
+  getBuiltinToolDescriptions(): string {
+    return Object.entries(this.toolsMap)
+      .map(([name, tool]) => `- ${name}: ${tool.description ?? ''}`)
+      .join('\n');
+  }
 }

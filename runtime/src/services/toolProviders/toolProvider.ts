@@ -84,6 +84,7 @@ export interface ToolProvider {
   getToolSchemas(params: {
     externalUserId: string;
     authConfigId: string;
+    toolSlugs?: string[];
     limit?: number;
   }): Promise<ProviderToolSchema[]>;
 

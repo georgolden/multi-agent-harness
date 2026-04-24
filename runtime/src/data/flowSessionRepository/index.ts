@@ -154,7 +154,7 @@ export class SessionDataRepository {
         id,
         userId: params.userId,
         flowName: params.flowName,
-        systemPrompt: params.systemPrompt,
+        systemPrompt: params.systemPrompt || '',
         userPromptTemplate: params.userPromptTemplate,
         status: 'running',
         parentSessionId: params.parentSessionId,
@@ -214,6 +214,37 @@ export class SessionDataRepository {
     });
     this.app.infra.bus.emit('flowSession:statusUpdated', { sessionId, status });
     console.log(`[SessionDataRepository] Updated session '${sessionId}' status to '${status}'`);
+  }
+
+  /**
+   * Replace the system prompt message (always the first message) in-place.
+   * Also updates the `systemPrompt` column and rewrites both `messages` and
+   * `activeMessages` so every future active window sees the updated prompt.
+   */
+  async upsertSystemPrompt(sessionId: string, content: string): Promise<SessionMessage[]> {
+    const session = await this.getSession(sessionId);
+    if (!session) throw new Error(`Session '${sessionId}' not found`);
+
+    const systemMsg: SessionMessage = {
+      timestamp: new Date(),
+      message: { role: 'system', content },
+    };
+
+    const allMessages: SessionMessage[] =
+      session.messages.length > 0 && (session.messages[0].message as any)?.role === 'system'
+        ? [systemMsg, ...session.messages.slice(1)]
+        : [systemMsg, ...session.messages];
+
+    const activeMessages = computeActiveWindow(allMessages, session.messageWindowConfig);
+
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({
+      where: { id: sessionId },
+      data: { systemPrompt: content, messages: allMessages as any, activeMessages: activeMessages as any },
+    });
+
+    console.log(`[SessionDataRepository] Upserted system prompt for session '${sessionId}'`);
+    return activeMessages;
   }
 
   async addMessages(
