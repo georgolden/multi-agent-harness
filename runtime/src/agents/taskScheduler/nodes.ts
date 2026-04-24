@@ -7,22 +7,31 @@ import { callLlmWithTools } from '../../utils/callLlm.js';
 import { createToolHandler, TOOLS } from './tools.js';
 import type { App } from '../../app.js';
 import type { TaskSchedulerContext } from './types.js';
-import { AssistantMessage, ToolResultMessage, type LLMToolCall, SystemMessage } from '../../utils/message.js';
+import { AssistantMessage, ToolResultMessage, UserMessage, type LLMToolCall } from '../../utils/message.js';
+import { createSystemPrompt } from './prompts/index.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
-/**
- * PrepareInput: Validate session is present in context (session is created before flow runs)
- */
-export class PrepareInput extends Node<App, TaskSchedulerContext, string, { default: void }> {
+export class PrepareInput extends Node<App, TaskSchedulerContext, { message: string } | undefined, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { session } = p.context;
-    console.log(`[PrepareInput.run] Using session '${session.id}'`);
-    return packet({
-      data: undefined,
-      context: p.context,
-      deps: p.deps,
-    });
+    const { session, user } = p.context;
+    const app = p.deps;
+
+    const userTasks = await app.data.taskRepository.getTasks(user.id);
+    const timezone = await app.data.taskRepository.getUserTimezone(user.id);
+    const currentDate = new Date().toISOString();
+    const tasksSchema = app.tasks.getTasksSchema();
+
+    const systemPrompt = createSystemPrompt(currentDate, timezone, JSON.stringify(userTasks), tasksSchema);
+    await session.upsertSystemPrompt(systemPrompt);
+
+    const input = p.data as { message?: string } | undefined;
+    if (input?.message) {
+      await session.addUserMessage(new UserMessage(input.message));
+    }
+
+    console.log(`[taskScheduler.PrepareInput] session='${session.id}' firstEntry=${!!input?.message}`);
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 

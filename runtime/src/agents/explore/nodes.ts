@@ -15,29 +15,31 @@ import type { SubmitResult as SubmitResultArgs } from './tools.js';
 import { FolderInfo } from '../../utils/folder.js';
 import { FileInfo } from '../../utils/file.js';
 import {
-  SystemMessage,
   UserMessage,
   AssistantMessage,
   ToolResultMessage,
   type LLMToolCall,
 } from '../../utils/message.js';
-import type { ExploreContext, ExploreResult } from './types.js';
+import type { ExploreContext, ExploreInput, ExploreResult } from './types.js';
 import { App } from '../../app.js';
+import { createSystemPrompt, wrapUserPrompt } from './prompts/index.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
-/**
- * PrepareInput: Create session with system prompt and user message (runs once)
- */
-export class PrepareInput extends Node<App, ExploreContext, string, { default: void }> {
+export class PrepareInput extends Node<App, ExploreContext, ExploreInput | undefined, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session } = p.context;
-    console.log(`[PrepareInput.run] Using session '${session.id}'`);
-    return packet({
-      data: undefined,
-      context: p.context,
-      deps: p.deps,
-    });
+
+    const systemPrompt = createSystemPrompt();
+    await session.upsertSystemPrompt(systemPrompt);
+
+    const input = p.data;
+    if (input?.message) {
+      await session.addUserMessage(new UserMessage(wrapUserPrompt(input.message)));
+    }
+
+    console.log(`[explore.PrepareInput] session='${session.id}' firstEntry=${!!input?.message}`);
+    return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 

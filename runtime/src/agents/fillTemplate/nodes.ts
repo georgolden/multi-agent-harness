@@ -13,19 +13,31 @@ import { Node, packet, exit, pause } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import { TOOLS } from './tools.js';
 import { AssistantMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
-import type { FillTemplateContext, FillTemplateInput } from './types.js';
+import type { FillTemplateContext } from './types.js';
 import type { App } from '../../app.js';
 import type { LLMToolCall } from '../../utils/message.js';
+import { createSystemPrompt } from './prompts/index.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
-/**
- * PrepareInput: validate session is present in context (session is created before flow runs)
- */
-export class PrepareInput extends Node<App, FillTemplateContext, FillTemplateInput, { default: void }> {
+export class PrepareInput extends Node<App, FillTemplateContext, { message: string; template: string } | undefined, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { session } = p.context;
-    console.log(`[PrepareInput.run] Using session '${session.id}'`);
+    const { session, user } = p.context;
+    const app = p.deps;
+    const input = p.data;
+
+    if (input?.template) {
+      const timezone = await app.data.taskRepository.getUserTimezone(user.id);
+      const currentDate = new Date().toISOString();
+      const systemPrompt = createSystemPrompt(currentDate, timezone, input.template);
+      await session.upsertSystemPrompt(systemPrompt);
+    }
+
+    if (input?.message) {
+      await session.addUserMessage(new UserMessage(input.message));
+    }
+
+    console.log(`[fillTemplate.PrepareInput] session='${session.id}' firstEntry=${!!input?.message}`);
     return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }

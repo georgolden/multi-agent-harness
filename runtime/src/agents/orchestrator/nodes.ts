@@ -17,18 +17,31 @@
 import { Node, packet, exit, pause, batch, type SinglePacket, type BatchPacket } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import { TOOL_SCHEMAS } from './tools.js';
-import { AssistantMessage, SystemMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
-import type { OrchestratorContext, OrchestratorInput } from './types.js';
+import { AssistantMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
+import type { OrchestratorContext } from './types.js';
 import type { App } from '../../app.js';
-
 import type { LLMToolCall } from '../../utils/message.js';
+import { createSystemPrompt } from './prompts/index.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
-export class PrepareInput extends Node<App, OrchestratorContext, OrchestratorInput, { default: void }> {
+export class PrepareInput extends Node<App, OrchestratorContext, { message: string } | undefined, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { session } = p.context;
-    console.log(`[orchestrator.PrepareInput] Using session '${session.id}'`);
+    const { session, user } = p.context;
+    const app = p.deps;
+    const input = p.data;
+
+    const timezone = await app.data.taskRepository.getUserTimezone(user.id);
+    const currentDate = new Date().toISOString();
+    const agents = app.agents.getAgentsAsXml();
+    const systemPrompt = createSystemPrompt(currentDate, timezone, user.name ?? user.id, agents);
+    await session.upsertSystemPrompt(systemPrompt);
+
+    if (input?.message) {
+      await session.addUserMessage(new UserMessage(input.message));
+    }
+
+    console.log(`[orchestrator.PrepareInput] session='${session.id}' firstEntry=${!!input?.message}`);
     return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }

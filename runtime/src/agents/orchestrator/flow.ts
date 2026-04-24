@@ -3,14 +3,9 @@ import { PrepareInput, DecideAction, ToolCalls, AskUser, UserResponse, SubmitRes
 import { AGENT_TOOLS } from './tools.js';
 import { orchestratorInputSchema, type OrchestratorContext } from './types.js';
 import { App } from '../../app.js';
-import { RuntimeUser } from '../../services/userService/index.js';
 import { Session } from '../../services/sessionService/session.js';
-import { SystemMessage, UserMessage } from '../../utils/message.js';
-import { createSystemPrompt } from './prompts/index.js';
 
-export class OrchestratorFlow extends Flow<App, OrchestratorContext>
-  {
-
+export class OrchestratorFlow extends Flow<App, OrchestratorContext> {
   description =
     "Orchestrator flow — understands the user's request, breaks it into tasks, and dispatches the right agents. Routes simple tasks directly to spawn_agent, uses run_agent when output is needed for subsequent steps, and asks the user only when ambiguity would cause the wrong outcome.";
   parameters = orchestratorInputSchema;
@@ -20,39 +15,27 @@ export class OrchestratorFlow extends Flow<App, OrchestratorContext>
     nodes: {
       PrepareInput:  'DecideAction',
       DecideAction:  { tool_calls: 'ToolCalls', ask_user: 'AskUser', submit_result: 'SubmitResult' },
-      ToolCalls:     'DecideAction',
+      ToolCalls:     'PrepareInput',
       AskUser:       { pause: 'UserResponse' },
-      UserResponse:  'DecideAction',
+      UserResponse:  'PrepareInput',
       SubmitResult:  null,
     },
   };
 
   nodeConstructors = { PrepareInput, DecideAction, ToolCalls, AskUser, UserResponse, SubmitResult };
 
-  async createSession(app: App, user: RuntimeUser, parent: Session | undefined, input: { message: string }): Promise<Session> {
-    const timezone = await app.data.taskRepository.getUserTimezone(user.id);
-    const currentDate = new Date().toISOString();
-    const agents = app.agents.getAgentsAsXml();
-    const systemPrompt = createSystemPrompt(currentDate, timezone, user.name ?? user.id, agents);
-
+  async createSession(app: App, user: unknown, parent: Session | undefined, _input: { message: string }): Promise<Session> {
     const session = await app.services.sessionService.create({
       parentSessionId: parent?.id,
-      userId: user.id,
+      userId: (user as { id: string }).id,
       flowName: this.constructor.name,
-      systemPrompt,
     });
-
     session.addAgentTools(AGENT_TOOLS as any);
-
-    await session.addMessages([{ message: new SystemMessage(systemPrompt).toJSON() }]);
-
-    await session.addUserMessage(new UserMessage(input.message));
     await session.setFlowSchema(this.toSchema());
-
     return session;
   }
 
-  override async restoreSession(_app: App, _user: RuntimeUser, session: Session): Promise<void> {
+  override async restoreSession(_app: App, _user: unknown, session: Session): Promise<void> {
     session.addAgentTools(AGENT_TOOLS as any);
   }
 }
