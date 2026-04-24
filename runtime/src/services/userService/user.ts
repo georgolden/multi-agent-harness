@@ -11,12 +11,10 @@ import type { ToolkitConfig } from '../../agents/agentictLoop/flow.js';
  */
 export class RuntimeUser {
   readonly data: User;
-  readonly toolkits: UserToolkitData[];
   private readonly app: App;
 
-  constructor(data: User, toolkits: UserToolkitData[], app: App) {
+  constructor(data: User, app: App) {
     this.data = data;
-    this.toolkits = toolkits;
     this.app = app;
   }
 
@@ -32,8 +30,17 @@ export class RuntimeUser {
     return this.data.timezone;
   }
 
-  getToolkit(provider: string, toolkitSlug: string): UserToolkitData | undefined {
-    return this.toolkits.find((t) => t.provider === provider && t.toolkitSlug === toolkitSlug);
+  /**
+   * Fetch the user's connected toolkits fresh from the repository.
+   * Always hits the DB so newly authorized toolkits show up immediately.
+   */
+  async getToolkits(): Promise<UserToolkitData[]> {
+    return this.app.data.userToolkitRepository.getToolkits(this.data.id);
+  }
+
+  async getToolkit(provider: string, toolkitSlug: string): Promise<UserToolkitData | undefined> {
+    const toolkits = await this.getToolkits();
+    return toolkits.find((t) => t.provider === provider && t.toolkitSlug === toolkitSlug);
   }
 
   /**
@@ -47,9 +54,10 @@ export class RuntimeUser {
       ? new Map(toolkitConfigs.map((c) => [c.slug, c.allowedTools]))
       : undefined;
 
+    const toolkits = await this.getToolkits();
     const filtered = configMap
-      ? this.toolkits.filter((t) => configMap.has(t.toolkitSlug))
-      : this.toolkits;
+      ? toolkits.filter((t) => configMap.has(t.toolkitSlug))
+      : toolkits;
 
     if (filtered.length === 0) return [];
 

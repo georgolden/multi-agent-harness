@@ -19,13 +19,8 @@ export class UserService {
    * Returns a RuntimeUser that can build agent tools on demand.
    */
   async loadUser(userId: string): Promise<RuntimeUser> {
-    const [user, toolkits] = await Promise.all([
-      this.app.data.userRepository.getUser(userId),
-      this.app.data.userToolkitRepository.getToolkits(userId),
-    ]);
-
+    const user = await this.app.data.userRepository.getUser(userId);
     if (!user) throw new Error(`[UserService] User not found: ${userId}`);
-
-    return new RuntimeUser(user, toolkits, this.app);
+    return new RuntimeUser(user, this.app);
   }
 }

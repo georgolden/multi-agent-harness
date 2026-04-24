@@ -31,9 +31,10 @@ export class PrepareInput extends Node<App, AgentBuilderContext, { message: stri
     // Regenerate and upsert system prompt — runs on every entry including loop-backs,
     // so newly connected toolkits are immediately visible to the LLM.
     const builtinTools = p.deps.tools.getBuiltinToolDescriptions();
+    const userToolkits = await user.getToolkits();
     const toolkits =
-      user.toolkits.length > 0
-        ? user.toolkits.map((t) => `- ${t.toolkitSlug} (${t.name}): ${t.description}`).join('\n')
+      userToolkits.length > 0
+        ? userToolkits.map((t) => `- ${t.toolkitSlug} (${t.name}): ${t.description}`).join('\n')
         : '(none connected)';
 
     const systemPrompt = createSystemPrompt({ builtinTools, toolkits });
@@ -129,9 +130,10 @@ export class GetToolkitTools extends Node<App, AgentBuilderContext, LLMToolCall,
 
     console.log(`[agentBuilder.GetToolkitTools] slugs=${JSON.stringify(toolkit_slugs)} session='${session.id}'`);
 
+    const userToolkits = await user.getToolkits();
     const results: Record<string, string[]> = {};
     for (const slug of toolkit_slugs) {
-      const toolkit = user.toolkits.find((t) => t.toolkitSlug === slug);
+      const toolkit = userToolkits.find((t) => t.toolkitSlug === slug);
       if (!toolkit) {
         results[slug] = [];
         continue;
