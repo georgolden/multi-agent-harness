@@ -52,6 +52,15 @@ type RawMessage = { message: { role: string; content: unknown; tool_calls?: unkn
 function parseMessages(rawMessages: RawMessage[], tempFiles: TempFile[], sessionPrefix = ''): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   const toolCallMsgByCallId = new Map<string, ChatMessage>();
+  // Track which temp file names have been written so far (by name, latest content from tempFiles)
+  const writtenFileNames = new Set<string>();
+  const tempFilesByName = new Map(tempFiles.map((f) => [f.name, f]));
+
+  const snapshotTempFiles = (): TempFile[] | undefined => {
+    if (writtenFileNames.size === 0) return undefined;
+    const files = [...writtenFileNames].map((n) => tempFilesByName.get(n)).filter((f): f is TempFile => !!f);
+    return files.length > 0 ? files : undefined;
+  };
 
   for (let i = 0; i < rawMessages.length; i++) {
     const m = rawMessages[i];
@@ -78,6 +87,15 @@ function parseMessages(rawMessages: RawMessage[], tempFiles: TempFile[], session
           msgs.push({ id, role: 'result', content: '', resultData, timestamp: ts });
           continue;
         }
+        // Track write_temp_file calls so we can attach them to the next text message
+        for (const tc of rawCalls) {
+          if (tc.function.name === 'write_temp_file') {
+            try {
+              const args = JSON.parse(tc.function.arguments) as { name?: string };
+              if (args.name) writtenFileNames.add(args.name);
+            } catch { /* ignore */ }
+          }
+        }
         const calls: ToolCallInfo[] = rawCalls.map((tc) => ({
           id: tc.id,
           name: tc.function.name,
@@ -89,7 +107,8 @@ function parseMessages(rawMessages: RawMessage[], tempFiles: TempFile[], session
         continue;
       }
       const text = extractText(content);
-      if (text) msgs.push({ id, role: 'assistant', content: text, timestamp: ts });
+      console.log(`[parseMessages] assistant text msg id=${id} textLen=${text.length} text=${text.slice(0, 60)}`);
+      if (text) msgs.push({ id, role: 'assistant', content: text, tempFiles: snapshotTempFiles(), timestamp: ts });
       continue;
     }
 
@@ -155,7 +174,7 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
   const continueSchemaAgent = trpc.continueSchemaAgent.useMutation();
   const utils = trpc.useUtils();
 
-  const { data: sessionData } = trpc.getSession.useQuery(
+  const { data: sessionData, refetch: refetchSession } = trpc.getSession.useQuery(
     { sessionId: activeFlowSessionId ?? '' },
     { enabled: !!activeFlowSessionId },
   );
@@ -184,7 +203,10 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
       historyMessages.push(...parseMessages(prev.messages ?? [], prev.tempFiles ?? [], `${previousSessionIds[qi]}-`));
     }
 
-    const current = parseMessages(data.messages ?? [], tempFiles, `${activeFlowSessionId}-`);
+    const rawMsgs = data.messages ?? [];
+    console.log(`[ChatPanel.useEffect] raw messages count=${rawMsgs.length} last3=${JSON.stringify(rawMsgs.slice(-3).map((m: RawMessage) => ({ role: m.message.role, contentLen: String(m.message.content ?? '').length })))}`);
+    const current = parseMessages(rawMsgs, tempFiles, `${activeFlowSessionId}-`);
+    console.log(`[ChatPanel.useEffect] setMessages count=${current.length} sessionId=${activeFlowSessionId}`);
     setMessages([...historyMessages, ...current]);
     setSessionTempFiles(tempFiles);
     setSessionId(activeFlowSessionId);
@@ -198,19 +220,51 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
     {},
     {
       onData(event) {
+        console.log(`[ChatPanel.onData] type=${event.type} activeFlowSessionId=${activeFlowSessionId}`);
         if (event.type === 'session:message:update') {
           const sid = (event as { sessionId?: string }).sessionId ?? '';
-          // Only refetch sessions we're currently displaying (active + previous flow sessions)
           const trackedIds = new Set([activeFlowSessionId, ...flowSessions.map((fs) => fs.id)].filter(Boolean));
+          console.log(`[ChatPanel.onData] session:message:update sid=${sid} tracked=${[...trackedIds].join(',')}`);
           if (sid && trackedIds.has(sid)) {
+            console.log(`[ChatPanel.onData] invalidating getSession sid=${sid}`);
             void utils.getSession.invalidate({ sessionId: sid });
           }
         }
         if (event.type === 'session:statusChange') {
           const e = event as { type: string; to: string; sessionId?: string };
           const sid = e.sessionId ?? '';
+          console.log(`[ChatPanel.onData] session:statusChange sid=${sid} to=${e.to} activeFlowSessionId=${activeFlowSessionId}`);
           if (sid) void utils.getSession.invalidate({ sessionId: sid });
+          if (sid === activeFlowSessionId) {
+            console.log(`[ChatPanel.onData] refetchSession for activeFlowSessionId=${activeFlowSessionId}`);
+            void refetchSession();
+            // On terminal states, the submit_result message commit may race with the
+            // status change. Refetch once more shortly after to guarantee the result lands.
+            if (e.to === 'completed' || e.to === 'failed') {
+              setTimeout(() => { void refetchSession(); }, 250);
+            }
+          }
           setLocalAgentStatus(e.to);
+        }
+        if (event.type === 'session:message') {
+          const e = event as { type: string; sessionId?: string; message?: string };
+          const sid = e.sessionId ?? '';
+          const trackedIds = new Set([activeFlowSessionId, ...flowSessions.map((fs) => fs.id)].filter(Boolean));
+          console.log(`[ChatPanel.onData] session:message sid=${sid} message=${String(e.message).slice(0, 80)}`);
+          // Optimistic append — ensures the assistant message appears immediately
+          // even if the subsequent refetch is delayed. Dedup against the last message
+          // so we don't double-render once the refetch lands.
+          if (e.message && sid === activeFlowSessionId) {
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (last?.role === 'assistant' && last.content === e.message) return prev;
+              return [...prev, { id: `live-${Date.now()}`, role: 'assistant', content: e.message!, timestamp: new Date() }];
+            });
+          }
+          // Also invalidate so the canonical server state lands and reconciles.
+          if (sid && trackedIds.has(sid)) {
+            void utils.getSession.invalidate({ sessionId: sid });
+          }
         }
       },
     },

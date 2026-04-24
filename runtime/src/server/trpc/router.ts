@@ -293,44 +293,34 @@ export const appRouter = router({
     console.log(`[streamEvents] subscription started userId=${userId} sessionId=${sessionId ?? 'any'}`);
 
     for await (const [eventName, data] of mergeEvents(bus, BUS_EVENT_NAMES, abortSignal)) {
-      console.log(`[streamEvents] raw event name=${eventName} data=${JSON.stringify(data).slice(0, 200)}`);
-      if (eventName === 'session:statusChange' || eventName === 'session:message:update') {
-        if (data['userId'] !== userId) {
-          console.log(`[streamEvents] skip ${eventName}: userId mismatch (event=${data['userId']} ctx=${userId})`);
-          continue;
+      // Wrap every iteration in try/catch — a single malformed payload must never
+      // kill the generator, or subsequent events (statusChange, message:update) go missing.
+      try {
+        if (eventName === 'session:statusChange' || eventName === 'session:message:update') {
+          if (data['userId'] !== userId) continue;
+          if (eventName === 'session:message:update' && sessionId && data['sessionId'] !== sessionId) continue;
+          yield { type: eventName, ...data } as BusEvent;
+        } else if (eventName === 'session:message') {
+          const sess = data['session'] as Record<string, unknown> | undefined;
+          if (sess?.['userId'] !== userId) continue;
+          if (sessionId && sess?.['id'] !== sessionId) continue;
+          // Emit only the small, safe subset — the full sessionData can carry
+          // non-serializable fields that break the subscription stream.
+          yield {
+            type: 'session:message',
+            sessionId: sess?.['id'] as string,
+            message: String(data['message'] ?? ''),
+          } satisfies BusEvent;
+        } else if (
+          eventName === 'flow:pause' ||
+          eventName === 'flow:resume' ||
+          eventName === 'flow:exit' ||
+          eventName === 'flow:error'
+        ) {
+          yield { type: eventName, ...data } as BusEvent;
         }
-        // session:statusChange is not filtered by sessionId — child sessions complete
-        // under a different id than the root session the client subscribed to.
-        // session:message:update is filtered so the client only refetches relevant sessions.
-        if (eventName === 'session:message:update' && sessionId && data['sessionId'] !== sessionId) {
-          console.log(`[streamEvents] skip ${eventName}: sessionId mismatch (event=${data['sessionId']} filter=${sessionId})`);
-          continue;
-        }
-        console.log(`[streamEvents] yield ${eventName} sessionId=${data['sessionId']}`);
-        yield { type: eventName, ...data } as BusEvent;
-      } else if (eventName === 'session:message') {
-        const sess = data['session'] as Record<string, unknown> | undefined;
-        if (sess?.['userId'] !== userId) {
-          console.log(`[streamEvents] skip session:message: userId mismatch (event=${sess?.['userId']} ctx=${userId})`);
-          continue;
-        }
-        if (sessionId && sess?.['id'] !== sessionId) {
-          console.log(`[streamEvents] skip session:message: sessionId mismatch (event=${sess?.['id']} filter=${sessionId})`);
-          continue;
-        }
-        console.log(`[streamEvents] yield session:message sessionId=${sess?.['id']} message=${String(data['message']).slice(0, 80)}`);
-        yield {
-          type: 'session:message',
-          sessionId: sess?.['id'] as string,
-          message: data['message'] as string,
-        } satisfies BusEvent;
-      } else if (
-        eventName === 'flow:pause' ||
-        eventName === 'flow:resume' ||
-        eventName === 'flow:exit' ||
-        eventName === 'flow:error'
-      ) {
-        yield { type: eventName, ...data } as BusEvent;
+      } catch (err) {
+        console.error(`[streamEvents] error handling ${eventName}:`, err);
       }
     }
   }),

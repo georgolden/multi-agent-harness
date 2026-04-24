@@ -267,8 +267,8 @@ export function ChatBubble({ message }: ChatBubbleProps) {
           </div>
         )}
         <div className={`max-w-[72%] ${isUser ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
-          {isUser && message.tempFiles && message.tempFiles.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 justify-end mb-0.5">
+          {message.tempFiles && message.tempFiles.length > 0 && (
+            <div className={`flex flex-wrap gap-1.5 mb-0.5 ${isUser ? 'justify-end' : 'justify-start'}`}>
               {message.tempFiles.map((file) => (
                 <button
                   key={file.name}
