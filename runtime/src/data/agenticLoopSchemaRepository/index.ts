@@ -1,5 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
-import type { AgenticLoopSchema } from '../../agents/agentictLoop/flow.js';
+import type { AgenticLoopSchema, ToolkitConfig } from '../../agents/agentictLoop/flow.js';
 import type { StoredAgenticLoopSchema, RepositoryHook } from './types.js';
 import type { App } from '../../app.js';
 
@@ -32,13 +32,13 @@ export class AgenticLoopSchemaRepository {
       systemPrompt: row.systemPrompt,
       toolNames: row.toolNames,
       skillNames: row.skillNames,
-      toolkitSlugs: row.toolkitSlugs ?? [],
+      toolkits: (row.toolkits ?? []) as ToolkitConfig[],
       contextPaths: row.contextPaths as any,
       callLlmOptions: row.callLlmOptions as any,
       messageWindowConfig: row.messageWindowConfig as any,
       agentLoopConfig: row.agentLoopConfig as any,
     };
-    console.log(`[AgenticLoopSchemaRepository.mapRow] name='${schema.name}' toolNames=${JSON.stringify(schema.toolNames)} skillNames=${JSON.stringify(schema.skillNames)} agentLoopConfig=${JSON.stringify(schema.agentLoopConfig)} contextPaths=${JSON.stringify(schema.contextPaths)} callLlmOptions=${JSON.stringify(schema.callLlmOptions)} messageWindowConfig=${JSON.stringify(schema.messageWindowConfig)}`);
+    console.log(`[AgenticLoopSchemaRepository.mapRow] name='${schema.name}' toolNames=${JSON.stringify(schema.toolNames)} skillNames=${JSON.stringify(schema.skillNames)} toolkits=${JSON.stringify(schema.toolkits)} agentLoopConfig=${JSON.stringify(schema.agentLoopConfig)} contextPaths=${JSON.stringify(schema.contextPaths)} callLlmOptions=${JSON.stringify(schema.callLlmOptions)} messageWindowConfig=${JSON.stringify(schema.messageWindowConfig)}`);
     return schema;
   }
 
@@ -52,7 +52,7 @@ export class AgenticLoopSchemaRepository {
         systemPrompt: params.schema.systemPrompt,
         toolNames: params.schema.toolNames,
         skillNames: params.schema.skillNames,
-        toolkitSlugs: params.schema.toolkitSlugs ?? [],
+        toolkits: JSON.parse(JSON.stringify(params.schema.toolkits ?? [])),
         contextPaths: params.schema.contextPaths as any,
         callLlmOptions: params.schema.callLlmOptions as any,
         messageWindowConfig: params.schema.messageWindowConfig as any,
@@ -95,7 +95,7 @@ export class AgenticLoopSchemaRepository {
     if (params.systemPrompt !== undefined) data.systemPrompt = params.systemPrompt;
     if (params.toolNames !== undefined) data.toolNames = params.toolNames;
     if (params.skillNames !== undefined) data.skillNames = params.skillNames;
-    if (params.toolkitSlugs !== undefined) data.toolkitSlugs = params.toolkitSlugs;
+    if (params.toolkits !== undefined) data.toolkits = JSON.parse(JSON.stringify(params.toolkits));
     if (params.contextPaths !== undefined) data.contextPaths = params.contextPaths as any;
     if (params.callLlmOptions !== undefined) data.callLlmOptions = params.callLlmOptions as any;
     if (params.messageWindowConfig !== undefined) data.messageWindowConfig = params.messageWindowConfig as any;

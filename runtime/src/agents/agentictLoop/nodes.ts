@@ -31,6 +31,7 @@ import {
   type LLMToolCall,
 } from '../../utils/message.js';
 import { FillTemplateFlow } from '../fillTemplate/flow.js';
+import type { AgentFlowParameters } from './flow.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
@@ -39,29 +40,31 @@ import { FillTemplateFlow } from '../fillTemplate/flow.js';
  * Session is already created by prepareAgenticLoop before flow.run().
  * Outputs the session for DecideAction to use.
  */
-export class PrepareInput extends Node<App, AgenticLoopContext, string, { default: void }> {
+export class PrepareInput extends Node<App, AgenticLoopContext, AgentFlowParameters | undefined, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session, user } = p.context;
-    const rawData = p.data as any;
-    let message: string = typeof rawData === 'string' ? rawData : rawData?.message;
-    console.log(`[PrepareInput.run] session='${session.id}' userPromptTemplate=${!!session.userPromptTemplate} p.data type=${typeof p.data} resolved message='${String(message).slice(0, 120)}'`);
-    if (session.userPromptTemplate) {
-      console.log(`[PrepareInput.run] Filling template: '${session.userPromptTemplate.slice(0, 80)}'`);
-      const fillFlow = new FillTemplateFlow();
-      const fillSession = await fillFlow.createSession(p.deps, user, session, {
-        message,
-        template: session.userPromptTemplate,
-      });
-      const result = await fillFlow.run({
-        deps: p.deps,
-        context: { user, parent: session, session: fillSession },
-        data: { message, template: session.userPromptTemplate },
-      });
-      message = (result as any).data ?? message;
-      console.log(`[PrepareInput.run] Template filled, message='${message.slice(0, 120)}'`);
+    const input = p.data;
+
+    // First entry: input has a message. Loop-backs (from ToolCalls/UserResponse) pass undefined.
+    if (input?.message) {
+      let message = input.message;
+      console.log(`[PrepareInput.run] session='${session.id}' firstEntry message='${message.slice(0, 120)}'`);
+      if (session.userPromptTemplate) {
+        const fillFlow = new FillTemplateFlow();
+        const fillSession = await fillFlow.createSession(p.deps, user, session, {
+          message,
+          template: session.userPromptTemplate,
+        });
+        const result = await fillFlow.run({
+          deps: p.deps,
+          context: { user, parent: session, session: fillSession },
+          data: { message, template: session.userPromptTemplate },
+        });
+        message = result.data ?? message;
+      }
+      await session.addUserMessage(new UserMessage(message));
     }
-    console.log(`[PrepareInput.run] Adding user message to session '${session.id}'`);
-    await session.addUserMessage(new UserMessage(message));
+
     return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
@@ -88,9 +91,8 @@ export class DecideAction extends Node<
 
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
-    const conversation = session.activeMessages.map((msg) => msg.message);
+    const messages = session.activeMessages.map((msg) => msg.message);
 
-    // Convert stored ToolSchema[] to the OpenAI ChatCompletionTool format
     const tools: OpenAI.ChatCompletionTool[] = session.toolSchemas.map((schema) => ({
       type: 'function' as const,
       function: {
@@ -100,12 +102,9 @@ export class DecideAction extends Node<
       },
     }));
 
-    const systemPrompt = session.systemPrompt;
     const callLlmOptions = session.callLlmOptions;
 
-    const messages = [new SystemMessage(systemPrompt).toJSON(), ...conversation];
-
-    console.log(`[DecideAction.run] Calling LLM with ${messages.length} messages (1 system + ${conversation.length} conversation)`);
+    console.log(`[DecideAction.run] Calling LLM with ${messages.length} messages`);
 
     const response = await callLlmWithTools(messages, tools, callLlmOptions);
     const assistantMsg = AssistantMessage.from(response[0].message);
@@ -327,7 +326,6 @@ export class BestAnswer extends Node<App, AgenticLoopContext, Error, { default: 
     console.log(`[BestAnswer.run] Calling LLM with submit_result only, toolChoice: required`);
     const response = await callLlmWithTools(messages, tools, { ...session.callLlmOptions, toolChoice: 'required' });
     const assistantMsg = AssistantMessage.from(response[0].message);
-    await session.addMessages([{ message: assistantMsg.toJSON() }]);
     if (!('toolCalls' in assistantMsg) || !assistantMsg.toolCalls) {
       throw new Error('BestAnswer: LLM did not call submit_result despite toolChoice: required');
     }

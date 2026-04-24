@@ -9,6 +9,12 @@ import { PrepareInput, DecideAction, AskUser, UserResponse, ToolCalls, SubmitAns
 import type { AgenticLoopContext } from './types.js';
 import { Session } from '../../services/sessionService/session.js';
 import { Type, type Static } from '@sinclair/typebox';
+import type { AgentTool } from '../../types.js';
+
+export interface ToolkitConfig {
+  slug: string;
+  allowedTools: string[];  // empty means all tools are allowed
+}
 
 export interface AgenticLoopSchema {
   name: string;
@@ -17,7 +23,7 @@ export interface AgenticLoopSchema {
   systemPrompt: string;
   toolNames: string[];          // built-in tool names, e.g. ['bash', 'read']
   skillNames: string[];
-  toolkitSlugs: string[];       // user's connected toolkit slugs, e.g. ['github', 'gmail']
+  toolkits: ToolkitConfig[];    // toolkit configs with per-toolkit tool restrictions
   contextPaths: {
     files: string[];
     folders: string[];
@@ -62,8 +68,8 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
       PrepareInput: 'DecideAction',
       DecideAction: { ask_user: 'AskUser', tool_calls: 'ToolCalls', submit_result: 'SubmitAnswer' },
       AskUser: { pause: 'UserResponse' },
-      UserResponse: 'DecideAction',
-      ToolCalls: { default: 'DecideAction', ask_user: 'AskUser' },
+      UserResponse: 'PrepareInput',
+      ToolCalls: { default: 'PrepareInput', ask_user: 'AskUser' },
       SubmitAnswer: null,
     },
   };
@@ -86,7 +92,7 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
       systemPrompt,
       toolNames,
       skillNames,
-      toolkitSlugs,
+      toolkits,
       contextPaths,
       callLlmOptions,
       messageWindowConfig,
@@ -95,14 +101,14 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
     } = schema;
 
     console.log(
-      `[AgenticLoopFlow.createSession] schema='${input.name}' toolNames=${JSON.stringify(toolNames)} toolkitSlugs=${JSON.stringify(toolkitSlugs)} agentLoopConfig=${JSON.stringify(agentLoopConfig)}`,
+      `[AgenticLoopFlow.createSession] schema='${input.name}' toolNames=${JSON.stringify(toolNames)} toolkits=${JSON.stringify(toolkits)} agentLoopConfig=${JSON.stringify(agentLoopConfig)}`,
     );
 
     const filledSystemPrompt = `Current datetime: ${new Date().toISOString()}\nUser timezone: ${user.timezone ?? 'UTC'}\n\n${systemPrompt}`;
 
     const builtInTools = app.tools.getSlice(toolNames);
-    const userToolkitTools = toolkitSlugs?.length
-      ? await app.services.userService.loadUser(user.id).then((u) => u.buildAgentTools(toolkitSlugs))
+    const userToolkitTools = toolkits?.length
+      ? await app.services.userService.loadUser(user.id).then((u) => u.buildAgentTools(toolkits))
       : [];
     const tools = [...builtInTools, ...userToolkitTools];
     const skills = app.skills.getSlice(skillNames);
@@ -134,9 +140,9 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
       agentLoopConfig,
     });
 
-    // Attach live Tool objects so ToolCalls node can execute them
     session.tools = tools as any;
 
+    await session.upsertSystemPrompt(filledSystemPrompt);
     await session.setFlowSchema(this.toSchema());
 
     return session;
@@ -145,20 +151,21 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
   override async restoreSession(app: App, user: RuntimeUser, session: Session): Promise<void> {
     const allSchemaNames = session.toolSchemas.map((t) => t.name).filter((n) => n !== SUBMIT_RESULT_SCHEMA.name);
 
-    // Re-split: built-in tools are in app.tools, provider tools have slugs that won't match
     const builtInTools = app.tools.getSlice(allSchemaNames);
     const builtInNames = new Set(builtInTools.map((t) => t.name));
-    const providerToolSlugs = allSchemaNames.filter((n) => !builtInNames.has(n));
+    const providerToolNames = allSchemaNames.filter((n) => !builtInNames.has(n));
 
-    let userTools: any[] = [];
-    if (providerToolSlugs.length > 0) {
+    let userTools: (AgentTool & { toolkitSlug: string })[] = [];
+    if (providerToolNames.length > 0) {
       const runtimeUser = await app.services.userService.loadUser(user.id);
-      // Build all user tools then filter to only those in the session
+      // Rebuild all user toolkit tools then filter to exactly the names stored in the session.
+      // The session toolSchemas already reflect the original allowedTools restrictions, so
+      // filtering by name here correctly restores the per-toolkit tool limits.
       const allUserTools = await runtimeUser.buildAgentTools();
-      userTools = allUserTools.filter((t) => providerToolSlugs.includes(t.name));
+      userTools = allUserTools.filter((t) => providerToolNames.includes(t.name));
     }
 
-    session.tools = [...builtInTools, ...userTools] as any;
+    session.tools = [...builtInTools, ...userTools];
   }
 
   async fallback(p: this['InError'], err: Error): Promise<this['Out']> {
