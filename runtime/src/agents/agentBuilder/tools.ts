@@ -35,6 +35,26 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'get_toolkit_tools',
+      description:
+        'Fetch the list of available tools for one or more of the user\'s connected toolkits. ' +
+        'Call this when the user selects a toolkit so you can show them the individual tools and ask which ones to allow.',
+      parameters: {
+        type: 'object',
+        properties: {
+          toolkit_slugs: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Slugs of the toolkits to fetch tools for (e.g. ["github", "gmail"]).',
+          },
+        },
+        required: ['toolkit_slugs'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'submit_result',
       description:
         'Submit the completed agent schema and exit. ' +

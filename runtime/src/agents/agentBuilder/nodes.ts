@@ -2,48 +2,62 @@
  * Nodes for the agentBuilder flow.
  *
  * Flow graph:
- *   PrepareInput → DecideAction ─┬─ write_temp_file → WriteTempFile → DecideAction (loop)
- *                                ├─ ask_user        → AskUser        (pause; session stays running)
- *                                └─ submit_result   → SubmitAnswer   (exit; session completed)
+ *   PrepareInput → DecideAction ─┬─ write_temp_file → WriteTempFile → PrepareInput (loop)
+ *                                ├─ ask_user        → AskUser        (pause)
+ *                                │                    AskUser → UserResponse → PrepareInput
+ *                                └─ submit_result   → SubmitAnswer   (exit)
  *
- * The LLM saves artifacts (schema, system prompt, templates, checklist) via write_temp_file
- * after every update, then continues the conversation. submit_result exits with the final schema.
+ * PrepareInput owns:
+ *   1. Upsert system prompt (regenerated each entry — picks up new toolkits live)
+ *   2. Add user message only on first entry (p.data has a `message` string)
+ *      On loop-back (from WriteTempFile or UserResponse) p.data is undefined — skip.
  */
 import { Node, packet, exit, pause } from '../../utils/agent/flow.js';
 import { callLlmWithTools } from '../../utils/callLlm.js';
 import { TOOLS } from './tools.js';
-import { AssistantMessage, SystemMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
-import type { AgentBuilderContext, AgentBuilderInput } from './types.js';
+import { AssistantMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
+import type { AgentBuilderContext } from './types.js';
 import type { App } from '../../app.js';
 import type { AgenticLoopSchema } from '../agentictLoop/flow.js';
-
 import type { LLMToolCall } from '../../utils/message.js';
+import { createSystemPrompt } from './prompts/index.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
-export class PrepareInput extends Node<App, AgentBuilderContext, AgentBuilderInput, { default: void }> {
+export class PrepareInput extends Node<App, AgentBuilderContext, { message: string } | undefined, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
-    const { session } = p.context;
-    console.log(`[agentBuilder.PrepareInput] Using session '${session.id}'`);
+    const { session, user } = p.context;
+
+    // Regenerate and upsert system prompt — runs on every entry including loop-backs,
+    // so newly connected toolkits are immediately visible to the LLM.
+    const builtinTools = p.deps.tools.getBuiltinToolDescriptions();
+    const toolkits =
+      user.toolkits.length > 0
+        ? user.toolkits.map((t) => `- ${t.toolkitSlug} (${t.name}): ${t.description}`).join('\n')
+        : '(none connected)';
+
+    const systemPrompt = createSystemPrompt({ builtinTools, toolkits });
+    await session.upsertSystemPrompt(systemPrompt);
+
+    // First entry: p.data is { message: string } — add it as the user message.
+    // Loop-back entries: p.data is undefined — nothing to add.
+    const input = p.data;
+    if (input?.message) {
+      await session.addUserMessage(new UserMessage(input.message));
+    }
+
+    console.log(`[agentBuilder.PrepareInput] session='${session.id}' firstEntry=${!!input?.message}`);
     return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
 
 // ─── DecideAction ─────────────────────────────────────────────────────────────
 
-/**
- * DecideAction: call the LLM and route based on its response.
- *
- * Routes:
- *   'write_temp_file' — LLM is persisting an artifact; handle and loop back
- *   'ask_user'        — LLM has a question or message for the user
- *   'submit_result'   — LLM submits the completed schema; exit the flow
- */
 export class DecideAction extends Node<
   App,
   AgentBuilderContext,
   void,
-  { write_temp_file: LLMToolCall; ask_user: string; submit_result: string }
+  { write_temp_file: LLMToolCall; get_toolkit_tools: LLMToolCall; ask_user: string; submit_result: LLMToolCall }
 > {
   constructor() {
     super({ maxRunTries: 3, wait: 1000 });
@@ -53,10 +67,9 @@ export class DecideAction extends Node<
     const session = p.context.session;
     const messages = session.activeMessages.map((msg) => msg.message);
 
-    console.log(`[agentBuilder.DecideAction] Session '${session.id}', ${messages.length} messages`);
+    console.log(`[agentBuilder.DecideAction] session='${session.id}' messages=${messages.length}`);
 
     const response = await callLlmWithTools(messages, TOOLS);
-
     const assistantMsg = AssistantMessage.from(response[0].message);
     await session.addMessages([{ message: assistantMsg.toJSON() }]);
 
@@ -64,24 +77,19 @@ export class DecideAction extends Node<
       const toolCalls = assistantMsg.toolCalls;
       const submitCall = toolCalls.find((tc) => tc.name === 'submit_result');
       const writeCall = toolCalls.find((tc) => tc.name === 'write_temp_file');
+      const getToolsCall = toolCalls.find((tc) => tc.name === 'get_toolkit_tools');
 
-      // If submit_result was called, exit with submit_result branch
       if (submitCall) {
-        return packet({
-          data: submitCall.args.answer as string,
-          context: p.context,
-          branch: 'submit_result',
-          deps: p.deps,
-        });
+        return packet({ data: submitCall, context: p.context, branch: 'submit_result', deps: p.deps });
       }
-
-      // Route write_temp_file to WriteTempFile node
       if (writeCall) {
         return packet({ data: writeCall, context: p.context, branch: 'write_temp_file', deps: p.deps });
       }
+      if (getToolsCall) {
+        return packet({ data: getToolsCall, context: p.context, branch: 'get_toolkit_tools', deps: p.deps });
+      }
     }
 
-    // Plain text — question or message for the user
     const text = assistantMsg.toJSON().content || '';
     return packet({ data: text, context: p.context, branch: 'ask_user', deps: p.deps });
   }
@@ -89,20 +97,15 @@ export class DecideAction extends Node<
 
 // ─── WriteTempFile ─────────────────────────────────────────────────────────────
 
-/**
- * WriteTempFile: persist the artifact the LLM just produced, ack the tool call,
- * then loop back to DecideAction so the LLM can continue the conversation.
- */
 export class WriteTempFile extends Node<App, AgentBuilderContext, LLMToolCall, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
     const toolCall = p.data;
     const { name, content } = toolCall.args as { name: string; content: string };
 
-    console.log(`[agentBuilder.WriteTempFile] Writing '${name}' (${content.length} chars) to session '${session.id}'`);
+    console.log(`[agentBuilder.WriteTempFile] writing '${name}' (${content.length} chars) session='${session.id}'`);
 
     await session.writeTempFile({ name, content });
-
     await session.addMessages([
       {
         message: new ToolResultMessage({
@@ -116,17 +119,53 @@ export class WriteTempFile extends Node<App, AgentBuilderContext, LLMToolCall, {
   }
 }
 
+// ─── GetToolkitTools ──────────────────────────────────────────────────────────
+
+export class GetToolkitTools extends Node<App, AgentBuilderContext, LLMToolCall, { default: void }> {
+  async run(p: this['In']): Promise<this['Out']> {
+    const { session, user } = p.context;
+    const toolCall = p.data;
+    const { toolkit_slugs } = toolCall.args as { toolkit_slugs: string[] };
+
+    console.log(`[agentBuilder.GetToolkitTools] slugs=${JSON.stringify(toolkit_slugs)} session='${session.id}'`);
+
+    const results: Record<string, string[]> = {};
+    for (const slug of toolkit_slugs) {
+      const toolkit = user.toolkits.find((t) => t.toolkitSlug === slug);
+      if (!toolkit) {
+        results[slug] = [];
+        continue;
+      }
+      const provider = p.deps.services.toolProviderRegistry.get(toolkit.provider);
+      const providerData = toolkit.providerData as { externalUserId: string; authConfigId: string };
+      const schemas = await provider.getToolSchemas({
+        externalUserId: providerData.externalUserId,
+        authConfigId: providerData.authConfigId,
+        limit: 100,
+      });
+      results[slug] = schemas.map((s) => s.slug);
+    }
+
+    await session.addMessages([
+      {
+        message: new ToolResultMessage({
+          toolCallId: toolCall.id,
+          content: JSON.stringify(results),
+        }).toJSON(),
+      },
+    ]);
+
+    return packet({ data: undefined, context: p.context, deps: p.deps });
+  }
+}
+
 // ─── AskUser ──────────────────────────────────────────────────────────────────
 
-/**
- * AskUser: deliver the LLM's message to the user and pause until they reply.
- */
 export class AskUser extends Node<App, AgentBuilderContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session, user } = p.context;
-    const message = p.data;
-    console.log(`[agentBuilder.AskUser] Sending message to user, session '${session.id}'`);
-    await session.respond(user, message);
+    console.log(`[agentBuilder.AskUser] session='${session.id}'`);
+    await session.respond(user, p.data);
     session.onUserMessage(({ message }: { message: string }) => {
       this.resume({ data: message, context: p.context, deps: p.deps });
     });
@@ -140,8 +179,7 @@ export class AskUser extends Node<App, AgentBuilderContext, string, { default: v
 export class UserResponse extends Node<App, AgentBuilderContext, string, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
-    const message = p.data;
-    await session.addUserMessage(new UserMessage(message));
+    await session.addUserMessage(new UserMessage(p.data));
     await session.resume();
     return packet({ data: undefined, context: p.context, deps: p.deps });
   }
@@ -149,15 +187,12 @@ export class UserResponse extends Node<App, AgentBuilderContext, string, { defau
 
 // ─── SubmitAnswer ─────────────────────────────────────────────────────────────
 
-/**
- * SubmitAnswer: the user has confirmed the schema — persist the final schema one last time,
- * mark the session complete, and exit with the schema string.
- */
-export class SubmitAnswer extends Node<App, AgentBuilderContext, string, { default: string }> {
+export class SubmitAnswer extends Node<App, AgentBuilderContext, LLMToolCall, { default: void; error: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session, user } = p.context;
     const app = p.deps;
-    const schemaRaw = p.data;
+    const toolCall = p.data;
+    const schemaRaw = toolCall.args.answer as string;
 
     await session.writeTempFile({ name: 'agent_schema.json', content: schemaRaw });
 
@@ -165,21 +200,23 @@ export class SubmitAnswer extends Node<App, AgentBuilderContext, string, { defau
     try {
       parsed = JSON.parse(schemaRaw) as AgenticLoopSchema;
     } catch (e) {
-      console.error(`[agentBuilder.SubmitAnswer] Failed to parse schema JSON: ${e}`);
-      await session.complete();
-      return exit({ data: schemaRaw, context: p.context, deps: p.deps });
+      const msg = `Invalid JSON in schema: ${e}`;
+      console.error(`[agentBuilder.SubmitAnswer] ${msg}`);
+      await session.addToolError(toolCall.id, msg);
+      return packet({ data: undefined, branch: 'error', context: p.context, deps: p.deps });
     }
 
     try {
       await app.data.agenticLoopSchemaRepository.createSchema({ userId: user.id, schema: parsed });
-      console.log(`[agentBuilder.SubmitAnswer] Schema '${parsed.name}' saved to DB`);
+      console.log(`[agentBuilder.SubmitAnswer] schema '${parsed.name}' saved`);
     } catch (e) {
-      console.error(`[agentBuilder.SubmitAnswer] Failed to save schema to DB: ${e}`);
+      const msg = `Failed to save schema: ${e}`;
+      console.error(`[agentBuilder.SubmitAnswer] ${msg}`);
+      await session.addToolError(toolCall.id, msg);
+      return packet({ data: undefined, branch: 'error', context: p.context, deps: p.deps });
     }
 
-    console.log(`[agentBuilder.SubmitAnswer] Session '${session.id}' completed`);
     await session.complete();
-
-    return exit({ data: schemaRaw, context: p.context, deps: p.deps });
+    return exit({ data: undefined, context: p.context, deps: p.deps });
   }
 }
