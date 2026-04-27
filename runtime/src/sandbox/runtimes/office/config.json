@@ -1,11 +1,8 @@
 {
   "name": "office",
   "image": "office-runtime:latest",
-  "pool": {
-    "min": 1,
-    "max": 3
-  },
+  "mode": "exclusive",
+  "limit": 3,
   "network": "none",
-  "executionTimeout": 300000,
-  "parallelExecutions": false
+  "executionTimeout": 300000
 }

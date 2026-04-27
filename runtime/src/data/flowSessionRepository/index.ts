@@ -20,6 +20,21 @@ import { computeActiveWindow } from './messageWindow.js';
 /** Any Prisma client or interactive-transaction client */
 type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
+/**
+ * Storage-boundary encoding for tempFiles: Buffer round-trips through the JSON
+ * column as base64 with a marker. The Session API surface keeps `string | Buffer`
+ * identity intact; this is invisible to callers.
+ */
+function encodeTempFileForStorage(file: {
+  name: string;
+  content: string | Buffer;
+}): { name: string; content: string; encoding?: 'base64' } {
+  if (Buffer.isBuffer(file.content)) {
+    return { name: file.name, content: file.content.toString('base64'), encoding: 'base64' };
+  }
+  return { name: file.name, content: file.content };
+}
+
 /** Per-session transaction state managed internally by the repository */
 interface SessionTxState {
   tx: TxClient;
@@ -131,7 +146,12 @@ export class SessionDataRepository {
       contextFoldersInfos: (row.contextFoldersInfos as FolderInfo[]) || [],
       toolSchemas: (row.toolSchemas as ToolSchema[]) || [],
       skillSchemas: (row.skillSchemas as SkillSchema[]) || [],
-      tempFiles: (row.tempFiles as { name: string; content: string }[]) || [],
+      tempFiles: ((row.tempFiles as Array<{ name: string; content: string; encoding?: 'base64' }>) || []).map(
+        (f) =>
+          f.encoding === 'base64'
+            ? { name: f.name, content: Buffer.from(f.content, 'base64') }
+            : { name: f.name, content: f.content as string },
+      ),
       callLlmOptions: (row.callLlmOptions as Record<string, any>) || {},
       agentLoopConfig: (row.agentLoopConfig as any) || {},
       toolLogs: (row.toolLogs as ToolLog[]) || [],
@@ -322,8 +342,8 @@ export class SessionDataRepository {
 
   async writeTempFile(
     sessionId: string,
-    file: { name: string; content: string },
-  ): Promise<Array<{ name: string; content: string }>> {
+    file: { name: string; content: string | Buffer },
+  ): Promise<Array<{ name: string; content: string | Buffer }>> {
     const session = await this.getSession(sessionId);
     if (!session) throw new Error(`Session '${sessionId}' not found`);
 
@@ -332,9 +352,30 @@ export class SessionDataRepository {
     const tempFiles = idx >= 0 ? existing.map((f, i) => (i === idx ? file : f)) : [...existing, file];
 
     const client = this._client(sessionId) as any;
-    await client.flowSession.update({ where: { id: sessionId }, data: { tempFiles: tempFiles as any } });
+    await client.flowSession.update({
+      where: { id: sessionId },
+      data: { tempFiles: tempFiles.map(encodeTempFileForStorage) as any },
+    });
     this.app.infra.bus.emit('flowSession:tempFileWritten', { sessionId, file, tempFiles });
     console.log(`[SessionDataRepository] Wrote temp file '${file.name}' to session '${sessionId}'`);
+    return tempFiles;
+  }
+
+  async removeTempFile(
+    sessionId: string,
+    name: string,
+  ): Promise<Array<{ name: string; content: string | Buffer }>> {
+    const session = await this.getSession(sessionId);
+    if (!session) throw new Error(`Session '${sessionId}' not found`);
+
+    const tempFiles = (session.tempFiles ?? []).filter((f) => f.name !== name);
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({
+      where: { id: sessionId },
+      data: { tempFiles: tempFiles.map(encodeTempFileForStorage) as any },
+    });
+    this.app.infra.bus.emit('flowSession:tempFileRemoved', { sessionId, name, tempFiles });
+    console.log(`[SessionDataRepository] Removed temp file '${name}' from session '${sessionId}'`);
     return tempFiles;
   }
 

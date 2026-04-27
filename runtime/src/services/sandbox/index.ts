@@ -1,94 +1,244 @@
 /**
- * SandboxService - manages container pools, sessions, and execution for sandboxed workloads.
+ * SandboxService — bind-mount-based sandbox for skill execution.
+ *
+ * Each skill execution gets a per-session host realm folder. Context files and
+ * folders are bind-mounted from the host into the container; temp files are
+ * synced both ways around every command batch.
  *
  * Public API:
- *   createSession(opts)          - acquire container, create session dir, copy files, return sessionId
- *   executeCommands(opts)        - run commands in an existing session (semaphore-gated)
- *   cleanupSession(sessionId)    - remove session dir, release container
- *   getRuntimeForSkill(name)     - resolve skill name → runtime type
+ *   start() / stop()
+ *   createSkillSession({ session, skill })
+ *   executeSkillCommands({ session, commands })
+ *   cleanupSkillSession({ session })
+ *   getRuntimeForSkill(skillName)
+ *   getRuntimeConfigs()
  */
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
-import { readFile, readdir, stat, access } from 'node:fs/promises';
-import { resolve, basename, extname } from 'node:path';
-import type { RuntimeConfig, RuntimeType } from '../../sandbox/types.js';
+import {
+  access,
+  cp,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
+import { basename, extname, join, resolve } from 'node:path';
+import type { RuntimeConfig, SandboxMode } from '../../sandbox/types.js';
+import { SANDBOX_REALM_ROOT } from '../../sandbox/constants.js';
 import type { App } from '../../app.js';
-import type { SkillFile } from '../../skills/index.js';
+import type { Skill } from '../../skills/index.js';
+import type { Session } from '../sessionService/session.js';
 
 const execFileAsync = promisify(execFile);
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Async lock ──────────────────────────────────────────────────────────────
+
+class AsyncLock {
+  private q: Promise<void> = Promise.resolve();
+  acquire(): Promise<() => void> {
+    let release!: () => void;
+    const next = new Promise<void>((r) => (release = r));
+    const prev = this.q;
+    this.q = this.q.then(() => next);
+    return prev.then(() => release);
+  }
+}
+
+// ─── Internal state types ────────────────────────────────────────────────────
 
 interface Container {
   id: string;
-  runtimeType: RuntimeType;
-  activeSessions: number;
+  runtimeName: string;
+  mode: SandboxMode;
 }
 
-interface Session {
-  sessionId: string;
-  runtimeType: RuntimeType;
+type ContextEntryState = 'mounted' | 'copied';
+
+interface ContextEntry {
+  hostPath: string;
+  realmName: string;
+  type: 'file' | 'folder';
+  state: ContextEntryState;
+}
+
+interface SkillExecutionState {
+  session: Session;
+  skill: Skill;
+  runtimeName: string;
+  mode: SandboxMode;
   container: Container;
-  sessionPath: string;
-  createdAt: number;
-}
-
-interface QueuedContainerRequest {
-  runtimeType: RuntimeType;
-  resolve: (container: Container) => void;
-  reject: (error: Error) => void;
+  realmHostPath: string;
+  containerWorkingDir: string;
+  skillFileNames: Set<string>;
+  contextEntries: Map<string, ContextEntry>;
+  knownTempFileSnapshot: Map<string, Buffer>;
+  syncMutex: AsyncLock;
 }
 
 interface QueuedExecution {
-  runtimeType: RuntimeType;
+  runtimeName: string;
   resolve: () => void;
-  reject: (error: Error) => void;
+  reject: (e: Error) => void;
 }
 
-export interface CreateSessionOptions {
-  runtimeType: RuntimeType;
-  /** Skill/workload files to copy into the session */
-  workloadFiles: SkillFile[];
-  /** Host paths of user input files to copy into the session */
-  inputFiles?: string[];
-  /** Optional session ID; random if omitted */
-  sessionId?: string;
+interface QueuedContainerSpawn {
+  runtimeName: string;
+  spawn: () => Promise<Container>;
+  resolve: (c: Container) => void;
+  reject: (e: Error) => void;
 }
 
-export interface ExecuteCommandsOptions {
-  sessionId: string;
-  commands: string[];
-  /** Optional additional input files to copy before executing */
-  inputFiles?: string[];
+// ─── Public types ────────────────────────────────────────────────────────────
+
+export interface SkillExecutionSession {
+  id: string;
+  runtimeName: string;
+  mode: SandboxMode;
+  realmHostPath: string;
+  containerWorkingDir: string;
 }
 
 export interface ExecuteCommandsResult {
-  /** stdout/stderr per command */
-  results: { command: string; stdout: string; stderr: string }[];
+  results: Array<{ command: string; stdout: string; stderr: string }>;
+}
+
+export interface SandboxServiceOptions {
+  cwd?: string;
+  realmRoot?: string;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function toBuffer(content: string | Buffer): Buffer {
+  return Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf-8');
+}
+
+function dedupe(name: string, used: Set<string>): string {
+  if (!used.has(name)) return name;
+  const ext = extname(name);
+  const base = ext ? name.slice(0, -ext.length) : name;
+  let n = 1;
+  for (;;) {
+    const candidate = `${base}.dup.${n}${ext}`;
+    if (!used.has(candidate)) return candidate;
+    n++;
+  }
+}
+
+async function existsAsync(p: string): Promise<boolean> {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function unlinkIfExists(p: string): Promise<void> {
+  try {
+    await unlink(p);
+  } catch (err: any) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+}
+
+async function rmRfIfExists(p: string): Promise<void> {
+  await rm(p, { recursive: true, force: true });
+}
+
+async function emptyDirectory(dir: string): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  await Promise.all(entries.map((e) => rm(join(dir, e), { recursive: true, force: true })));
+}
+
+/**
+ * rsync-style mirror with deletions: dst becomes a copy of src.
+ * Pure-Node implementation — additions, modifications, removals all applied.
+ */
+async function mirrorDirectory(src: string, dst: string): Promise<void> {
+  await mkdir(dst, { recursive: true });
+
+  const srcEntries = await readdir(src, { withFileTypes: true });
+  const srcNames = new Set(srcEntries.map((e) => e.name));
+
+  // Pass 1: add/update from src into dst
+  for (const e of srcEntries) {
+    const sPath = join(src, e.name);
+    const dPath = join(dst, e.name);
+    if (e.isDirectory()) {
+      await mirrorDirectory(sPath, dPath);
+    } else if (e.isFile()) {
+      const sBuf = await readFile(sPath);
+      let needsWrite = true;
+      try {
+        const dBuf = await readFile(dPath);
+        if (dBuf.length === sBuf.length && dBuf.compare(sBuf) === 0) needsWrite = false;
+      } catch {
+        // dst missing — write it
+      }
+      if (needsWrite) {
+        // If dPath is a directory, blow it away first
+        try {
+          const st = await stat(dPath);
+          if (st.isDirectory()) await rm(dPath, { recursive: true, force: true });
+        } catch {}
+        await writeFile(dPath, sBuf);
+      }
+    }
+  }
+
+  // Pass 2: delete entries in dst that are not in src
+  let dstEntries: Array<{ name: string; isDirectory: () => boolean }>;
+  try {
+    dstEntries = await readdir(dst, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of dstEntries) {
+    if (!srcNames.has(e.name)) {
+      await rm(join(dst, e.name), { recursive: true, force: true });
+    }
+  }
 }
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 export class SandboxService {
   private app: App;
-  private runtimeConfigs: Map<RuntimeType, RuntimeConfig> = new Map();
-  private pools: Map<RuntimeType, Container[]> = new Map();
-  private sessions: Map<string, Session> = new Map();
-  private containerQueue: QueuedContainerRequest[] = [];
-  /** Semaphore: how many executeCommands calls are currently running per runtime */
-  private activeExecutions: Map<RuntimeType, number> = new Map();
-  private executionQueue: QueuedExecution[] = [];
-  private isStarted = false;
   private sandboxDir: string;
   private skillRuntimesPath: string;
+  private realmRoot: string;
+
+  private runtimeConfigs: Map<string, RuntimeConfig> = new Map();
   private skillRuntimes: Record<string, string> = {};
 
-  constructor(app: App, cwd: string = process.cwd()) {
+  private sharedContainers: Map<string, Container> = new Map();
+  private exclusiveContainers: Map<string, Set<Container>> = new Map();
+  private activeExecutions: Map<string, number> = new Map();
+  private executionQueue: QueuedExecution[] = [];
+  private containerQueue: QueuedContainerSpawn[] = [];
+  private sessions: Map<string, SkillExecutionState> = new Map();
+
+  private isStarted = false;
+
+  constructor(app: App, opts: SandboxServiceOptions = {}) {
     this.app = app;
+    const cwd = opts.cwd ?? process.cwd();
     this.sandboxDir = resolve(cwd, 'src/sandbox/runtimes');
     this.skillRuntimesPath = resolve(cwd, 'src/skills/skill-runtimes.json');
+    this.realmRoot = opts.realmRoot ?? SANDBOX_REALM_ROOT;
   }
 
   // ─── Lifecycle ───────────────────────────────────────────────────────────
@@ -103,11 +253,12 @@ export class SandboxService {
     await this.loadRuntimeConfigs();
     await this.loadSkillRuntimes();
 
-    for (const runtimeType of this.runtimeConfigs.keys()) {
-      this.activeExecutions.set(runtimeType, 0);
+    await mkdir(this.realmRoot, { recursive: true });
+    for (const [name, config] of this.runtimeConfigs) {
+      await mkdir(join(this.realmRoot, name, config.mode), { recursive: true });
+      this.activeExecutions.set(name, 0);
+      if (config.mode === 'exclusive') this.exclusiveContainers.set(name, new Set());
     }
-
-    await this.warmUpPools();
 
     this.isStarted = true;
     console.log(`[SandboxService] Started with ${this.runtimeConfigs.size} runtime(s)`);
@@ -119,406 +270,581 @@ export class SandboxService {
       return;
     }
 
-    // Reject all queued requests
-    for (const req of this.containerQueue) {
-      req.reject(new Error('SandboxService is stopping'));
-    }
-    this.containerQueue = [];
-    for (const req of this.executionQueue) {
-      req.reject(new Error('SandboxService is stopping'));
-    }
+    for (const q of this.executionQueue) q.reject(new Error('SandboxService is stopping'));
     this.executionQueue = [];
+    for (const q of this.containerQueue) q.reject(new Error('SandboxService is stopping'));
+    this.containerQueue = [];
 
-    // Clean up all active sessions
-    for (const [sessionId] of this.sessions) {
-      await this.cleanupSession(sessionId).catch(() => {});
+    const stopPromises: Promise<unknown>[] = [];
+    for (const c of this.sharedContainers.values()) {
+      stopPromises.push(execFileAsync('podman', ['rm', '-f', c.id]).catch(() => {}));
     }
-
-    // Stop all containers
-    const stopPromises: Promise<void>[] = [];
-    for (const [, containers] of this.pools) {
-      for (const container of containers) {
-        stopPromises.push(this.stopContainer(container));
+    for (const set of this.exclusiveContainers.values()) {
+      for (const c of set) {
+        stopPromises.push(execFileAsync('podman', ['rm', '-f', c.id]).catch(() => {}));
       }
     }
     await Promise.allSettled(stopPromises);
 
-    this.pools.clear();
+    // Remove session subfolders, leave parent dirs intact
+    for (const [name, config] of this.runtimeConfigs) {
+      const modeDir = join(this.realmRoot, name, config.mode);
+      try {
+        const entries = await readdir(modeDir);
+        await Promise.all(entries.map((e) => rm(join(modeDir, e), { recursive: true, force: true })));
+      } catch {
+        // dir gone
+      }
+    }
+
+    this.sharedContainers.clear();
+    this.exclusiveContainers.clear();
     this.activeExecutions.clear();
+    this.sessions.clear();
     this.isStarted = false;
     console.log('[SandboxService] Stopped');
   }
 
   // ─── Public API ──────────────────────────────────────────────────────────
 
-  /**
-   * Create a session: acquire a container, create session directory, copy workload and input files.
-   * Returns the sessionId.
-   */
-  async createSession(options: CreateSessionOptions): Promise<string> {
-    if (!this.isStarted) {
-      throw new Error('SandboxService not started. Call start() first.');
+  async createSkillSession(opts: { session: Session; skill: Skill }): Promise<SkillExecutionSession> {
+    if (!this.isStarted) throw new Error('SandboxService not started. Call start() first.');
+
+    const { session, skill } = opts;
+    const runtimeName = skill.runtime;
+    if (!runtimeName) throw new Error(`Skill '${skill.name}' has no runtime`);
+    const config = this.runtimeConfigs.get(runtimeName);
+    if (!config) throw new Error(`Unknown runtime: ${runtimeName}`);
+    const mode = config.mode;
+
+    if (this.sessions.has(session.id)) {
+      throw new Error(`Session ${session.id} already has a SkillExecutionSession`);
     }
 
-    const config = this.runtimeConfigs.get(options.runtimeType);
-    if (!config) {
-      throw new Error(`Unknown runtime type: ${options.runtimeType}`);
-    }
+    const realmHostPath = join(this.realmRoot, runtimeName, mode, session.id);
+    await mkdir(realmHostPath, { recursive: true });
 
-    const sessionId = options.sessionId ?? `session-${randomUUID().slice(0, 12)}`;
-    if (this.sessions.has(sessionId)) {
-      return sessionId;
-    }
-
-    const container = await this.acquireContainer(options.runtimeType);
-    const sessionPath = `/workspace/${sessionId}`;
-
-    // Create session directory
-    await this.podmanExec(container.id, ['mkdir', '-p', sessionPath]);
-
-    // Copy workload files
-    for (const file of options.workloadFiles) {
-      await this.copyToContainer(container.id, file.path, `${sessionPath}/`);
-    }
-
-    // Copy input files
-    if (options.inputFiles) {
-      for (const hostPath of options.inputFiles) {
-        await this.copyToContainer(container.id, hostPath, `${sessionPath}/`);
+    // Skill files (flat by basename)
+    const skillFiles = await skill.readContent();
+    const skillFileNames = new Set<string>();
+    for (const f of skillFiles) {
+      const name = basename(f.path);
+      if (skillFileNames.has(name)) {
+        throw new Error(`Skill '${skill.name}' has duplicate file basename: ${name}`);
       }
+      await writeFile(join(realmHostPath, name), f.content);
+      skillFileNames.add(name);
     }
 
-    this.sessions.set(sessionId, {
-      sessionId,
-      runtimeType: options.runtimeType,
+    // Temp files
+    const knownTempFileSnapshot = new Map<string, Buffer>();
+    for (const f of session.tempFiles ?? []) {
+      const buf = toBuffer(f.content);
+      const target = join(realmHostPath, f.name);
+      let needsWrite = true;
+      try {
+        const existing = await readFile(target);
+        if (existing.length === buf.length && existing.compare(buf) === 0) needsWrite = false;
+      } catch {
+        // missing
+      }
+      if (needsWrite) await writeFile(target, buf);
+      knownTempFileSnapshot.set(f.name, buf);
+    }
+
+    // Context entries
+    const contextEntries = new Map<string, ContextEntry>();
+    const usedNames = new Set<string>([...skillFileNames, ...knownTempFileSnapshot.keys()]);
+
+    if (mode === 'shared' && (session.contextFiles.length > 0 || session.contextFoldersInfos.length > 0)) {
+      throw new Error(
+        `Shared runtime '${runtimeName}' cannot have context mounts (session ${session.id})`,
+      );
+    }
+
+    for (const cf of session.contextFiles ?? []) {
+      const realmName = dedupe(basename(cf.path), usedNames);
+      usedNames.add(realmName);
+      // Empty placeholder for the bind mount target
+      await writeFile(join(realmHostPath, realmName), '');
+      contextEntries.set(cf.path, { hostPath: cf.path, realmName, type: 'file', state: 'mounted' });
+    }
+    for (const cfo of session.contextFoldersInfos ?? []) {
+      const realmName = dedupe(basename(cfo.path), usedNames);
+      usedNames.add(realmName);
+      await mkdir(join(realmHostPath, realmName), { recursive: true });
+      contextEntries.set(cfo.path, { hostPath: cfo.path, realmName, type: 'folder', state: 'mounted' });
+    }
+
+    // Acquire container
+    const container =
+      mode === 'shared'
+        ? await this.getOrSpawnSharedContainer(runtimeName, config)
+        : await this.acquireExclusiveContainer(runtimeName, config, realmHostPath, contextEntries);
+
+    const containerWorkingDir = mode === 'shared' ? `/realm/${session.id}` : '/workspace';
+
+    // path-map.json (host bookkeeping)
+    const metaDir = join(realmHostPath, '.meta');
+    await mkdir(metaDir, { recursive: true });
+    const pathMap: Record<string, string> = {};
+    for (const e of contextEntries.values()) {
+      pathMap[`${containerWorkingDir}/${e.realmName}`] = e.hostPath;
+    }
+    await writeFile(join(metaDir, 'path-map.json'), JSON.stringify(pathMap, null, 2));
+
+    // For shared mode, ensure the working dir exists inside the container
+    if (mode === 'shared') {
+      await execFileAsync('podman', [
+        'exec',
+        container.id,
+        'mkdir',
+        '-p',
+        containerWorkingDir,
+      ]).catch(() => {});
+    }
+
+    const state: SkillExecutionState = {
+      session,
+      skill,
+      runtimeName,
+      mode,
       container,
-      sessionPath,
-      createdAt: Date.now(),
-    });
+      realmHostPath,
+      containerWorkingDir,
+      skillFileNames,
+      contextEntries,
+      knownTempFileSnapshot,
+      syncMutex: new AsyncLock(),
+    };
+    this.sessions.set(session.id, state);
 
     console.log(
-      `[SandboxService] Session ${sessionId} created on ${options.runtimeType} container ${container.id.slice(0, 12)}`,
+      `[SandboxService] Created skill session ${session.id} on ${runtimeName} (${mode}) container ${container.id.slice(0, 12)}`,
     );
-    return sessionId;
+
+    return {
+      id: session.id,
+      runtimeName,
+      mode,
+      realmHostPath,
+      containerWorkingDir,
+    };
   }
 
-  /**
-   * Execute commands in an existing session.
-   * Gated by the runtime's maxParallelExecutions semaphore.
-   * Input files that conflict with existing files are renamed with .old.N pattern.
-   */
-  async executeCommands(options: ExecuteCommandsOptions): Promise<ExecuteCommandsResult> {
-    const session = this.sessions.get(options.sessionId);
-    if (!session) {
-      throw new Error(`Session ${options.sessionId} not found`);
-    }
+  async executeSkillCommands(opts: {
+    session: Session;
+    commands: string[];
+  }): Promise<ExecuteCommandsResult> {
+    const state = this.sessions.get(opts.session.id);
+    if (!state) throw new Error(`No skill session for ${opts.session.id}`);
 
-    const config = this.runtimeConfigs.get(session.runtimeType)!;
+    const config = this.runtimeConfigs.get(state.runtimeName)!;
 
-    // Acquire execution slot (semaphore)
-    await this.acquireExecutionSlot(session.runtimeType, config);
-
+    const release = await state.syncMutex.acquire();
     try {
-      // Copy additional input files with conflict renaming
-      if (options.inputFiles) {
-        for (const hostPath of options.inputFiles) {
-          await this.copyInputWithRename(session.container.id, hostPath, session.sessionPath);
-        }
-      }
+      await this.syncRealmFromSession(state);
 
-      // Run commands sequentially, each gated by executionTimeout
-      const results: { command: string; stdout: string; stderr: string }[] = [];
-      for (const cmd of options.commands) {
-        try {
-          const { stdout, stderr } = await execFileAsync(
-            'podman',
-            ['exec', '-w', session.sessionPath, session.container.id, 'bash', '-c', cmd],
-            { timeout: config.executionTimeout },
-          );
-          results.push({ command: cmd, stdout, stderr });
-        } catch (err: any) {
-          const timedOut = err.killed === true;
-          results.push({
-            command: cmd,
-            stdout: err.stdout ?? '',
-            stderr: timedOut
-              ? `Command killed: exceeded ${config.executionTimeout}ms timeout`
-              : (err.stderr ?? err.message),
-          });
-          // Stop executing further commands if one timed out
-          if (timedOut) break;
-        }
+      let executionSlot = false;
+      if (state.mode === 'shared') {
+        await this.acquireExecutionSlot(state.runtimeName, config);
+        executionSlot = true;
       }
-
-      return { results };
+      try {
+        const results = await this.runCommands(state, opts.commands, config);
+        return { results };
+      } finally {
+        if (executionSlot) this.releaseExecutionSlot(state.runtimeName);
+        await this.syncSessionFromRealm(state);
+      }
     } finally {
-      this.releaseExecutionSlot(session.runtimeType);
+      release();
     }
   }
 
-  /**
-   * Clean up a session: remove session directory, release container back to pool.
-   */
-  async cleanupSession(sessionId: string): Promise<void> {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw new Error(`Session ${sessionId} not found`);
+  async cleanupSkillSession(opts: { session: Session }): Promise<void> {
+    const state = this.sessions.get(opts.session.id);
+    if (!state) throw new Error(`No skill session for ${opts.session.id}`);
+
+    this.sessions.delete(opts.session.id);
+
+    await rmRfIfExists(state.realmHostPath);
+
+    if (state.mode === 'exclusive') {
+      await execFileAsync('podman', ['rm', '-f', state.container.id]).catch(() => {});
+      this.exclusiveContainers.get(state.runtimeName)?.delete(state.container);
+      this.drainContainerQueue(state.runtimeName);
     }
 
-    this.sessions.delete(sessionId);
-
-    // Remove session directory
-    await this.podmanExec(session.container.id, ['rm', '-rf', session.sessionPath]).catch((err) =>
-      console.error(`[SandboxService] Cleanup failed for ${sessionId}:`, err),
-    );
-
-    // Release container back to pool
-    this.releaseContainer(session.container, session.runtimeType);
-
-    console.log(`[SandboxService] Session ${sessionId} cleaned up`);
+    console.log(`[SandboxService] Cleaned up skill session ${opts.session.id}`);
   }
 
-  /**
-   * Get the runtime type for a skill name.
-   * Returns null if the skill runs on host (not in sandbox).
-   */
-  getRuntimeForSkill(skillName: string): RuntimeType | null {
-    return (this.skillRuntimes[skillName] as RuntimeType) ?? null;
+  getRuntimeForSkill(skillName: string): string | null {
+    return this.skillRuntimes[skillName] ?? null;
   }
 
-  /**
-   * Get all loaded runtime configurations
-   */
-  getRuntimeConfigs(): Map<RuntimeType, RuntimeConfig> {
+  getRuntimeConfigs(): Map<string, RuntimeConfig> {
     return this.runtimeConfigs;
   }
 
-  // ─── Runtime Config Loading ──────────────────────────────────────────────
+  // ─── Sync: realm ← session ───────────────────────────────────────────────
 
-  private async loadRuntimeConfigs(): Promise<void> {
-    try {
-      await access(this.sandboxDir);
-    } catch {
-      console.warn(`[SandboxService] Sandbox runtimes directory not found: ${this.sandboxDir}`);
-      return;
+  private async syncRealmFromSession(state: SkillExecutionState): Promise<void> {
+    // Temp files
+    const current = new Map<string, Buffer>();
+    for (const f of state.session.tempFiles ?? []) current.set(f.name, toBuffer(f.content));
+
+    for (const [name, contentBuf] of current) {
+      const realmPath = join(state.realmHostPath, name);
+      let needsWrite = true;
+      try {
+        const existing = await readFile(realmPath);
+        if (existing.length === contentBuf.length && existing.compare(contentBuf) === 0) {
+          needsWrite = false;
+        }
+      } catch {
+        // missing
+      }
+      if (needsWrite) await writeFile(realmPath, contentBuf);
     }
 
-    const entries = await readdir(this.sandboxDir);
-    for (const entry of entries) {
-      const entryPath = resolve(this.sandboxDir, entry);
-      const configPath = resolve(entryPath, 'config.json');
+    const contextNames = new Set<string>(
+      Array.from(state.contextEntries.values()).map((e) => e.realmName),
+    );
+    for (const name of state.knownTempFileSnapshot.keys()) {
+      if (
+        !current.has(name) &&
+        !state.skillFileNames.has(name) &&
+        !contextNames.has(name)
+      ) {
+        await unlinkIfExists(join(state.realmHostPath, name));
+      }
+    }
+    state.knownTempFileSnapshot = current;
 
-      const stats = await stat(entryPath);
-      if (stats.isDirectory()) {
-        try {
-          await access(configPath);
-          const configContent = await readFile(configPath, 'utf-8');
-          const config: RuntimeConfig = JSON.parse(configContent);
-          this.runtimeConfigs.set(config.name as RuntimeType, config);
-          this.pools.set(config.name as RuntimeType, []);
-        } catch {
-          // Config file doesn't exist or can't be read, skip this entry
+    // Context files (added mid-session → copy)
+    const currentCfPaths = new Set<string>((state.session.contextFiles ?? []).map((cf) => cf.path));
+    const currentCfoPaths = new Set<string>(
+      (state.session.contextFoldersInfos ?? []).map((cfo) => cfo.path),
+    );
+
+    const usedNames = (): Set<string> => {
+      const s = new Set<string>(state.skillFileNames);
+      for (const k of state.knownTempFileSnapshot.keys()) s.add(k);
+      for (const e of state.contextEntries.values()) s.add(e.realmName);
+      return s;
+    };
+
+    for (const cf of state.session.contextFiles ?? []) {
+      if (!state.contextEntries.has(cf.path)) {
+        const realmName = dedupe(basename(cf.path), usedNames());
+        await cp(cf.path, join(state.realmHostPath, realmName));
+        state.contextEntries.set(cf.path, {
+          hostPath: cf.path,
+          realmName,
+          type: 'file',
+          state: 'copied',
+        });
+      }
+    }
+
+    for (const [hostPath, entry] of [...state.contextEntries.entries()]) {
+      if (entry.type === 'file' && !currentCfPaths.has(hostPath)) {
+        if (entry.state === 'copied') {
+          await unlinkIfExists(join(state.realmHostPath, entry.realmName));
+          state.contextEntries.delete(hostPath);
+        }
+        // mounted: ignore (cannot unmount)
+      }
+    }
+
+    // Context folders
+    for (const cfo of state.session.contextFoldersInfos ?? []) {
+      if (!state.contextEntries.has(cfo.path)) {
+        const realmName = dedupe(basename(cfo.path), usedNames());
+        await cp(cfo.path, join(state.realmHostPath, realmName), { recursive: true });
+        state.contextEntries.set(cfo.path, {
+          hostPath: cfo.path,
+          realmName,
+          type: 'folder',
+          state: 'copied',
+        });
+      }
+    }
+
+    for (const [hostPath, entry] of [...state.contextEntries.entries()]) {
+      if (entry.type === 'folder' && !currentCfoPaths.has(hostPath)) {
+        if (entry.state === 'copied') {
+          await rmRfIfExists(join(state.realmHostPath, entry.realmName));
+          state.contextEntries.delete(hostPath);
+        } else {
+          // mounted: empty host folder, keep dir mounted
+          await emptyDirectory(hostPath);
         }
       }
     }
   }
 
-  private async loadSkillRuntimes(): Promise<void> {
-    try {
-      await access(this.skillRuntimesPath);
-    } catch {
-      console.warn(`[SandboxService] skill-runtimes.json not found: ${this.skillRuntimesPath}`);
-      return;
-    }
+  // ─── Sync: session ← realm ───────────────────────────────────────────────
 
-    const content = await readFile(this.skillRuntimesPath, 'utf-8');
-    this.skillRuntimes = JSON.parse(content);
-  }
+  private async syncSessionFromRealm(state: SkillExecutionState): Promise<void> {
+    const contextNames = new Set<string>(
+      Array.from(state.contextEntries.values()).map((e) => e.realmName),
+    );
 
-  // ─── Container Pool Management ──────────────────────────────────────────
+    // Temp files: realm authoritative for top-level files
+    const dirEntries = await readdir(state.realmHostPath, { withFileTypes: true });
+    const seen = new Map<string, Buffer>();
 
-  private async warmUpPools(): Promise<void> {
-    const warmUpPromises: Promise<void>[] = [];
-
-    for (const [runtimeType, config] of this.runtimeConfigs) {
-      for (let i = 0; i < config.pool.min; i++) {
-        warmUpPromises.push(
-          this.spawnContainer(runtimeType).then((container) => {
-            this.pools.get(runtimeType)!.push(container);
-          }),
+    for (const e of dirEntries) {
+      if (e.name === '.meta') continue;
+      if (state.skillFileNames.has(e.name)) continue;
+      if (contextNames.has(e.name)) continue;
+      if (e.isDirectory()) {
+        console.warn(
+          `[SandboxService] Skill created top-level subdirectory '${e.name}' in flat realm; ignored on sync-out`,
         );
+        continue;
+      }
+      if (!e.isFile()) continue;
+
+      const filePath = join(state.realmHostPath, e.name);
+      const buf = await readFile(filePath);
+      const existing = (state.session.tempFiles ?? []).find((f) => f.name === e.name);
+      const existingBuf = existing ? toBuffer(existing.content) : null;
+      const differs =
+        !existingBuf || existingBuf.length !== buf.length || existingBuf.compare(buf) !== 0;
+      if (differs) {
+        await state.session.writeTempFile({ name: e.name, content: buf });
+      }
+      seen.set(e.name, buf);
+    }
+
+    // Deletions: anything in session.tempFiles not in `seen` and not skill/context
+    for (const f of [...(state.session.tempFiles ?? [])]) {
+      if (state.skillFileNames.has(f.name)) continue;
+      if (contextNames.has(f.name)) continue;
+      if (!seen.has(f.name)) {
+        await state.session.removeTempFile(f.name);
       }
     }
 
-    await Promise.allSettled(warmUpPromises);
-  }
+    state.knownTempFileSnapshot = seen;
 
-  private async acquireContainer(runtimeType: RuntimeType): Promise<Container> {
-    const config = this.runtimeConfigs.get(runtimeType)!;
-    const pool = this.pools.get(runtimeType)!;
-
-    if (config.parallelExecutions) {
-      // Any container can accept more sessions
-      const container = pool[0];
-      if (container) {
-        container.activeSessions++;
-        return container;
+    // Context files (copied state) — flush realm → host if differs
+    for (const entry of state.contextEntries.values()) {
+      if (entry.state !== 'copied' || entry.type !== 'file') continue;
+      const realmPath = join(state.realmHostPath, entry.realmName);
+      let realmBuf: Buffer;
+      try {
+        realmBuf = await readFile(realmPath);
+      } catch {
+        continue;
       }
-    } else {
-      // Exclusive: find a container with no active sessions
-      const idle = pool.find((c) => c.activeSessions === 0);
-      if (idle) {
-        idle.activeSessions++;
-        return idle;
+      let hostBuf: Buffer | null = null;
+      try {
+        hostBuf = await readFile(entry.hostPath);
+      } catch {
+        hostBuf = null;
+      }
+      const differs =
+        !hostBuf || hostBuf.length !== realmBuf.length || hostBuf.compare(realmBuf) !== 0;
+      if (differs) await writeFile(entry.hostPath, realmBuf);
+    }
+
+    // Context folders (copied state) — rsync mirror back to host
+    for (const entry of state.contextEntries.values()) {
+      if (entry.state !== 'copied' || entry.type !== 'folder') continue;
+      const realmDir = join(state.realmHostPath, entry.realmName);
+      await mirrorDirectory(realmDir, entry.hostPath);
+    }
+  }
+
+  // ─── Command runner ──────────────────────────────────────────────────────
+
+  private async runCommands(
+    state: SkillExecutionState,
+    commands: string[],
+    config: RuntimeConfig,
+  ): Promise<Array<{ command: string; stdout: string; stderr: string }>> {
+    const results: Array<{ command: string; stdout: string; stderr: string }> = [];
+    for (const cmd of commands) {
+      try {
+        const { stdout, stderr } = await execFileAsync(
+          'podman',
+          ['exec', '-w', state.containerWorkingDir, state.container.id, 'bash', '-c', cmd],
+          { timeout: config.executionTimeout, maxBuffer: 16 * 1024 * 1024 },
+        );
+        results.push({ command: cmd, stdout, stderr });
+      } catch (err: any) {
+        const timedOut = err.killed === true;
+        results.push({
+          command: cmd,
+          stdout: err.stdout ?? '',
+          stderr: timedOut
+            ? `Command killed: exceeded ${config.executionTimeout}ms timeout`
+            : err.stderr ?? err.message,
+        });
+        if (timedOut) break;
       }
     }
-
-    // Can we spawn a new one?
-    if (pool.length < config.pool.max) {
-      const container = await this.spawnContainer(runtimeType);
-      container.activeSessions = 1;
-      pool.push(container);
-      return container;
-    }
-
-    // Pool full - queue
-    return new Promise<Container>((resolve, reject) => {
-      this.containerQueue.push({ runtimeType, resolve, reject });
-      const position = this.containerQueue.filter((t) => t.runtimeType === runtimeType).length;
-      console.log(`[SandboxService] Waiting for available ${runtimeType} container (position ${position} in queue)`);
-    });
+    return results;
   }
 
-  private releaseContainer(container: Container, runtimeType: RuntimeType): void {
-    container.activeSessions--;
+  // ─── Container acquire / release ─────────────────────────────────────────
 
-    // Check if there's a queued container request for this runtime type
-    const queuedIndex = this.containerQueue.findIndex((t) => t.runtimeType === runtimeType);
-    if (queuedIndex !== -1) {
-      const queued = this.containerQueue.splice(queuedIndex, 1)[0];
-      container.activeSessions++;
-      queued.resolve(container);
-    }
-  }
+  private async getOrSpawnSharedContainer(
+    runtimeName: string,
+    config: RuntimeConfig,
+  ): Promise<Container> {
+    const existing = this.sharedContainers.get(runtimeName);
+    if (existing) return existing;
 
-  // ─── Execution Semaphore ────────────────────────────────────────────────
-
-  private async acquireExecutionSlot(runtimeType: RuntimeType, config: RuntimeConfig): Promise<void> {
-    const maxSlots = config.parallelExecutions ? config.maxParallelExecutions : 1;
-    const active = this.activeExecutions.get(runtimeType)!;
-
-    if (active < maxSlots) {
-      this.activeExecutions.set(runtimeType, active + 1);
-      return;
-    }
-
-    // At limit - queue
-    return new Promise<void>((resolve, reject) => {
-      this.executionQueue.push({ runtimeType, resolve, reject });
-      console.log(`[SandboxService] Execution queued for ${runtimeType} (${active}/${maxSlots} slots in use)`);
-    });
-  }
-
-  private releaseExecutionSlot(runtimeType: RuntimeType): void {
-    const active = this.activeExecutions.get(runtimeType)!;
-
-    // Check if there's a queued execution for this runtime type
-    const queuedIndex = this.executionQueue.findIndex((e) => e.runtimeType === runtimeType);
-    if (queuedIndex !== -1) {
-      // Hand slot directly to next in queue (count stays the same)
-      const queued = this.executionQueue.splice(queuedIndex, 1)[0];
-      queued.resolve();
-    } else {
-      this.activeExecutions.set(runtimeType, active - 1);
-    }
-  }
-
-  // ─── Container Operations ───────────────────────────────────────────────
-
-  private async spawnContainer(runtimeType: RuntimeType): Promise<Container> {
-    const config = this.runtimeConfigs.get(runtimeType)!;
-
+    const sharedRoot = join(this.realmRoot, runtimeName, 'shared');
     const args = [
       'run',
       '-d',
       '--name',
-      `${runtimeType}-runtime-${randomUUID().slice(0, 8)}`,
+      `${runtimeName}-shared-${randomUUID().slice(0, 8)}`,
       `--network=${config.network}`,
+      '--userns=keep-id',
+      '--mount',
+      `type=bind,source=${sharedRoot},target=/realm`,
       config.image,
       'sleep',
       'infinity',
     ];
-
     const { stdout } = await execFileAsync('podman', args);
     const id = stdout.trim();
-
-    console.log(`[SandboxService] Spawned ${runtimeType} container: ${id.slice(0, 12)}`);
-    return { id, runtimeType, activeSessions: 0 };
+    const container: Container = { id, runtimeName, mode: 'shared' };
+    this.sharedContainers.set(runtimeName, container);
+    console.log(`[SandboxService] Spawned shared ${runtimeName} container: ${id.slice(0, 12)}`);
+    return container;
   }
 
-  private async stopContainer(container: Container): Promise<void> {
-    try {
-      await execFileAsync('podman', ['rm', '-f', container.id]);
-      console.log(`[SandboxService] Stopped container: ${container.id.slice(0, 12)}`);
-    } catch {
-      // Ignore errors on stop
-    }
-  }
+  private async acquireExclusiveContainer(
+    runtimeName: string,
+    config: RuntimeConfig,
+    realmHostPath: string,
+    contextEntries: Map<string, ContextEntry>,
+  ): Promise<Container> {
+    const set = this.exclusiveContainers.get(runtimeName)!;
 
-  private async podmanExec(containerId: string, command: string[]): Promise<string> {
-    const { stdout } = await execFileAsync('podman', ['exec', containerId, ...command]);
-    return stdout;
-  }
-
-  private async copyToContainer(containerId: string, hostPath: string, containerPath: string): Promise<void> {
-    await execFileAsync('podman', ['cp', hostPath, `${containerId}:${containerPath}`]);
-  }
-
-  // ─── Input File Conflict Resolution ─────────────────────────────────────
-
-  /**
-   * Copy a host file into the session, renaming any existing file with the same name
-   * using the pattern: filename.old.1.ext, filename.old.2.ext, etc.
-   */
-  private async copyInputWithRename(containerId: string, hostPath: string, sessionPath: string): Promise<void> {
-    const fileName = basename(hostPath);
-    const containerFilePath = `${sessionPath}/${fileName}`;
-
-    // Check if file already exists in session
-    const exists = await this.fileExistsInContainer(containerId, containerFilePath);
-
-    if (exists) {
-      const ext = extname(fileName);
-      const nameWithoutExt = fileName.slice(0, fileName.length - ext.length);
-
-      // Find the next available .old.N suffix
-      let n = 1;
-      while (true) {
-        const oldName = `${nameWithoutExt}.old.${n}${ext}`;
-        const oldPath = `${sessionPath}/${oldName}`;
-        const oldExists = await this.fileExistsInContainer(containerId, oldPath);
-        if (!oldExists) {
-          // Rename existing file to .old.N
-          await this.podmanExec(containerId, ['mv', containerFilePath, oldPath]);
-          break;
-        }
-        n++;
+    const spawn = async (): Promise<Container> => {
+      const args = [
+        'run',
+        '-d',
+        '--name',
+        `${runtimeName}-exclusive-${randomUUID().slice(0, 8)}`,
+        `--network=${config.network}`,
+        '--userns=keep-id',
+        '--mount',
+        `type=bind,source=${realmHostPath},target=/workspace`,
+      ];
+      for (const e of contextEntries.values()) {
+        if (e.state !== 'mounted') continue;
+        args.push('--mount', `type=bind,source=${e.hostPath},target=/workspace/${e.realmName}`);
       }
+      args.push(config.image, 'sleep', 'infinity');
+
+      const { stdout } = await execFileAsync('podman', args);
+      const id = stdout.trim();
+      const container: Container = { id, runtimeName, mode: 'exclusive' };
+      console.log(
+        `[SandboxService] Spawned exclusive ${runtimeName} container: ${id.slice(0, 12)}`,
+      );
+      return container;
+    };
+
+    if (set.size < config.limit) {
+      const container = await spawn();
+      set.add(container);
+      return container;
     }
 
-    await this.copyToContainer(containerId, hostPath, `${sessionPath}/`);
+    return new Promise<Container>((resolve, reject) => {
+      this.containerQueue.push({ runtimeName, spawn, resolve, reject });
+      const position = this.containerQueue.filter((q) => q.runtimeName === runtimeName).length;
+      console.log(
+        `[SandboxService] Waiting for ${runtimeName} container slot (queue position ${position})`,
+      );
+    });
   }
 
-  private async fileExistsInContainer(containerId: string, filePath: string): Promise<boolean> {
-    try {
-      await execFileAsync('podman', ['exec', containerId, 'test', '-e', filePath]);
-      return true;
-    } catch {
-      return false;
+  private drainContainerQueue(runtimeName: string): void {
+    const config = this.runtimeConfigs.get(runtimeName);
+    if (!config) return;
+    const set = this.exclusiveContainers.get(runtimeName)!;
+
+    const idx = this.containerQueue.findIndex((q) => q.runtimeName === runtimeName);
+    if (idx === -1) return;
+    if (set.size >= config.limit) return;
+
+    const queued = this.containerQueue.splice(idx, 1)[0];
+    queued
+      .spawn()
+      .then((c) => {
+        set.add(c);
+        queued.resolve(c);
+      })
+      .catch((err) => queued.reject(err));
+  }
+
+  // ─── Execution semaphore (shared mode) ───────────────────────────────────
+
+  private async acquireExecutionSlot(runtimeName: string, config: RuntimeConfig): Promise<void> {
+    const active = this.activeExecutions.get(runtimeName) ?? 0;
+    if (active < config.limit) {
+      this.activeExecutions.set(runtimeName, active + 1);
+      return;
+    }
+    return new Promise<void>((resolve, reject) => {
+      this.executionQueue.push({ runtimeName, resolve, reject });
+      console.log(
+        `[SandboxService] Execution queued for ${runtimeName} (${active}/${config.limit} slots in use)`,
+      );
+    });
+  }
+
+  private releaseExecutionSlot(runtimeName: string): void {
+    const idx = this.executionQueue.findIndex((q) => q.runtimeName === runtimeName);
+    if (idx !== -1) {
+      const queued = this.executionQueue.splice(idx, 1)[0];
+      queued.resolve();
+    } else {
+      const active = this.activeExecutions.get(runtimeName) ?? 0;
+      this.activeExecutions.set(runtimeName, Math.max(0, active - 1));
     }
   }
 
-  // ─── Utilities ──────────────────────────────────────────────────────────
+  // ─── Config loading ──────────────────────────────────────────────────────
+
+  private async loadRuntimeConfigs(): Promise<void> {
+    if (!(await existsAsync(this.sandboxDir))) {
+      console.warn(`[SandboxService] Sandbox runtimes directory not found: ${this.sandboxDir}`);
+      return;
+    }
+    const entries = await readdir(this.sandboxDir);
+    for (const entry of entries) {
+      const entryPath = resolve(this.sandboxDir, entry);
+      const configPath = resolve(entryPath, 'config.json');
+      const st = await stat(entryPath);
+      if (!st.isDirectory()) continue;
+      if (!(await existsAsync(configPath))) continue;
+      const content = await readFile(configPath, 'utf-8');
+      const config: RuntimeConfig = JSON.parse(content);
+      this.runtimeConfigs.set(config.name, config);
+    }
+  }
+
+  private async loadSkillRuntimes(): Promise<void> {
+    if (!(await existsAsync(this.skillRuntimesPath))) {
+      console.warn(`[SandboxService] skill-runtimes.json not found: ${this.skillRuntimesPath}`);
+      return;
+    }
+    const content = await readFile(this.skillRuntimesPath, 'utf-8');
+    this.skillRuntimes = JSON.parse(content);
+  }
 
   private async checkPodman(): Promise<void> {
     try {

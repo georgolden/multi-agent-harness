@@ -34,7 +34,8 @@
   - 1st application - just executable that glues and runs everything
   - [x] agent builder of agents
   - build secretary agent/agents
-  - execute skill tool
+  - [ ] skills + execute skill tool
+  - [ ] web research + web use
   - [x] UI
   - Session: temp files history
   - [x] Agent: parallel flow execution and schema extention for it

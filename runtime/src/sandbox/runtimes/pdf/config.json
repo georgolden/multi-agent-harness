@@ -1,12 +1,8 @@
 {
   "name": "pdf",
   "image": "pdf-runtime:latest",
-  "pool": {
-    "min": 0,
-    "max": 2
-  },
+  "mode": "exclusive",
+  "limit": 2,
   "network": "none",
-  "executionTimeout": 300000,
-  "parallelExecutions": true,
-  "maxParallelExecutions": 4
+  "executionTimeout": 300000
 }

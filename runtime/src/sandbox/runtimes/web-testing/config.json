@@ -1,12 +1,8 @@
 {
   "name": "web-testing",
   "image": "web-testing-runtime:latest",
-  "pool": {
-    "min": 0,
-    "max": 2
-  },
+  "mode": "exclusive",
+  "limit": 2,
   "network": "slirp4netns",
-  "executionTimeout": 600000,
-  "parallelExecutions": true,
-  "maxParallelExecutions": 4
+  "executionTimeout": 600000
 }

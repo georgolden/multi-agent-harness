@@ -1,12 +1,8 @@
 {
   "name": "generic",
   "image": "generic-runtime:latest",
-  "pool": {
-    "min": 1,
-    "max": 2
-  },
+  "mode": "shared",
+  "limit": 4,
   "network": "none",
-  "executionTimeout": 180000,
-  "parallelExecutions": true,
-  "maxParallelExecutions": 4
+  "executionTimeout": 180000
 }

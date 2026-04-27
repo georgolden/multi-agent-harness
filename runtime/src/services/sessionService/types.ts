@@ -95,7 +95,7 @@ export interface SessionData {
   // temporary files
   tempFiles: Array<{
     name: string;
-    content: string;
+    content: string | Buffer;
   }>;
 
   callLlmOptions?: CallLlmOptions;

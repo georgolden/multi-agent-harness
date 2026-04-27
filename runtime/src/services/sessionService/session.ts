@@ -208,8 +208,11 @@ export class Session {
     }
 
     if (parent.tempFiles && parent.tempFiles.length > 0) {
-      const filesXml = (parent.tempFiles as Array<{ name: string; content: string }>)
-        .map((f) => `  <file>\n    <name>${f.name}</name>\n    <content>${f.content}</content>\n  </file>`)
+      const filesXml = (parent.tempFiles as Array<{ name: string; content: string | Buffer }>)
+        .map((f) => {
+          const content = Buffer.isBuffer(f.content) ? '[binary content]' : f.content;
+          return `  <file>\n    <name>${f.name}</name>\n    <content>${content}</content>\n  </file>`;
+        })
         .join('\n');
       parts.push(`<temp_files>\n${filesXml}\n</temp_files>`);
     }
@@ -244,7 +247,10 @@ export class Session {
 
     if (tempFiles && tempFiles.length > 0) {
       const filesXml = tempFiles
-        .map((f) => `  <file>\n    <name>${f.name}</name>\n    <content>${f.content}</content>\n  </file>`)
+        .map((f) => {
+          const content = Buffer.isBuffer(f.content) ? '[binary content]' : f.content;
+          return `  <file>\n    <name>${f.name}</name>\n    <content>${content}</content>\n  </file>`;
+        })
         .join('\n');
       fullContent = `<temp_files>\n${filesXml}\n</temp_files>\n<user_message>${fullContent}</user_message>`;
     }
@@ -298,8 +304,14 @@ export class Session {
     return this;
   }
 
-  async writeTempFile(file: { name: string; content: string }): Promise<this> {
+  async writeTempFile(file: { name: string; content: string | Buffer }): Promise<this> {
     const tempFiles = await this.app.data.flowSessionRepository.writeTempFile(this.sessionData.id, file);
+    this.sessionData.tempFiles = tempFiles;
+    return this;
+  }
+
+  async removeTempFile(name: string): Promise<this> {
+    const tempFiles = await this.app.data.flowSessionRepository.removeTempFile(this.sessionData.id, name);
     this.sessionData.tempFiles = tempFiles;
     return this;
   }

@@ -10,14 +10,13 @@
 export type NetworkMode = 'none' | 'slirp4netns';
 
 /**
- * Container pool configuration
+ * Sandbox mode:
+ * - "shared": one long-lived container per runtime; sessions live as subfolders.
+ *             `limit` caps concurrent command executions.
+ * - "exclusive": one container per session, destroyed on cleanup.
+ *                `limit` caps live containers (queued when full).
  */
-export interface PoolConfig {
-  /** Minimum number of warm containers to keep running */
-  min: number;
-  /** Maximum number of containers allowed */
-  max: number;
-}
+export type SandboxMode = 'shared' | 'exclusive';
 
 /**
  * Runtime configuration for a sandbox type
@@ -27,24 +26,27 @@ export interface RuntimeConfig {
   name: string;
   /** Docker/Podman image name with tag */
   image: string;
-  /** Container pool settings */
-  pool: PoolConfig;
+  /** Sandbox mode */
+  mode: SandboxMode;
+  /**
+   * shared: max concurrent command executions across all sessions
+   * exclusive: max live containers
+   */
+  limit: number;
   /** Network mode for containers */
   network: NetworkMode;
-  /** Timeout in milliseconds for each executeCommands call; kills stuck commands */
+  /** Timeout in milliseconds per executeSkillCommands batch */
   executionTimeout: number;
-  /** Allow multiple sessions and executeCommands per container (false for LibreOffice due to locking) */
-  parallelExecutions: boolean;
-  /** Maximum parallel executeCommands batches across all sessions for this runtime */
-  maxParallelExecutions: number;
 }
 
-/**
- * Mapping of skill names to runtime types
- */
+/** Mapping of skill names to runtime types */
 export type SkillRuntimesMap = Record<string, string | null>;
 
-/**
- * Runtime type names
- */
-export type RuntimeType = 'office' | 'pdf' | 'web-testing' | 'generic';
+/** Per-context bind mount baked into an exclusive container's spawn argv */
+export interface SkillContextMount {
+  /** Host absolute path */
+  hostPath: string;
+  /** Basename inside the container (deduped) */
+  name: string;
+  type: 'file' | 'folder';
+}
