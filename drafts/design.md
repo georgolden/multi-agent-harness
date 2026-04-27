@@ -1,4 +1,4 @@
-### AGI Design
+### Design
 
 Agent is not a universal session with skill or additional instructions
 
