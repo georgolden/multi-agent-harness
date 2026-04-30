@@ -1,0 +1,35 @@
+wing: runtime
+rooms:
+- name: frontend
+  description: Files from ui/
+  keywords:
+  - frontend
+  - ui
+- name: prisma
+  description: Files from prisma/
+  keywords:
+  - prisma
+  - prisma
+- name: scripts
+  description: Files from scripts/
+  keywords:
+  - scripts
+  - scripts
+- name: src
+  description: Files from src/
+  keywords:
+  - src
+  - src
+- name: documentation
+  description: Files from docs/
+  keywords:
+  - documentation
+  - docs
+- name: backend
+  description: Files from server/
+  keywords:
+  - backend
+  - server
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []
