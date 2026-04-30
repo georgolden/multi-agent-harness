@@ -32,6 +32,7 @@
     "globals": "^17.2.0",
     "prettier": "^3.8.1",
     "prompt-sync": "^4.2.0",
+    "skills": "^1.5.3",
     "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
     "typescript": "^5.8.2",
