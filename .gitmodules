@@ -4,3 +4,6 @@
 [submodule "pi-mono"]
 	path = pi-mono
 	url = git@github.com:badlogic/pi-mono.git
+[submodule "opencode"]
+	path = opencode
+	url = git@github.com:anomalyco/opencode.git
