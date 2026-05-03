@@ -2,24 +2,34 @@ import type { AgentTool } from '../types.js';
 import type { ImageContent, TextContent } from '../types.js';
 import { type Static, Type } from '@sinclair/typebox';
 import { constants } from 'fs';
-import { access as fsAccess, readFile as fsReadFile } from 'fs/promises';
+import { access as fsAccess, readFile as fsReadFile, readdir as fsReaddir, stat as fsStat } from 'fs/promises';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
+import path from 'node:path';
 import { formatDimensionNote, resizeImage } from '../utils/image-resize.js';
 import { detectSupportedImageMimeTypeFromFile } from '../utils/mime.js';
 import { ToolResultMessage } from '../utils/message.js';
 import { resolveReadPath } from './path-utils.js';
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from './truncate.js';
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from './truncate.js';
 import { App } from '../app.js';
 
+const MAX_LINE_LENGTH = 2000;
+const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`;
+const MAX_BYTES = DEFAULT_MAX_BYTES;
+const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`;
+const SAMPLE_BYTES = 4096;
+const SUPPORTED_IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+
 const readSchema = Type.Object({
-  path: Type.String({ description: 'Path to the file to read (relative or absolute)' }),
-  offset: Type.Optional(Type.Number({ description: 'Line number to start reading from (1-indexed)' })),
-  limit: Type.Optional(Type.Number({ description: 'Maximum number of lines to read' })),
+  filePath: Type.String({ description: 'The absolute path to the file or directory to read' }),
+  offset: Type.Optional(Type.Number({ description: 'The line number to start reading from (1-indexed)' })),
+  limit: Type.Optional(Type.Number({ description: 'The maximum number of lines to read (defaults to 2000)' })),
 });
 
 export type ReadToolInput = Static<typeof readSchema>;
 
 export interface ReadToolDetails {
-  truncation?: TruncationResult;
+  truncation?: { truncated: boolean; outputLines: number; totalLines: number };
 }
 
 /**
@@ -31,13 +41,22 @@ export interface ReadOperations {
   readFile: (absolutePath: string) => Promise<Buffer>;
   /** Check if file is readable (throw if not) */
   access: (absolutePath: string) => Promise<void>;
+  /** Read directory entries */
+  readdir: (absolutePath: string) => Promise<string[]>;
+  /** Stat a path */
+  stat: (absolutePath: string) => Promise<{ isDirectory: () => boolean; isFile: () => boolean; size: number }>;
   /** Detect image MIME type, return null/undefined for non-images */
   detectImageMimeType?: (absolutePath: string) => Promise<string | null | undefined>;
 }
 
 const defaultReadOperations: ReadOperations = {
-  readFile: (path) => fsReadFile(path),
-  access: (path) => fsAccess(path, constants.R_OK),
+  readFile: (p) => fsReadFile(p),
+  access: (p) => fsAccess(p, constants.R_OK),
+  readdir: (p) => fsReaddir(p),
+  stat: async (p) => {
+    const s = await fsStat(p);
+    return { isDirectory: () => s.isDirectory(), isFile: () => s.isFile(), size: s.size };
+  },
   detectImageMimeType: detectSupportedImageMimeTypeFromFile,
 };
 
@@ -48,6 +67,107 @@ export interface ReadToolOptions {
   operations?: ReadOperations;
 }
 
+function isBinaryFile(filePath: string, bytes: Uint8Array): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.zip':
+    case '.tar':
+    case '.gz':
+    case '.exe':
+    case '.dll':
+    case '.so':
+    case '.class':
+    case '.jar':
+    case '.war':
+    case '.7z':
+    case '.doc':
+    case '.docx':
+    case '.xls':
+    case '.xlsx':
+    case '.ppt':
+    case '.pptx':
+    case '.odt':
+    case '.ods':
+    case '.odp':
+    case '.bin':
+    case '.dat':
+    case '.obj':
+    case '.o':
+    case '.a':
+    case '.lib':
+    case '.wasm':
+    case '.pyc':
+    case '.pyo':
+      return true;
+  }
+
+  if (bytes.length === 0) return false;
+
+  let nonPrintableCount = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] === 0) return true;
+    if (bytes[i] < 9 || (bytes[i] > 13 && bytes[i] < 32)) {
+      nonPrintableCount++;
+    }
+  }
+
+  return nonPrintableCount / bytes.length > 0.3;
+}
+
+async function readSample(filePath: string, fileSize: number): Promise<Uint8Array> {
+  if (fileSize === 0) return new Uint8Array();
+  const stream = createReadStream(filePath, { start: 0, end: Math.min(SAMPLE_BYTES, fileSize) - 1 });
+  const chunks: Buffer[] = [];
+  return new Promise((resolve, reject) => {
+    stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(Buffer.concat(chunks)));
+  });
+}
+
+async function readLines(filePath: string, opts: { limit: number; offset: number }) {
+  const stream = createReadStream(filePath, { encoding: 'utf8' });
+  const rl = createInterface({
+    input: stream,
+    crlfDelay: Infinity,
+  });
+
+  const start = opts.offset - 1;
+  const raw: string[] = [];
+  let bytes = 0;
+  let count = 0;
+  let cut = false;
+  let more = false;
+
+  try {
+    for await (const text of rl) {
+      count += 1;
+      if (count <= start) continue;
+
+      if (raw.length >= opts.limit) {
+        more = true;
+        continue;
+      }
+
+      const line = text.length > MAX_LINE_LENGTH ? text.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : text;
+      const size = Buffer.byteLength(line, 'utf-8') + (raw.length > 0 ? 1 : 0);
+      if (bytes + size > MAX_BYTES) {
+        cut = true;
+        more = true;
+        break;
+      }
+
+      raw.push(line);
+      bytes += size;
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+
+  return { raw, count, cut, more, offset: opts.offset };
+}
+
 export function createReadTool(cwd: string, options?: ReadToolOptions): AgentTool<typeof readSchema> {
   const autoResizeImages = options?.autoResizeImages ?? true;
   const ops = options?.operations ?? defaultReadOperations;
@@ -55,188 +175,188 @@ export function createReadTool(cwd: string, options?: ReadToolOptions): AgentToo
   return {
     name: 'read',
     label: 'read',
-    description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
+    description: `Read the contents of a file or list a directory. Supports text files and images (jpg, png, gif, webp). For text files, output includes line numbers and is truncated to ${DEFAULT_MAX_LINES} lines or ${MAX_BYTES_LABEL} (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
     parameters: readSchema,
     execute: async (
       _app: App,
       _context: any,
-      { path, offset, limit },
+      { filePath, offset, limit },
       { toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
     ) => {
-      const absolutePath = resolveReadPath(path, cwd);
-
-      return new Promise<any>((resolve) => {
-        // Check if already aborted
-        if (signal?.aborted) {
-          const error = new Error('Operation aborted');
-          resolve({
-            data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
-            details: undefined,
-            error,
-          });
-          return;
-        }
-
-        let aborted = false;
-
-        // Set up abort handler
-        const onAbort = () => {
-          aborted = true;
+      if (signal?.aborted) {
+        return {
+          data: new ToolResultMessage({ toolCallId, content: 'Error: Operation aborted' }),
+          details: undefined,
+          error: new Error('Operation aborted'),
         };
+      }
 
-        if (signal) {
-          signal.addEventListener('abort', onAbort, { once: true });
+      const absolutePath = resolveReadPath(filePath, cwd);
+
+      try {
+        // Stat the path
+        let stat: { isDirectory: () => boolean; isFile: () => boolean; size: number } | undefined;
+        try {
+          stat = await ops.stat(absolutePath);
+        } catch {
+          // File not found — try to suggest alternatives
+          const dir = path.dirname(absolutePath);
+          const base = path.basename(absolutePath);
+          let suggestions: string[] = [];
+          try {
+            const items = await ops.readdir(dir);
+            suggestions = items
+              .filter(
+                (item) =>
+                  item.toLowerCase().includes(base.toLowerCase()) || base.toLowerCase().includes(item.toLowerCase()),
+              )
+              .map((item) => path.join(dir, item))
+              .slice(0, 3);
+          } catch {
+            // ignore
+          }
+
+          if (suggestions.length > 0) {
+            throw new Error(`File not found: ${absolutePath}\n\nDid you mean one of these?\n${suggestions.join('\n')}`);
+          }
+          throw new Error(`File not found: ${absolutePath}`);
         }
 
-        // Perform the read operation
-        (async () => {
-          try {
-            // Check if file exists
-            await ops.access(absolutePath);
+        if (stat.isDirectory()) {
+          const items = await ops.readdir(absolutePath);
+          const sorted = items.sort((a, b) => a.localeCompare(b));
+          const effectiveLimit = limit ?? DEFAULT_MAX_LINES;
+          const effectiveOffset = offset ?? 1;
+          const start = effectiveOffset - 1;
+          const sliced = sorted.slice(start, start + effectiveLimit);
+          const truncated = start + sliced.length < sorted.length;
 
-            // Check if aborted before reading
-            if (aborted) {
-              return;
-            }
-
-            const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
-
-            // Read the file based on type
-            let content: (TextContent | ImageContent)[];
-            let details: ReadToolDetails | undefined;
-
-            if (mimeType) {
-              // Read as image (binary)
-              const buffer = await ops.readFile(absolutePath);
-              const base64 = buffer.toString('base64');
-
-              if (autoResizeImages) {
-                // Resize image if needed
-                const resized = await resizeImage({ type: 'image', data: base64, mimeType });
-                const dimensionNote = formatDimensionNote(resized);
-
-                let textNote = `Read image file [${resized.mimeType}]`;
-                if (dimensionNote) {
-                  textNote += `\n${dimensionNote}`;
-                }
-
-                content = [
-                  { type: 'text', text: textNote },
-                  { type: 'image', data: resized.data, mimeType: resized.mimeType },
-                ];
-              } else {
-                const textNote = `Read image file [${mimeType}]`;
-                content = [
-                  { type: 'text', text: textNote },
-                  { type: 'image', data: base64, mimeType },
-                ];
+          const formatted = await Promise.all(
+            sliced.map(async (item) => {
+              try {
+                const itemStat = await ops.stat(path.join(absolutePath, item));
+                return itemStat.isDirectory() ? item + '/' : item;
+              } catch {
+                return item;
               }
-            } else {
-              // Read as text
-              const buffer = await ops.readFile(absolutePath);
-              const textContent = buffer.toString('utf-8');
-              const allLines = textContent.split('\n');
-              const totalFileLines = allLines.length;
+            }),
+          );
 
-              // Apply offset if specified (1-indexed to 0-indexed)
-              const startLine = offset ? Math.max(0, offset - 1) : 0;
-              const startLineDisplay = startLine + 1; // For display (1-indexed)
+          const output = [
+            `<path>${absolutePath}</path>`,
+            `<type>directory</type>`,
+            `<entries>`,
+            formatted.join('\n'),
+            truncated
+              ? `\n(Showing ${sliced.length} of ${sorted.length} entries. Use 'offset' parameter to read beyond entry ${effectiveOffset + sliced.length})`
+              : `\n(${sorted.length} entries)`,
+            `</entries>`,
+          ].join('\n');
 
-              // Check if offset is out of bounds
-              if (startLine >= allLines.length) {
-                const error = new Error(`Offset ${offset} is beyond end of file (${allLines.length} lines total)`);
-                resolve({
-                  data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
-                  details: undefined,
-                  error,
-                });
-                return;
-              }
+          return {
+            data: new ToolResultMessage({ toolCallId, content: output }),
+            details: { truncation: { truncated, outputLines: sliced.length, totalLines: sorted.length } },
+          };
+        }
 
-              // If limit is specified by user, use it; otherwise we'll let truncateHead decide
-              let selectedContent: string;
-              let userLimitedLines: number | undefined;
-              if (limit !== undefined) {
-                const endLine = Math.min(startLine + limit, allLines.length);
-                selectedContent = allLines.slice(startLine, endLine).join('\n');
-                userLimitedLines = endLine - startLine;
-              } else {
-                selectedContent = allLines.slice(startLine).join('\n');
-              }
+        if (!stat.isFile()) {
+          throw new Error(`Path is not a file: ${absolutePath}`);
+        }
 
-              // Apply truncation (respects both line and byte limits)
-              const truncation = truncateHead(selectedContent);
+        // Check if image
+        const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
+        const isImage = mimeType && SUPPORTED_IMAGE_MIMES.has(mimeType);
 
-              let outputText: string;
+        if (isImage) {
+          const buffer = await ops.readFile(absolutePath);
+          const base64 = buffer.toString('base64');
 
-              if (truncation.firstLineExceedsLimit) {
-                // First line at offset exceeds 30KB - tell model to use bash
-                const firstLineSize = formatSize(Buffer.byteLength(allLines[startLine], 'utf-8'));
-                outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${path} | head -c ${DEFAULT_MAX_BYTES}]`;
-                details = { truncation };
-              } else if (truncation.truncated) {
-                // Truncation occurred - build actionable notice
-                const endLineDisplay = startLineDisplay + truncation.outputLines - 1;
-                const nextOffset = endLineDisplay + 1;
-
-                outputText = truncation.content;
-
-                if (truncation.truncatedBy === 'lines') {
-                  outputText += `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines}. Use offset=${nextOffset} to continue.]`;
-                } else {
-                  outputText += `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Use offset=${nextOffset} to continue.]`;
-                }
-                details = { truncation };
-              } else if (userLimitedLines !== undefined && startLine + userLimitedLines < allLines.length) {
-                // User specified limit, there's more content, but no truncation
-                const remaining = allLines.length - (startLine + userLimitedLines);
-                const nextOffset = startLine + userLimitedLines + 1;
-
-                outputText = truncation.content;
-                outputText += `\n\n[${remaining} more lines in file. Use offset=${nextOffset} to continue.]`;
-              } else {
-                // No truncation, no user limit exceeded
-                outputText = truncation.content;
-              }
-
-              content = [{ type: 'text', text: outputText }];
+          if (autoResizeImages) {
+            const resized = await resizeImage({ type: 'image', data: base64, mimeType });
+            const dimensionNote = formatDimensionNote(resized);
+            let textNote = `Read image file [${resized.mimeType}]`;
+            if (dimensionNote) {
+              textNote += `\n${dimensionNote}`;
             }
-
-            // Check if aborted after reading
-            if (aborted) {
-              return;
-            }
-
-            // Clean up abort handler
-            if (signal) {
-              signal.removeEventListener('abort', onAbort);
-            }
-
-            // Convert content to text/LLMText format for ToolResultMessage
-            const messageContent = content
-              .map((c) => (c.type === 'text' ? c.text : `[Image: ${c.mimeType}]`))
-              .join('\n');
-            resolve({
-              data: new ToolResultMessage({ toolCallId, content: messageContent }),
-              details,
-            });
-          } catch (error: any) {
-            // Clean up abort handler
-            if (signal) {
-              signal.removeEventListener('abort', onAbort);
-            }
-
-            if (!aborted) {
-              const err = error instanceof Error ? error : new Error(String(error));
-              resolve({
-                data: new ToolResultMessage({ toolCallId, content: `Error: ${err.message}` }),
-                details: undefined,
-                error: err,
-              });
-            }
+            const content: (TextContent | ImageContent)[] = [
+              { type: 'text', text: textNote },
+              { type: 'image', data: resized.data, mimeType: resized.mimeType },
+            ];
+            return {
+              data: new ToolResultMessage({
+                toolCallId,
+                content: content.map((c) => (c.type === 'text' ? c.text : `[Image: ${c.mimeType}]`)).join('\n'),
+              }),
+              details: { truncation: { truncated: false, outputLines: 1, totalLines: 1 } },
+            };
+          } else {
+            const textNote = `Read image file [${mimeType}]`;
+            const content: (TextContent | ImageContent)[] = [
+              { type: 'text', text: textNote },
+              { type: 'image', data: base64, mimeType },
+            ];
+            return {
+              data: new ToolResultMessage({
+                toolCallId,
+                content: content.map((c) => (c.type === 'text' ? c.text : `[Image: ${c.mimeType}]`)).join('\n'),
+              }),
+              details: { truncation: { truncated: false, outputLines: 1, totalLines: 1 } },
+            };
           }
-        })();
-      });
+        }
+
+        // Sample for binary detection
+        const sample = await readSample(absolutePath, stat.size);
+        if (isBinaryFile(absolutePath, sample)) {
+          throw new Error(`Cannot read binary file: ${absolutePath}`);
+        }
+
+        const effectiveLimit = limit ?? DEFAULT_MAX_LINES;
+        const effectiveOffset = offset ?? 1;
+
+        if (effectiveOffset < 1) {
+          throw new Error('offset must be greater than or equal to 1');
+        }
+
+        const file = await readLines(absolutePath, { limit: effectiveLimit, offset: effectiveOffset });
+
+        if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
+          throw new Error(`Offset ${file.offset} is out of range for this file (${file.count} lines)`);
+        }
+
+        let output = [`<path>${absolutePath}</path>`, `<type>file</type>`, '<content>\n'].join('\n');
+        output += file.raw.map((line, i) => `${i + file.offset}: ${line}`).join('\n');
+
+        const last = file.offset + file.raw.length - 1;
+        const next = last + 1;
+        const truncated = file.more || file.cut;
+        if (file.cut) {
+          output += `\n\n(Output capped at ${MAX_BYTES_LABEL}. Showing lines ${file.offset}-${last}. Use offset=${next} to continue.)`;
+        } else if (file.more) {
+          output += `\n\n(Showing lines ${file.offset}-${last} of ${file.count}. Use offset=${next} to continue.)`;
+        } else {
+          output += `\n\n(End of file - total ${file.count} lines)`;
+        }
+        output += '\n</content>';
+
+        return {
+          data: new ToolResultMessage({ toolCallId, content: output }),
+          details: {
+            truncation: {
+              truncated,
+              outputLines: file.raw.length,
+              totalLines: file.count,
+            },
+          },
+        };
+      } catch (error: any) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        return {
+          data: new ToolResultMessage({ toolCallId, content: `Error: ${err.message}` }),
+          details: undefined,
+          error: err,
+        };
+      }
     },
   };
 }

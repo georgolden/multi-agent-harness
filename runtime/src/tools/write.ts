@@ -1,17 +1,26 @@
 import type { AgentTool } from '../types.js';
 import { type Static, Type } from '@sinclair/typebox';
-import { mkdir as fsMkdir, writeFile as fsWriteFile } from 'fs/promises';
+import { mkdir as fsMkdir, readFile as fsReadFile, writeFile as fsWriteFile } from 'fs/promises';
 import { dirname } from 'path';
 import { ToolResultMessage } from '../utils/message.js';
 import { resolveToCwd } from './path-utils.js';
 import { App } from '../app.js';
 
 const writeSchema = Type.Object({
-  path: Type.String({ description: 'Path to the file to write (relative or absolute)' }),
-  content: Type.String({ description: 'Content to write to the file' }),
+  filePath: Type.String({ description: 'The absolute path to the file to write (must be absolute, not relative)' }),
+  content: Type.String({ description: 'The content to write to the file' }),
 });
 
 export type WriteToolInput = Static<typeof writeSchema>;
+
+/** Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it */
+function splitBom(content: string): { bom: boolean; text: string } {
+  return content.startsWith('\uFEFF') ? { bom: true, text: content.slice(1) } : { bom: false, text: content };
+}
+
+function joinBom(text: string, hasBom: boolean): string {
+  return hasBom ? '\uFEFF' + text : text;
+}
 
 /**
  * Pluggable operations for the write tool.
@@ -22,11 +31,25 @@ export interface WriteOperations {
   writeFile: (absolutePath: string, content: string) => Promise<void>;
   /** Create directory (recursively) */
   mkdir: (dir: string) => Promise<void>;
+  /** Check if file exists */
+  exists: (absolutePath: string) => Promise<boolean>;
+  /** Read file contents as string */
+  readFileString: (absolutePath: string) => Promise<string>;
 }
 
 const defaultWriteOperations: WriteOperations = {
-  writeFile: (path, content) => fsWriteFile(path, content, 'utf-8'),
+  writeFile: (p, content) => fsWriteFile(p, content, 'utf-8'),
   mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
+  exists: async (p) => {
+    const { access } = await import('node:fs/promises');
+    try {
+      await access(p);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  readFileString: (p) => fsReadFile(p, 'utf-8'),
 };
 
 export interface WriteToolOptions {
@@ -41,85 +64,53 @@ export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentT
     name: 'write',
     label: 'write',
     description:
-      "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+      "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories. Provide the absolute path to the file.",
     parameters: writeSchema,
     execute: async (
       _app: App,
       _context: any,
-      { path, content },
+      { filePath, content },
       { toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
     ) => {
-      const absolutePath = resolveToCwd(path, cwd);
+      if (signal?.aborted) {
+        return {
+          data: new ToolResultMessage({ toolCallId, content: 'Error: Operation aborted' }),
+          details: undefined,
+          error: new Error('Operation aborted'),
+        };
+      }
+
+      const absolutePath = resolveToCwd(filePath, cwd);
       const dir = dirname(absolutePath);
 
-      return new Promise<any>((resolve) => {
-        // Check if already aborted
-        if (signal?.aborted) {
-          const error = new Error('Operation aborted');
-          resolve({
-            data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
-            details: undefined,
-            error,
-          });
-          return;
-        }
+      try {
+        // Create parent directories if needed
+        await ops.mkdir(dir);
 
-        let aborted = false;
+        const exists = await ops.exists(absolutePath);
+        const source = exists ? splitBom(await ops.readFileString(absolutePath)) : { bom: false, text: '' };
+        const next = splitBom(content);
+        const desiredBom = source.bom || next.bom;
+        const contentNew = next.text;
 
-        // Set up abort handler
-        const onAbort = () => {
-          aborted = true;
+        // Write the file preserving BOM
+        await ops.writeFile(absolutePath, joinBom(contentNew, desiredBom));
+
+        return {
+          data: new ToolResultMessage({
+            toolCallId,
+            content: `Wrote file successfully.`,
+          }),
+          details: { filepath: absolutePath, exists },
         };
-
-        if (signal) {
-          signal.addEventListener('abort', onAbort, { once: true });
-        }
-
-        // Perform the write operation
-        (async () => {
-          try {
-            // Create parent directories if needed
-            await ops.mkdir(dir);
-
-            // Check if aborted before writing
-            if (aborted) {
-              return;
-            }
-
-            // Write the file
-            await ops.writeFile(absolutePath, content);
-
-            // Check if aborted after writing
-            if (aborted) {
-              return;
-            }
-
-            // Clean up abort handler
-            if (signal) {
-              signal.removeEventListener('abort', onAbort);
-            }
-
-            resolve({
-              data: new ToolResultMessage({ toolCallId, content: `Successfully wrote ${content.length} bytes to ${path}` }),
-              details: undefined,
-            });
-          } catch (error: any) {
-            // Clean up abort handler
-            if (signal) {
-              signal.removeEventListener('abort', onAbort);
-            }
-
-            if (!aborted) {
-              const err = error instanceof Error ? error : new Error(String(error));
-              resolve({
-                data: new ToolResultMessage({ toolCallId, content: `Error: ${err.message}` }),
-                details: undefined,
-                error: err,
-              });
-            }
-          }
-        })();
-      });
+      } catch (error: any) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        return {
+          data: new ToolResultMessage({ toolCallId, content: `Error: ${err.message}` }),
+          details: undefined,
+          error: err,
+        };
+      }
     },
   };
 }

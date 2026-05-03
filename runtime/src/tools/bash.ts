@@ -7,7 +7,7 @@ import { type Static, Type } from '@sinclair/typebox';
 import { spawn } from 'child_process';
 import { getShellConfig, getShellEnv, killProcessTree } from '../utils/shell.js';
 import { ToolResultMessage } from '../utils/message.js';
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateTail } from './truncate.js';
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from './truncate.js';
 import { App } from '../app.js';
 
 /**
@@ -18,16 +18,66 @@ function getTempFilePath(): string {
   return join(tmpdir(), `pi-bash-${id}.log`);
 }
 
+const MAX_METADATA_LENGTH = 30_000;
+const DEFAULT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+
 const bashSchema = Type.Object({
-  command: Type.String({ description: 'Bash command to execute' }),
-  timeout: Type.Optional(Type.Number({ description: 'Timeout in seconds (optional, no default timeout)' })),
+  command: Type.String({ description: 'The command to execute' }),
+  timeout: Type.Optional(Type.Number({ description: 'Optional timeout in milliseconds' })),
+  workdir: Type.Optional(
+    Type.String({
+      description: `The working directory to run the command in. Defaults to the current directory. Use this instead of 'cd' commands.`,
+    }),
+  ),
+  description: Type.String({
+    description:
+      "Clear, concise description of what this command does in 5-10 words. Examples:\nInput: ls\nOutput: Lists files in current directory\n\nInput: git status\nOutput: Shows working tree status\n\nInput: npm install\nOutput: Installs package dependencies\n\nInput: mkdir foo\nOutput: Creates directory 'foo'",
+  }),
 });
 
 export type BashToolInput = Static<typeof bashSchema>;
 
 export interface BashToolDetails {
-  truncation?: TruncationResult;
-  fullOutputPath?: string;
+  exitCode: number | null;
+  description: string;
+  truncated: boolean;
+  outputPath?: string;
+}
+
+type Chunk = {
+  text: string;
+  size: number;
+};
+
+function preview(text: string): string {
+  if (text.length <= MAX_METADATA_LENGTH) return text;
+  return '...\n\n' + text.slice(-MAX_METADATA_LENGTH);
+}
+
+function tail(text: string, maxLines: number, maxBytes: number): { text: string; cut: boolean } {
+  const lines = text.split('\n');
+  if (lines.length <= maxLines && Buffer.byteLength(text, 'utf-8') <= maxBytes) {
+    return { text, cut: false };
+  }
+
+  const out: string[] = [];
+  let bytes = 0;
+  for (let i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
+    const size = Buffer.byteLength(lines[i], 'utf-8') + (out.length > 0 ? 1 : 0);
+    if (bytes + size > maxBytes) {
+      if (out.length === 0) {
+        const buf = Buffer.from(lines[i], 'utf-8');
+        let start = buf.length - maxBytes;
+        if (start < 0) start = 0;
+        while (start < buf.length && (buf[start] & 0xc0) === 0x80) start++;
+        out.unshift(buf.subarray(start).toString('utf-8'));
+      }
+      break;
+    }
+    out.unshift(lines[i]);
+    bytes += size;
+  }
+  return { text: out.join('\n'), cut: true };
 }
 
 /**
@@ -76,7 +126,7 @@ const defaultBashOperations: BashOperations = {
 
       let timedOut = false;
 
-      // Set timeout if provided
+      // Set timeout if provided (in milliseconds)
       let timeoutHandle: NodeJS.Timeout | undefined;
       if (timeout !== undefined && timeout > 0) {
         timeoutHandle = setTimeout(() => {
@@ -84,7 +134,7 @@ const defaultBashOperations: BashOperations = {
           if (child.pid) {
             killProcessTree(child.pid);
           }
-        }, timeout * 1000);
+        }, timeout);
       }
 
       // Stream stdout and stderr
@@ -165,20 +215,33 @@ export interface BashToolOptions {
   spawnHook?: BashSpawnHook;
 }
 
-export function createBashTool(cwd: string, options?: BashToolOptions): AgentTool<typeof bashSchema, BashToolDetails | undefined> {
+export function createBashTool(cwd: string, options?: BashToolOptions): AgentTool<typeof bashSchema, BashToolDetails> {
   const ops = options?.operations ?? defaultBashOperations;
   const commandPrefix = options?.commandPrefix;
   const spawnHook = options?.spawnHook;
 
+  // Detect shell name for description
+  const { shell } = getShellConfig();
+  const shellName = shell.toLowerCase().includes('powershell')
+    ? 'powershell'
+    : shell.toLowerCase().includes('bash')
+      ? 'bash'
+      : 'sh';
+
+  const chainingHint =
+    shellName === 'powershell'
+      ? "If the commands depend on each other and must run sequentially, avoid '&&' in this shell because Windows PowerShell 5.1 does not support it. Use PowerShell conditionals such as `cmd1; if ($?) { cmd2 }` when later commands must depend on earlier success."
+      : "If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, Write before Bash for git operations, or git add before git commit), run these operations sequentially instead.";
+
   return {
     name: 'bash',
     label: 'bash',
-    description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+    description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in milliseconds (default: ${DEFAULT_TIMEOUT_MS}ms). ${chainingHint}`,
     parameters: bashSchema,
     execute: async (
       _app: App,
       _context: unknown,
-      { command, timeout },
+      { command, timeout, workdir, description },
       {
         toolCallId,
         signal,
@@ -189,60 +252,73 @@ export function createBashTool(cwd: string, options?: BashToolOptions): AgentToo
         onUpdate?: AgentToolUpdateCallback<BashToolDetails>;
       },
     ) => {
-      // Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
+      // Resolve working directory
+      const targetCwd = workdir ? join(cwd, workdir) : cwd;
+
+      // Apply command prefix if configured
       const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
-      const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
+      const spawnContext = resolveSpawnContext(resolvedCommand, targetCwd, spawnHook);
 
-      return new Promise<AgentToolResult<BashToolDetails | undefined>>((resolve) => {
-        // We'll stream to a temp file if output gets large
-        let tempFilePath: string | undefined;
-        let tempFileStream: ReturnType<typeof createWriteStream> | undefined;
-        let totalBytes = 0;
+      // Validate timeout
+      const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT_MS;
+      if (effectiveTimeout < 0) {
+        return {
+          data: new ToolResultMessage({
+            toolCallId,
+            content: `Error: Invalid timeout value: ${effectiveTimeout}. Timeout must be a positive number.`,
+          }),
+          details: { exitCode: null, description: description || command, truncated: false },
+          error: new Error(`Invalid timeout value: ${effectiveTimeout}. Timeout must be a positive number.`),
+        };
+      }
 
-        // Keep a rolling buffer of the last chunk for tail truncation
-        const chunks: Buffer[] = [];
-        let chunksBytes = 0;
-        // Keep more than we need so we have enough for truncation
-        const maxChunksBytes = DEFAULT_MAX_BYTES * 2;
+      return new Promise<AgentToolResult<BashToolDetails>>((resolve) => {
+        const keep = DEFAULT_MAX_BYTES * 2;
+        const list: Chunk[] = [];
+        let used = 0;
+        let file = '';
+        let sink: ReturnType<typeof createWriteStream> | undefined;
+        let cut = false;
+        let last = '';
 
         const handleData = (data: Buffer) => {
-          totalBytes += data.length;
+          const chunk = data.toString('utf-8');
+          const size = Buffer.byteLength(chunk, 'utf-8');
+          list.push({ text: chunk, size });
+          used += size;
+          while (used > keep && list.length > 1) {
+            const item = list.shift();
+            if (!item) break;
+            used -= item.size;
+            cut = true;
+          }
 
-          // Start writing to temp file once we exceed the threshold
-          if (totalBytes > DEFAULT_MAX_BYTES && !tempFilePath) {
-            tempFilePath = getTempFilePath();
-            tempFileStream = createWriteStream(tempFilePath);
-            // Write all buffered chunks to the file
-            for (const chunk of chunks) {
-              tempFileStream.write(chunk);
+          last = preview(last + chunk);
+
+          if (sink) {
+            sink.write(chunk);
+          } else {
+            const fullText = list.map((item) => item.text).join('');
+            if (Buffer.byteLength(fullText, 'utf-8') > DEFAULT_MAX_BYTES) {
+              file = getTempFilePath();
+              cut = true;
+              sink = createWriteStream(file, { flags: 'a' });
+              const full = list.map((item) => item.text).join('');
+              sink.write(full);
             }
           }
 
-          // Write to temp file if we have one
-          if (tempFileStream) {
-            tempFileStream.write(data);
-          }
-
-          // Keep rolling buffer of recent data
-          chunks.push(data);
-          chunksBytes += data.length;
-
-          // Trim old chunks if buffer is too large
-          while (chunksBytes > maxChunksBytes && chunks.length > 1) {
-            const removed = chunks.shift()!;
-            chunksBytes -= removed.length;
-          }
-
-          // Stream partial output to callback (truncated rolling buffer)
+          // Stream partial output to callback
           if (onUpdate) {
-            const fullBuffer = Buffer.concat(chunks);
-            const fullText = fullBuffer.toString('utf-8');
-            const truncation = truncateTail(fullText);
+            const raw = list.map((item) => item.text).join('');
+            const end = tail(raw, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
             onUpdate({
-              data: new ToolResultMessage({ toolCallId, content: truncation.content || '' }),
+              data: new ToolResultMessage({ toolCallId, content: end.text || '' }),
               details: {
-                truncation: truncation.truncated ? truncation : undefined,
-                fullOutputPath: tempFilePath,
+                exitCode: null,
+                description: description || command,
+                truncated: end.cut || cut,
+                outputPath: file || undefined,
               },
             });
           }
@@ -252,89 +328,103 @@ export function createBashTool(cwd: string, options?: BashToolOptions): AgentToo
           .exec(spawnContext.command, spawnContext.cwd, {
             onData: handleData,
             signal,
-            timeout,
+            timeout: effectiveTimeout,
             env: spawnContext.env,
           })
           .then(({ exitCode }) => {
             // Close temp file stream
-            if (tempFileStream) {
-              tempFileStream.end();
+            if (sink) {
+              sink.end();
             }
 
-            // Combine all buffered chunks
-            const fullBuffer = Buffer.concat(chunks);
-            const fullOutput = fullBuffer.toString('utf-8');
+            const raw = list.map((item) => item.text).join('');
+            const end = tail(raw, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
+            if (end.cut) cut = true;
+            if (!file && end.cut) {
+              file = getTempFilePath();
+              cut = true;
+              const stream = createWriteStream(file);
+              stream.write(raw);
+              stream.end();
+            }
 
-            // Apply tail truncation
-            const truncation = truncateTail(fullOutput);
-            let outputText = truncation.content || '(no output)';
+            let output = end.text;
+            if (!output) output = '(no output)';
 
-            // Build details with truncation info
-            let details: BashToolDetails | undefined;
-
-            if (truncation.truncated) {
-              details = {
-                truncation,
-                fullOutputPath: tempFilePath,
-              };
-
-              // Build actionable notice
-              const startLine = truncation.totalLines - truncation.outputLines + 1;
-              const endLine = truncation.totalLines;
-
-              if (truncation.lastLinePartial) {
-                // Edge case: last line alone > 30KB
-                const lastLineSize = formatSize(Buffer.byteLength(fullOutput.split('\n').pop() || '', 'utf-8'));
-                outputText += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). Full output: ${tempFilePath}]`;
-              } else if (truncation.truncatedBy === 'lines') {
-                outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${tempFilePath}]`;
-              } else {
-                outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Full output: ${tempFilePath}]`;
-              }
+            const meta: string[] = [];
+            if (cut && file) {
+              output = `...output truncated...\n\nFull output saved to: ${file}\n\n` + output;
             }
 
             if (exitCode !== 0 && exitCode !== null) {
-              outputText += `\n\nCommand exited with code ${exitCode}`;
-              const error = new Error(outputText);
+              meta.push(`Command exited with code ${exitCode}`);
+            }
+
+            if (meta.length > 0) {
+              output += '\n\n<bash_metadata>\n' + meta.join('\n') + '\n</bash_metadata>';
+            }
+
+            const details: BashToolDetails = {
+              exitCode,
+              description: description || command,
+              truncated: cut,
+              ...(file ? { outputPath: file } : {}),
+            };
+
+            if (exitCode !== 0 && exitCode !== null) {
+              const error = new Error(output);
               resolve({
-                data: new ToolResultMessage({ toolCallId, content: outputText }),
+                data: new ToolResultMessage({ toolCallId, content: output }),
                 details,
                 error,
               });
             } else {
               resolve({
-                data: new ToolResultMessage({ toolCallId, content: outputText }),
+                data: new ToolResultMessage({ toolCallId, content: output }),
                 details,
               });
             }
           })
           .catch((err: Error) => {
             // Close temp file stream
-            if (tempFileStream) {
-              tempFileStream.end();
+            if (sink) {
+              sink.end();
             }
 
-            // Combine all buffered chunks for error output
-            const fullBuffer = Buffer.concat(chunks);
-            let output = fullBuffer.toString('utf-8');
-            let error: Error;
+            const raw = list.map((item) => item.text).join('');
+            let output = tail(raw, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES).text;
+            const meta: string[] = [];
 
             if (err.message === 'aborted') {
+              meta.push('User aborted the command');
               if (output) output += '\n\n';
               output += 'Command aborted';
-              error = new Error(output);
             } else if (err.message.startsWith('timeout:')) {
-              const timeoutSecs = err.message.split(':')[1];
+              const timeoutMs = err.message.split(':')[1];
+              meta.push(
+                `bash tool terminated command after exceeding timeout ${timeoutMs} ms. If this command is expected to take longer and is not waiting for interactive input, retry with a larger timeout value in milliseconds.`,
+              );
               if (output) output += '\n\n';
-              output += `Command timed out after ${timeoutSecs} seconds`;
-              error = new Error(output);
+              output += `Command timed out after ${timeoutMs} milliseconds`;
             } else {
-              error = err;
+              if (output) output += '\n\n';
+              output += err.message;
             }
 
+            if (meta.length > 0) {
+              output += '\n\n<bash_metadata>\n' + meta.join('\n') + '\n</bash_metadata>';
+            }
+
+            const error = new Error(output);
+
             resolve({
-              data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
-              details: undefined,
+              data: new ToolResultMessage({ toolCallId, content: `Error: ${output}` }),
+              details: {
+                exitCode: null,
+                description: description || command,
+                truncated: cut,
+                ...(file ? { outputPath: file } : {}),
+              },
               error,
             });
           });

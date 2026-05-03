@@ -8,7 +8,7 @@ import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } fr
 import { App } from '../app.js';
 
 const lsSchema = Type.Object({
-  path: Type.Optional(Type.String({ description: 'Directory to list (default: current directory)' })),
+  filePath: Type.Optional(Type.String({ description: 'The absolute path to the directory to list (default: current directory)' })),
   limit: Type.Optional(Type.Number({ description: 'Maximum number of entries to return (default: 500)' })),
 });
 
@@ -56,7 +56,7 @@ export function createLsTool(cwd: string, options?: LsToolOptions): AgentTool<ty
     execute: async (
       _app: App,
       _context: any,
-      { path, limit },
+      { filePath, limit },
       { toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
     ) => {
       return new Promise<any>((resolve) => {
@@ -82,7 +82,7 @@ export function createLsTool(cwd: string, options?: LsToolOptions): AgentTool<ty
 
         (async () => {
           try {
-            const dirPath = resolveToCwd(path || '.', cwd);
+            const dirPath = resolveToCwd(filePath || '.', cwd);
             const effectiveLimit = limit ?? DEFAULT_LIMIT;
 
             // Check if path exists

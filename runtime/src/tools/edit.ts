@@ -4,10 +4,9 @@ import { constants } from 'fs';
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from 'fs/promises';
 import {
   detectLineEnding,
-  fuzzyFindText,
   generateDiffString,
-  normalizeForFuzzyMatch,
   normalizeToLF,
+  replace,
   restoreLineEndings,
   stripBom,
 } from './edit-diff.js';
@@ -16,9 +15,10 @@ import { resolveToCwd } from './path-utils.js';
 import { App } from '../app.js';
 
 const editSchema = Type.Object({
-  path: Type.String({ description: 'Path to the file to edit (relative or absolute)' }),
-  oldText: Type.String({ description: 'Exact text to find and replace (must match exactly)' }),
-  newText: Type.String({ description: 'New text to replace the old text with' }),
+  filePath: Type.String({ description: 'The absolute path to the file to modify' }),
+  oldString: Type.String({ description: 'The text to replace' }),
+  newString: Type.String({ description: 'The text to replace it with (must be different from oldString)' }),
+  replaceAll: Type.Optional(Type.Boolean({ description: 'Replace all occurrences of oldString (default false)' })),
 });
 
 export type EditToolInput = Static<typeof editSchema>;
@@ -44,9 +44,9 @@ export interface EditOperations {
 }
 
 const defaultEditOperations: EditOperations = {
-  readFile: (path) => fsReadFile(path),
-  writeFile: (path, content) => fsWriteFile(path, content, 'utf-8'),
-  access: (path) => fsAccess(path, constants.R_OK | constants.W_OK),
+  readFile: (p) => fsReadFile(p),
+  writeFile: (p, content) => fsWriteFile(p, content, 'utf-8'),
+  access: (p) => fsAccess(p, constants.R_OK | constants.W_OK),
 };
 
 export interface EditToolOptions {
@@ -61,182 +61,101 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
     name: 'edit',
     label: 'edit',
     description:
-      'Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.',
+      'Edit a file by replacing text. The oldString must match exactly (including whitespace) or closely match via fuzzy algorithms. Use this for precise, surgical edits. Provide the absolute path to the file.',
     parameters: editSchema,
     execute: async (
       _app: App,
       _context: any,
-      { path, oldText, newText },
+      { filePath, oldString, newString, replaceAll },
       { toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
     ) => {
-      const absolutePath = resolveToCwd(path, cwd);
-
-      return new Promise<any>((resolve) => {
-        // Check if already aborted
-        if (signal?.aborted) {
-          const error = new Error('Operation aborted');
-          resolve({
-            data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
-            details: undefined,
-            error,
-          });
-          return;
-        }
-
-        let aborted = false;
-
-        // Set up abort handler
-        const onAbort = () => {
-          aborted = true;
+      if (signal?.aborted) {
+        return {
+          data: new ToolResultMessage({ toolCallId, content: 'Error: Operation aborted' }),
+          details: { diff: '' },
+          error: new Error('Operation aborted'),
         };
+      }
 
-        if (signal) {
-          signal.addEventListener('abort', onAbort, { once: true });
+      if (oldString === newString) {
+        return {
+          data: new ToolResultMessage({ toolCallId, content: 'Error: No changes to apply: oldString and newString are identical.' }),
+          details: { diff: '' },
+          error: new Error('No changes to apply: oldString and newString are identical.'),
+        };
+      }
+
+      const absolutePath = resolveToCwd(filePath, cwd);
+
+      try {
+        // Handle empty oldString → create new file
+        if (oldString === '') {
+          const { access: fsAccessCheck, writeFile: fsWrite } = await import('node:fs/promises');
+          let existed = false;
+          try {
+            await fsAccessCheck(absolutePath);
+            existed = true;
+          } catch {
+            // file does not exist
+          }
+
+          const source = existed ? stripBom(await fsReadFile(absolutePath, 'utf-8')) : { bom: '', text: '' };
+          const next = stripBom(newString);
+          const desiredBom = source.bom || next.bom;
+          const contentNew = next.text;
+
+          const diffResult = generateDiffString(source.text, contentNew);
+
+          // Create parent dirs if needed
+          const { dirname } = await import('node:path');
+          const { mkdir } = await import('node:fs/promises');
+          await mkdir(dirname(absolutePath), { recursive: true });
+          await fsWriteFile(absolutePath, desiredBom + contentNew, 'utf-8');
+
+          return {
+            data: new ToolResultMessage({ toolCallId, content: `Successfully wrote file ${filePath}.` }),
+            details: { diff: diffResult.diff, firstChangedLine: diffResult.firstChangedLine },
+          };
         }
 
-        // Perform the edit operation
-        (async () => {
-          try {
-            // Check if file exists
-            try {
-              await ops.access(absolutePath);
-            } catch {
-              if (signal) {
-                signal.removeEventListener('abort', onAbort);
-              }
-              const error = new Error(`File not found: ${path}`);
-              resolve({
-                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
-                details: undefined,
-                error,
-              });
-              return;
-            }
+        // Check if file exists
+        try {
+          await ops.access(absolutePath);
+        } catch {
+          throw new Error(`File not found: ${filePath}`);
+        }
 
-            // Check if aborted before reading
-            if (aborted) {
-              return;
-            }
+        // Read the file
+        const buffer = await ops.readFile(absolutePath);
+        const rawContent = buffer.toString('utf-8');
 
-            // Read the file
-            const buffer = await ops.readFile(absolutePath);
-            const rawContent = buffer.toString('utf-8');
+        // Strip BOM before matching (LLM won't include invisible BOM in oldString)
+        const { bom, text: content } = stripBom(rawContent);
 
-            // Check if aborted after reading
-            if (aborted) {
-              return;
-            }
+        const originalEnding = detectLineEnding(content);
+        const normalizedContent = normalizeToLF(content);
+        const normalizedOldString = normalizeToLF(oldString);
+        const normalizedNewString = normalizeToLF(newString);
 
-            // Strip BOM before matching (LLM won't include invisible BOM in oldText)
-            const { bom, text: content } = stripBom(rawContent);
+        // Use opencode's multi-strategy replace function
+        const newContent = replace(normalizedContent, normalizedOldString, normalizedNewString, replaceAll ?? false);
 
-            const originalEnding = detectLineEnding(content);
-            const normalizedContent = normalizeToLF(content);
-            const normalizedOldText = normalizeToLF(oldText);
-            const normalizedNewText = normalizeToLF(newText);
+        const finalContent = bom + restoreLineEndings(newContent, originalEnding);
+        await ops.writeFile(absolutePath, finalContent);
 
-            // Find the old text using fuzzy matching (tries exact match first, then fuzzy)
-            const matchResult = fuzzyFindText(normalizedContent, normalizedOldText);
-
-            if (!matchResult.found) {
-              if (signal) {
-                signal.removeEventListener('abort', onAbort);
-              }
-              const error = new Error(
-                `Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
-              );
-              resolve({
-                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
-                details: undefined,
-                error,
-              });
-              return;
-            }
-
-            // Count occurrences using fuzzy-normalized content for consistency
-            const fuzzyContent = normalizeForFuzzyMatch(normalizedContent);
-            const fuzzyOldText = normalizeForFuzzyMatch(normalizedOldText);
-            const occurrences = fuzzyContent.split(fuzzyOldText).length - 1;
-
-            if (occurrences > 1) {
-              if (signal) {
-                signal.removeEventListener('abort', onAbort);
-              }
-              const error = new Error(
-                `Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
-              );
-              resolve({
-                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
-                details: undefined,
-                error,
-              });
-              return;
-            }
-
-            // Check if aborted before writing
-            if (aborted) {
-              return;
-            }
-
-            // Perform replacement using the matched text position
-            // When fuzzy matching was used, contentForReplacement is the normalized version
-            const baseContent = matchResult.contentForReplacement;
-            const newContent =
-              baseContent.substring(0, matchResult.index) +
-              normalizedNewText +
-              baseContent.substring(matchResult.index + matchResult.matchLength);
-
-            // Verify the replacement actually changed something
-            if (baseContent === newContent) {
-              if (signal) {
-                signal.removeEventListener('abort', onAbort);
-              }
-              const error = new Error(
-                `No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`,
-              );
-              resolve({
-                data: new ToolResultMessage({ toolCallId, content: `Error: ${error.message}` }),
-                details: undefined,
-                error,
-              });
-              return;
-            }
-
-            const finalContent = bom + restoreLineEndings(newContent, originalEnding);
-            await ops.writeFile(absolutePath, finalContent);
-
-            // Check if aborted after writing
-            if (aborted) {
-              return;
-            }
-
-            // Clean up abort handler
-            if (signal) {
-              signal.removeEventListener('abort', onAbort);
-            }
-
-            const diffResult = generateDiffString(baseContent, newContent);
-            resolve({
-              data: new ToolResultMessage({ toolCallId, content: `Successfully replaced text in ${path}.` }),
-              details: { diff: diffResult.diff, firstChangedLine: diffResult.firstChangedLine },
-            });
-          } catch (error: any) {
-            // Clean up abort handler
-            if (signal) {
-              signal.removeEventListener('abort', onAbort);
-            }
-
-            if (!aborted) {
-              const err = error instanceof Error ? error : new Error(String(error));
-              resolve({
-                data: new ToolResultMessage({ toolCallId, content: `Error: ${err.message}` }),
-                details: undefined,
-                error: err,
-              });
-            }
-          }
-        })();
-      });
+        const diffResult = generateDiffString(content, restoreLineEndings(newContent, originalEnding));
+        return {
+          data: new ToolResultMessage({ toolCallId, content: `Successfully replaced text in ${filePath}.` }),
+          details: { diff: diffResult.diff, firstChangedLine: diffResult.firstChangedLine },
+        };
+      } catch (error: any) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        return {
+          data: new ToolResultMessage({ toolCallId, content: `Error: ${err.message}` }),
+          details: { diff: '' },
+          error: err,
+        };
+      }
     },
   };
 }

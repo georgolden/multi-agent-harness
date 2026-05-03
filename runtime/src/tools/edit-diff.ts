@@ -1,12 +1,9 @@
 /**
- * Shared diff computation utilities for the edit tool.
- * Used by both edit.ts (for execution) and tool-execution.ts (for preview rendering).
+ * Shared diff computation and replacement utilities for the edit tool.
+ * Approaches borrowed from opencode's edit tool (MIT licensed).
  */
 
 import * as Diff from 'diff';
-import { constants } from 'fs';
-import { access, readFile } from 'fs/promises';
-import { resolveToCwd } from './path-utils.js';
 
 export function detectLineEnding(content: string): '\r\n' | '\n' {
   const crlfIdx = content.indexOf('\r\n');
@@ -22,6 +19,24 @@ export function normalizeToLF(text: string): string {
 
 export function restoreLineEndings(text: string, ending: '\r\n' | '\n'): string {
   return ending === '\r\n' ? text.replace(/\n/g, '\r\n') : text;
+}
+
+/** Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it */
+export function stripBom(content: string): { bom: string; text: string } {
+  return content.startsWith('\uFEFF') ? { bom: '\uFEFF', text: content.slice(1) } : { bom: '', text: content };
+}
+
+export interface FuzzyMatchResult {
+  /** Whether a match was found */
+  found: boolean;
+  /** The index where the match starts */
+  index: number;
+  /** Length of the matched text */
+  matchLength: number;
+  /** Whether fuzzy matching was used */
+  usedFuzzyMatch: boolean;
+  /** The content to use for replacement operations */
+  contentForReplacement: string;
 }
 
 /**
@@ -43,37 +58,14 @@ export function normalizeForFuzzyMatch(text: string): string {
       // Smart double quotes → "
       .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
       // Various dashes/hyphens → -
-      // U+2010 hyphen, U+2011 non-breaking hyphen, U+2012 figure dash,
-      // U+2013 en-dash, U+2014 em-dash, U+2015 horizontal bar, U+2212 minus
       .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
       // Special spaces → regular space
-      // U+00A0 NBSP, U+2002-U+200A various spaces, U+202F narrow NBSP,
-      // U+205F medium math space, U+3000 ideographic space
       .replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, ' ')
   );
 }
 
-export interface FuzzyMatchResult {
-  /** Whether a match was found */
-  found: boolean;
-  /** The index where the match starts (in the content that should be used for replacement) */
-  index: number;
-  /** Length of the matched text */
-  matchLength: number;
-  /** Whether fuzzy matching was used (false = exact match) */
-  usedFuzzyMatch: boolean;
-  /**
-   * The content to use for replacement operations.
-   * When exact match: original content. When fuzzy match: normalized content.
-   */
-  contentForReplacement: string;
-}
-
 /**
  * Find oldText in content, trying exact match first, then fuzzy match.
- * When fuzzy matching is used, the returned contentForReplacement is the
- * fuzzy-normalized version of the content (trailing whitespace stripped,
- * Unicode quotes/dashes normalized to ASCII).
  */
 export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
   // Try exact match first
@@ -88,7 +80,7 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
     };
   }
 
-  // Try fuzzy match - work entirely in normalized space
+  // Try fuzzy match
   const fuzzyContent = normalizeForFuzzyMatch(content);
   const fuzzyOldText = normalizeForFuzzyMatch(oldText);
   const fuzzyIndex = fuzzyContent.indexOf(fuzzyOldText);
@@ -103,9 +95,6 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
     };
   }
 
-  // When fuzzy matching, we work in the normalized space for replacement.
-  // This means the output will have normalized whitespace/quotes/dashes,
-  // which is acceptable since we're fixing minor formatting differences anyway.
   return {
     found: true,
     index: fuzzyIndex,
@@ -115,9 +104,439 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
   };
 }
 
-/** Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it */
-export function stripBom(content: string): { bom: string; text: string } {
-  return content.startsWith('\uFEFF') ? { bom: '\uFEFF', text: content.slice(1) } : { bom: '', text: content };
+export type Replacer = (content: string, find: string) => Generator<string, void, unknown>;
+
+// Similarity thresholds for block anchor fallback matching
+const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.0;
+const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.3;
+
+/**
+ * Levenshtein distance algorithm implementation
+ */
+function levenshtein(a: string, b: string): number {
+  if (a === '' || b === '') {
+    return Math.max(a.length, b.length);
+  }
+  const matrix = Array.from({ length: a.length + 1 }, (_, i) =>
+    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
+  );
+
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost);
+    }
+  }
+  return matrix[a.length][b.length];
+}
+
+export const SimpleReplacer: Replacer = function* (_content, find) {
+  yield find;
+};
+
+export const LineTrimmedReplacer: Replacer = function* (content, find) {
+  const originalLines = content.split('\n');
+  const searchLines = find.split('\n');
+
+  if (searchLines[searchLines.length - 1] === '') {
+    searchLines.pop();
+  }
+
+  for (let i = 0; i <= originalLines.length - searchLines.length; i++) {
+    let matches = true;
+
+    for (let j = 0; j < searchLines.length; j++) {
+      const originalTrimmed = originalLines[i + j].trim();
+      const searchTrimmed = searchLines[j].trim();
+
+      if (originalTrimmed !== searchTrimmed) {
+        matches = false;
+        break;
+      }
+    }
+
+    if (matches) {
+      let matchStartIndex = 0;
+      for (let k = 0; k < i; k++) {
+        matchStartIndex += originalLines[k].length + 1;
+      }
+
+      let matchEndIndex = matchStartIndex;
+      for (let k = 0; k < searchLines.length; k++) {
+        matchEndIndex += originalLines[i + k].length;
+        if (k < searchLines.length - 1) {
+          matchEndIndex += 1;
+        }
+      }
+
+      yield content.substring(matchStartIndex, matchEndIndex);
+    }
+  }
+};
+
+export const BlockAnchorReplacer: Replacer = function* (content, find) {
+  const originalLines = content.split('\n');
+  const searchLines = find.split('\n');
+
+  if (searchLines.length < 3) {
+    return;
+  }
+
+  if (searchLines[searchLines.length - 1] === '') {
+    searchLines.pop();
+  }
+
+  const firstLineSearch = searchLines[0].trim();
+  const lastLineSearch = searchLines[searchLines.length - 1].trim();
+  const searchBlockSize = searchLines.length;
+
+  const candidates: Array<{ startLine: number; endLine: number }> = [];
+  for (let i = 0; i < originalLines.length; i++) {
+    if (originalLines[i].trim() !== firstLineSearch) {
+      continue;
+    }
+
+    for (let j = i + 2; j < originalLines.length; j++) {
+      if (originalLines[j].trim() === lastLineSearch) {
+        candidates.push({ startLine: i, endLine: j });
+        break;
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    return;
+  }
+
+  if (candidates.length === 1) {
+    const { startLine, endLine } = candidates[0];
+    const actualBlockSize = endLine - startLine + 1;
+
+    let similarity = 0;
+    let linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2);
+
+    if (linesToCheck > 0) {
+      for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
+        const originalLine = originalLines[startLine + j].trim();
+        const searchLine = searchLines[j].trim();
+        const maxLen = Math.max(originalLine.length, searchLine.length);
+        if (maxLen === 0) {
+          continue;
+        }
+        const distance = levenshtein(originalLine, searchLine);
+        similarity += (1 - distance / maxLen) / linesToCheck;
+
+        if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) {
+          break;
+        }
+      }
+    } else {
+      similarity = 1.0;
+    }
+
+    if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) {
+      let matchStartIndex = 0;
+      for (let k = 0; k < startLine; k++) {
+        matchStartIndex += originalLines[k].length + 1;
+      }
+      let matchEndIndex = matchStartIndex;
+      for (let k = startLine; k <= endLine; k++) {
+        matchEndIndex += originalLines[k].length;
+        if (k < endLine) {
+          matchEndIndex += 1;
+        }
+      }
+      yield content.substring(matchStartIndex, matchEndIndex);
+    }
+    return;
+  }
+
+  let bestMatch: { startLine: number; endLine: number } | null = null;
+  let maxSimilarity = -1;
+
+  for (const candidate of candidates) {
+    const { startLine, endLine } = candidate;
+    const actualBlockSize = endLine - startLine + 1;
+
+    let similarity = 0;
+    let linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2);
+
+    if (linesToCheck > 0) {
+      for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
+        const originalLine = originalLines[startLine + j].trim();
+        const searchLine = searchLines[j].trim();
+        const maxLen = Math.max(originalLine.length, searchLine.length);
+        if (maxLen === 0) {
+          continue;
+        }
+        const distance = levenshtein(originalLine, searchLine);
+        similarity += 1 - distance / maxLen;
+      }
+      similarity /= linesToCheck;
+    } else {
+      similarity = 1.0;
+    }
+
+    if (similarity > maxSimilarity) {
+      maxSimilarity = similarity;
+      bestMatch = candidate;
+    }
+  }
+
+  if (maxSimilarity >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD && bestMatch) {
+    const { startLine, endLine } = bestMatch;
+    let matchStartIndex = 0;
+    for (let k = 0; k < startLine; k++) {
+      matchStartIndex += originalLines[k].length + 1;
+    }
+    let matchEndIndex = matchStartIndex;
+    for (let k = startLine; k <= endLine; k++) {
+      matchEndIndex += originalLines[k].length;
+      if (k < endLine) {
+        matchEndIndex += 1;
+      }
+    }
+    yield content.substring(matchStartIndex, matchEndIndex);
+  }
+};
+
+export const WhitespaceNormalizedReplacer: Replacer = function* (content, find) {
+  const normalizeWhitespace = (text: string) => text.replace(/\s+/g, ' ').trim();
+  const normalizedFind = normalizeWhitespace(find);
+
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (normalizeWhitespace(line) === normalizedFind) {
+      yield line;
+    } else {
+      const normalizedLine = normalizeWhitespace(line);
+      if (normalizedLine.includes(normalizedFind)) {
+        const words = find.trim().split(/\s+/);
+        if (words.length > 0) {
+          const pattern = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+          try {
+            const regex = new RegExp(pattern);
+            const match = line.match(regex);
+            if (match) {
+              yield match[0];
+            }
+          } catch {
+            // Invalid regex pattern, skip
+          }
+        }
+      }
+    }
+  }
+
+  const findLines = find.split('\n');
+  if (findLines.length > 1) {
+    for (let i = 0; i <= lines.length - findLines.length; i++) {
+      const block = lines.slice(i, i + findLines.length);
+      if (normalizeWhitespace(block.join('\n')) === normalizedFind) {
+        yield block.join('\n');
+      }
+    }
+  }
+};
+
+export const IndentationFlexibleReplacer: Replacer = function* (content, find) {
+  const removeIndentation = (text: string) => {
+    const lines = text.split('\n');
+    const nonEmptyLines = lines.filter((line) => line.trim().length > 0);
+    if (nonEmptyLines.length === 0) return text;
+
+    const minIndent = Math.min(
+      ...nonEmptyLines.map((line) => {
+        const match = line.match(/^(\s*)/);
+        return match ? match[1].length : 0;
+      }),
+    );
+
+    return lines.map((line) => (line.trim().length === 0 ? line : line.slice(minIndent))).join('\n');
+  };
+
+  const normalizedFind = removeIndentation(find);
+  const contentLines = content.split('\n');
+  const findLines = find.split('\n');
+
+  for (let i = 0; i <= contentLines.length - findLines.length; i++) {
+    const block = contentLines.slice(i, i + findLines.length).join('\n');
+    if (removeIndentation(block) === normalizedFind) {
+      yield block;
+    }
+  }
+};
+
+export const EscapeNormalizedReplacer: Replacer = function* (content, find) {
+  const unescapeString = (str: string): string => {
+    return str.replace(/\\(n|t|r|'|"|`|\\|\n|\$)/g, (match, capturedChar) => {
+      switch (capturedChar) {
+        case 'n':
+          return '\n';
+        case 't':
+          return '\t';
+        case 'r':
+          return '\r';
+        case "'":
+          return "'";
+        case '"':
+          return '"';
+        case '`':
+          return '`';
+        case '\\':
+          return '\\';
+        case '\n':
+          return '\n';
+        case '$':
+          return '$';
+        default:
+          return match;
+      }
+    });
+  };
+
+  const unescapedFind = unescapeString(find);
+
+  if (content.includes(unescapedFind)) {
+    yield unescapedFind;
+  }
+
+  const lines = content.split('\n');
+  const findLines = unescapedFind.split('\n');
+
+  for (let i = 0; i <= lines.length - findLines.length; i++) {
+    const block = lines.slice(i, i + findLines.length).join('\n');
+    const unescapedBlock = unescapeString(block);
+
+    if (unescapedBlock === unescapedFind) {
+      yield block;
+    }
+  }
+};
+
+export const MultiOccurrenceReplacer: Replacer = function* (content, find) {
+  let startIndex = 0;
+
+  while (true) {
+    const index = content.indexOf(find, startIndex);
+    if (index === -1) break;
+
+    yield find;
+    startIndex = index + find.length;
+  }
+};
+
+export const TrimmedBoundaryReplacer: Replacer = function* (content, find) {
+  const trimmedFind = find.trim();
+
+  if (trimmedFind === find) {
+    return;
+  }
+
+  if (content.includes(trimmedFind)) {
+    yield trimmedFind;
+  }
+
+  const lines = content.split('\n');
+  const findLines = find.split('\n');
+
+  for (let i = 0; i <= lines.length - findLines.length; i++) {
+    const block = lines.slice(i, i + findLines.length).join('\n');
+
+    if (block.trim() === trimmedFind) {
+      yield block;
+    }
+  }
+};
+
+export const ContextAwareReplacer: Replacer = function* (content, find) {
+  const findLines = find.split('\n');
+  if (findLines.length < 3) {
+    return;
+  }
+
+  if (findLines[findLines.length - 1] === '') {
+    findLines.pop();
+  }
+
+  const contentLines = content.split('\n');
+
+  const firstLine = findLines[0].trim();
+  const lastLine = findLines[findLines.length - 1].trim();
+
+  for (let i = 0; i < contentLines.length; i++) {
+    if (contentLines[i].trim() !== firstLine) continue;
+
+    for (let j = i + 2; j < contentLines.length; j++) {
+      if (contentLines[j].trim() === lastLine) {
+        const blockLines = contentLines.slice(i, j + 1);
+        const block = blockLines.join('\n');
+
+        if (blockLines.length === findLines.length) {
+          let matchingLines = 0;
+          let totalNonEmptyLines = 0;
+
+          for (let k = 1; k < blockLines.length - 1; k++) {
+            const blockLine = blockLines[k].trim();
+            const findLine = findLines[k].trim();
+
+            if (blockLine.length > 0 || findLine.length > 0) {
+              totalNonEmptyLines++;
+              if (blockLine === findLine) {
+                matchingLines++;
+              }
+            }
+          }
+
+          if (totalNonEmptyLines === 0 || matchingLines / totalNonEmptyLines >= 0.5) {
+            yield block;
+            break;
+          }
+        }
+        break;
+      }
+    }
+  }
+};
+
+export function replace(content: string, oldString: string, newString: string, replaceAll = false): string {
+  if (oldString === newString) {
+    throw new Error('No changes to apply: oldString and newString are identical.');
+  }
+
+  let notFound = true;
+
+  for (const replacer of [
+    SimpleReplacer,
+    LineTrimmedReplacer,
+    BlockAnchorReplacer,
+    WhitespaceNormalizedReplacer,
+    IndentationFlexibleReplacer,
+    EscapeNormalizedReplacer,
+    TrimmedBoundaryReplacer,
+    ContextAwareReplacer,
+    MultiOccurrenceReplacer,
+  ]) {
+    for (const search of replacer(content, oldString)) {
+      const index = content.indexOf(search);
+      if (index === -1) continue;
+      notFound = false;
+      if (replaceAll) {
+        return content.replaceAll(search, newString);
+      }
+      const lastIndex = content.lastIndexOf(search);
+      if (index !== lastIndex) continue;
+      return content.substring(0, index) + newString + content.substring(index + search.length);
+    }
+  }
+
+  if (notFound) {
+    throw new Error(
+      'Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.',
+    );
+  }
+  throw new Error('Found multiple matches for oldString. Provide more surrounding context to make the match unique.');
 }
 
 /**
@@ -150,19 +569,16 @@ export function generateDiffString(
     }
 
     if (part.added || part.removed) {
-      // Capture the first changed line (in the new file)
       if (firstChangedLine === undefined) {
         firstChangedLine = newLineNum;
       }
 
-      // Show the change
       for (const line of raw) {
         if (part.added) {
           const lineNum = String(newLineNum).padStart(lineNumWidth, ' ');
           output.push(`+${lineNum} ${line}`);
           newLineNum++;
         } else {
-          // removed
           const lineNum = String(oldLineNum).padStart(lineNumWidth, ' ');
           output.push(`-${lineNum} ${line}`);
           oldLineNum++;
@@ -170,31 +586,25 @@ export function generateDiffString(
       }
       lastWasChange = true;
     } else {
-      // Context lines - only show a few before/after changes
       const nextPartIsChange = i < parts.length - 1 && (parts[i + 1].added || parts[i + 1].removed);
 
       if (lastWasChange || nextPartIsChange) {
-        // Show context
         let linesToShow = raw;
         let skipStart = 0;
         let skipEnd = 0;
 
         if (!lastWasChange) {
-          // Show only last N lines as leading context
           skipStart = Math.max(0, raw.length - contextLines);
           linesToShow = raw.slice(skipStart);
         }
 
         if (!nextPartIsChange && linesToShow.length > contextLines) {
-          // Show only first N lines as trailing context
           skipEnd = linesToShow.length - contextLines;
           linesToShow = linesToShow.slice(0, contextLines);
         }
 
-        // Add ellipsis if we skipped lines at start
         if (skipStart > 0) {
           output.push(` ${''.padStart(lineNumWidth, ' ')} ...`);
-          // Update line numbers for the skipped leading context
           oldLineNum += skipStart;
           newLineNum += skipStart;
         }
@@ -206,15 +616,12 @@ export function generateDiffString(
           newLineNum++;
         }
 
-        // Add ellipsis if we skipped lines at end
         if (skipEnd > 0) {
           output.push(` ${''.padStart(lineNumWidth, ' ')} ...`);
-          // Update line numbers for the skipped trailing context
           oldLineNum += skipEnd;
           newLineNum += skipEnd;
         }
       } else {
-        // Skip these context lines entirely
         oldLineNum += raw.length;
         newLineNum += raw.length;
       }
@@ -233,76 +640,4 @@ export interface EditDiffResult {
 
 export interface EditDiffError {
   error: string;
-}
-
-/**
- * Compute the diff for an edit operation without applying it.
- * Used for preview rendering in the TUI before the tool executes.
- */
-export async function computeEditDiff(
-  path: string,
-  oldText: string,
-  newText: string,
-  cwd: string,
-): Promise<EditDiffResult | EditDiffError> {
-  const absolutePath = resolveToCwd(path, cwd);
-
-  try {
-    // Check if file exists and is readable
-    try {
-      await access(absolutePath, constants.R_OK);
-    } catch {
-      return { error: `File not found: ${path}` };
-    }
-
-    // Read the file
-    const rawContent = await readFile(absolutePath, 'utf-8');
-
-    // Strip BOM before matching (LLM won't include invisible BOM in oldText)
-    const { text: content } = stripBom(rawContent);
-
-    const normalizedContent = normalizeToLF(content);
-    const normalizedOldText = normalizeToLF(oldText);
-    const normalizedNewText = normalizeToLF(newText);
-
-    // Find the old text using fuzzy matching (tries exact match first, then fuzzy)
-    const matchResult = fuzzyFindText(normalizedContent, normalizedOldText);
-
-    if (!matchResult.found) {
-      return {
-        error: `Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
-      };
-    }
-
-    // Count occurrences using fuzzy-normalized content for consistency
-    const fuzzyContent = normalizeForFuzzyMatch(normalizedContent);
-    const fuzzyOldText = normalizeForFuzzyMatch(normalizedOldText);
-    const occurrences = fuzzyContent.split(fuzzyOldText).length - 1;
-
-    if (occurrences > 1) {
-      return {
-        error: `Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
-      };
-    }
-
-    // Compute the new content using the matched position
-    // When fuzzy matching was used, contentForReplacement is the normalized version
-    const baseContent = matchResult.contentForReplacement;
-    const newContent =
-      baseContent.substring(0, matchResult.index) +
-      normalizedNewText +
-      baseContent.substring(matchResult.index + matchResult.matchLength);
-
-    // Check if it would actually change anything
-    if (baseContent === newContent) {
-      return {
-        error: `No changes would be made to ${path}. The replacement produces identical content.`,
-      };
-    }
-
-    // Generate the diff
-    return generateDiffString(baseContent, newContent);
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) };
-  }
 }
