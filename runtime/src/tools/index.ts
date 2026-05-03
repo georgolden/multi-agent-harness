@@ -96,6 +96,7 @@ export {
   spawnAgentSchema,
   spawnAgentTool,
 } from './spawnAgent.js';
+export { createSkillTool, type SkillToolInput } from './skill.js';
 
 import type { AgentTool } from '../types.js';
 import { type BashToolOptions, bashTool, createBashTool } from './bash.js';
@@ -106,11 +107,14 @@ import { createLsTool, lsTool } from './ls.js';
 import { createReadTool, type ReadToolOptions, readTool } from './read.js';
 import { createTreeTool, treeTool } from './tree.js';
 import { createWriteTool, writeTool } from './write.js';
-import { createRunAgentTool, runAgentTool } from './runAgent.js';
+import { createRunAgentTool } from './runAgent.js';
 import { createWriteTempFileTool } from './writeTempFile.js';
 import { createSpawnAgentTool } from './spawnAgent.js';
+import { createSkillTool } from './skill.js';
 import { RuntimeUser } from '../services/userService/index.js';
 import { Session } from '../services/sessionService/session.js';
+import type { Skills } from '../skills/index.js';
+import type { SandboxService } from '../services/sandbox/index.js';
 
 /** Tool type (AgentTool from pi-ai) */
 export type Tool = AgentTool<any>;
@@ -191,12 +195,18 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
   ];
 }
 
+export interface ToolsSkillOptions {
+  skills: Skills;
+  sandbox: SandboxService;
+  session: Session;
+}
+
 export class Tools {
   toolsMap: Record<string, Tool>;
   readonlyToolsMap: Record<string, Tool>;
   codingToolsMap: Record<string, Tool>;
 
-  constructor(cwd: string, options?: ToolsOptions) {
+  constructor(cwd: string, options?: ToolsOptions, skillOptions?: ToolsSkillOptions) {
     this.readonlyToolsMap = {
       read: createReadTool(cwd, options?.read),
       grep: createGrepTool(cwd),
@@ -218,6 +228,9 @@ export class Tools {
       runAgent: createRunAgentTool(),
       writeTempFile: createWriteTempFileTool(),
       spawnAgent: createSpawnAgentTool(),
+      ...(skillOptions
+        ? { skill: createSkillTool(skillOptions.skills, skillOptions.sandbox, skillOptions.session) }
+        : {}),
     };
   }
 
