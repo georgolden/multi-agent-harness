@@ -8,9 +8,9 @@ datasource db {
 }
 
 model User {
-  id       String  @id @db.VarChar(255)
-  name     String? @db.VarChar(255)
-  timezone String  @default("UTC") @db.VarChar(50)
+  id       String        @id @db.VarChar(255)
+  name     String?       @db.VarChar(255)
+  timezone String        @default("UTC") @db.VarChar(50)
   tasks    Task[]
   toolkits UserToolkit[]
 
@@ -30,8 +30,7 @@ model UserToolkit {
   status       String   @default("active") @db.VarChar(20)
   connectedAt  DateTime @default(now()) @map("connected_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, provider, toolkitSlug], name: "uq_user_toolkit")
   @@index([userId], map: "idx_user_toolkits_user_id")
@@ -83,6 +82,7 @@ model FlowSession {
   currentNodeName     String?       @map("current_node_name") @db.VarChar(255)
   currentPacketData   Json?         @map("current_packet_data")
   flowSchema          Json?         @map("flow_schema")
+  enabledSkills       Json          @default("[]") @map("enabled_skills")
   agentSession        AgentSession? @relation(fields: [agentSessionId], references: [id])
   parent              FlowSession?  @relation("SessionTree", fields: [parentSessionId], references: [id])
   children            FlowSession[] @relation("SessionTree")
@@ -121,11 +121,11 @@ model AgenticLoopSchema {
   systemPrompt        String   @map("system_prompt")
   toolNames           String[] @map("tool_names")
   skillNames          String[] @map("skill_names")
-  toolkits            Json     @default("[]") @map("toolkit_slugs")
   contextPaths        Json     @map("context_paths")
   callLlmOptions      Json     @map("call_llm_options")
   messageWindowConfig Json     @map("message_window_config")
   agentLoopConfig     Json     @map("agent_loop_config")
+  toolkits            Json?    @default("[]") @map("toolkit_slugs")
 
   @@index([userId], map: "idx_agentic_loop_schemas_user")
   @@map("agentic_loop_schemas")

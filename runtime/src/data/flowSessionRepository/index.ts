@@ -10,6 +10,7 @@ import type {
   SkillLog,
   SessionStatus,
   CreateSessionParams,
+  EnabledSkillRecord,
 } from '../../services/sessionService/types.js';
 import type { FileInfo } from '../../utils/file.js';
 import type { FolderInfo } from '../../utils/folder.js';
@@ -162,6 +163,7 @@ export class SessionDataRepository {
       currentNodeName: row.currentNodeName ?? undefined,
       currentPacketData: row.currentPacketData ?? undefined,
       agentSessionId: row.agentSessionId ?? undefined,
+      enabledSkills: (row.enabledSkills as EnabledSkillRecord[]) || [],
     };
   }
 
@@ -186,6 +188,7 @@ export class SessionDataRepository {
         callLlmOptions: params.callLlmOptions as any,
         agentLoopConfig: params.agentLoopConfig as any,
         agentSessionId: params.agentSessionId,
+        enabledSkills: (params.enabledSkills ?? []) as any,
       },
     });
 
@@ -193,6 +196,29 @@ export class SessionDataRepository {
     this.app.infra.bus.emit('flowSession:created', session);
     console.log(`[SessionDataRepository] Created session '${id}' for flow '${params.flowName}'`);
     return session;
+  }
+
+  async enableSkill(sessionId: string, name: string): Promise<void> {
+    const session = await this.getSession(sessionId);
+    if (!session) throw new Error(`Session '${sessionId}' not found`);
+
+    if (session.enabledSkills.some((s) => s.name === name)) return;
+    const enabledSkills: EnabledSkillRecord[] = [...session.enabledSkills, { name }];
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({ where: { id: sessionId }, data: { enabledSkills: enabledSkills as any } });
+    this.app.infra.bus.emit('flowSession:skillEnabled', { sessionId, name });
+    console.log(`[SessionDataRepository] Enabled skill '${name}' on session '${sessionId}'`);
+  }
+
+  async disableSkill(sessionId: string, name: string): Promise<void> {
+    const session = await this.getSession(sessionId);
+    if (!session) throw new Error(`Session '${sessionId}' not found`);
+
+    const enabledSkills = session.enabledSkills.filter((s) => s.name !== name);
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({ where: { id: sessionId }, data: { enabledSkills: enabledSkills as any } });
+    this.app.infra.bus.emit('flowSession:skillDisabled', { sessionId, name });
+    console.log(`[SessionDataRepository] Disabled skill '${name}' on session '${sessionId}'`);
   }
 
   async getSession(sessionId: string): Promise<SessionData | null> {

@@ -6,6 +6,17 @@ import type { FolderInfo } from '../../utils/folder.js';
 import type { LLMMessageData } from '../../utils/message.js';
 import type { ToolLog, ToolSchema } from '../../tools/index.js';
 import type { SkillLog, SkillSchema } from '../../skills/index.js';
+import type { Skill } from '../../skills/index.js';
+import type { SkillExecutionSession } from '../sandbox/index.js';
+
+export interface EnabledSkillRecord {
+  name: string;
+}
+
+export interface EnabledSkill {
+  skill: Skill;
+  sandboxSession: SkillExecutionSession | null;
+}
 
 export type { ToolLog, ToolSchema };
 
@@ -52,6 +63,7 @@ export interface CreateSessionParams {
   callLlmOptions?: CallLlmOptions;
   agentLoopConfig?: AgentLoopConfig;
   agentSessionId?: string;
+  enabledSkills?: EnabledSkillRecord[];
 }
 
 // Lightweight session info for tree traversal
@@ -118,6 +130,9 @@ export interface SessionData {
 
   // Agent session this flow belongs to
   agentSessionId?: string;
+
+  // Persisted enabled skills (DB-backed)
+  enabledSkills: EnabledSkillRecord[];
 }
 
 export interface SessionDataTreeNode {

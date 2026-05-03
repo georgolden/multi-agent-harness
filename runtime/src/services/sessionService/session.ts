@@ -4,6 +4,8 @@ import type { FileInfo } from '../../utils/file.js';
 import type { FolderInfo } from '../../utils/folder.js';
 import { AgentTool } from '../../types.js';
 import type {
+  EnabledSkill,
+  EnabledSkillRecord,
   SessionData,
   SessionDataTreeNode,
   SessionHooks,
@@ -14,6 +16,8 @@ import type {
   ToolLog,
   ToolSchema,
 } from './types.js';
+import type { Skills } from '../../skills/index.js';
+import type { SandboxService } from '../sandbox/index.js';
 import type { RuntimeUser } from '../userService/index.js';
 import { AssistantTextMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
 
@@ -40,6 +44,7 @@ export class Session {
   hooks: SessionHooks;
   tools: AgentTool[] = [];
 
+  private _enabledSkills: Map<string, EnabledSkill> = new Map();
   private _userMessageCallbacks: Array<(payload: { session: SessionData; message: string; user: RuntimeUser }) => void> = [];
   /** Pending parent context XML — prepended to the first user message then cleared. */
   private _parentContextXml: string | null = null;
@@ -134,8 +139,92 @@ export class Session {
     this.tools = [...this.tools, ...tools];
   }
 
+  addOrReplaceAgentTools(tools: AgentTool[]): void {
+    for (const tool of tools) {
+      const idx = this.tools.findIndex((t) => t.name === tool.name);
+      if (idx >= 0) this.tools[idx] = tool;
+      else this.tools.push(tool);
+    }
+  }
+
   getAgentTool(name: string): AgentTool | undefined {
     return this.tools.find((t) => t.name === name);
+  }
+
+  // ─── Enabled skills ───────────────────────────────────────────────────────
+
+  get enabledSkillRecords(): EnabledSkillRecord[] {
+    return this.sessionData.enabledSkills;
+  }
+
+  get enabledSkills(): EnabledSkill[] {
+    return Array.from(this._enabledSkills.values());
+  }
+
+  getEnabledSkill(name: string): EnabledSkill | undefined {
+    return this._enabledSkills.get(name);
+  }
+
+  async enableSkill(name: string, entry: EnabledSkill): Promise<this> {
+    await this.app.data.flowSessionRepository.enableSkill(this.sessionData.id, name);
+    this.sessionData.enabledSkills = [...this.sessionData.enabledSkills.filter((s) => s.name !== name), { name }];
+    this._enabledSkills.set(name, entry);
+    return this;
+  }
+
+  updateEnabledSkillSandbox(name: string, sandboxSession: import('../sandbox/index.js').SkillExecutionSession): void {
+    const entry = this._enabledSkills.get(name);
+    if (entry) entry.sandboxSession = sandboxSession;
+  }
+
+  async disableSkill(name: string, sandbox?: SandboxService): Promise<this> {
+    const entry = this._enabledSkills.get(name);
+    if (!entry) return this;
+
+    if (entry.sandboxSession && sandbox) {
+      await sandbox.cleanupSkillSession({ session: this });
+    }
+    this._enabledSkills.delete(name);
+    await this.app.data.flowSessionRepository.disableSkill(this.sessionData.id, name);
+    this.sessionData.enabledSkills = this.sessionData.enabledSkills.filter((s) => s.name !== name);
+
+    const stripped = this.sessionData.systemPrompt.replace(
+      new RegExp(`\\n*<skill name="${name}">[\\s\\S]*?</skill>`, 'g'),
+      '',
+    );
+    if (stripped !== this.sessionData.systemPrompt) {
+      await this.upsertSystemPrompt(stripped);
+    }
+    return this;
+  }
+
+  async rehydrateEnabledSkills(skills: Skills, sandbox?: SandboxService): Promise<this> {
+    for (const record of this.sessionData.enabledSkills) {
+      const skill = skills.getSkill(record.name);
+      if (!skill) continue;
+
+      let sandboxSession = null;
+      if (skill.runtime && sandbox) {
+        try {
+          sandboxSession = await sandbox.createSkillSession({ session: this, skill });
+          const sandboxedTools = sandbox.createSandboxedTools(sandboxSession);
+          this.addOrReplaceAgentTools([sandboxedTools.bash, sandboxedTools.read, sandboxedTools.edit, sandboxedTools.write]);
+        } catch {
+          // sandbox unavailable — continue without it
+        }
+      }
+      this._enabledSkills.set(record.name, { skill, sandboxSession });
+    }
+    return this;
+  }
+
+  async cleanupSkillSessions(sandbox: SandboxService): Promise<void> {
+    for (const entry of this._enabledSkills.values()) {
+      if (entry.sandboxSession) {
+        await sandbox.cleanupSkillSession({ session: this }).catch(() => {});
+      }
+    }
+    this._enabledSkills.clear();
   }
 
   // ─── Node transaction ─────────────────────────────────────────────────────
@@ -276,6 +365,31 @@ export class Session {
   }
 
   // ─── Context / schema mutations ───────────────────────────────────────────
+
+  async applySchema(schema: {
+    systemPrompt: string;
+    toolSchemas: ToolSchema[];
+    skillSchemas: SkillSchema[];
+    contextFiles: FileInfo[];
+    contextFoldersInfos: FolderInfo[];
+    callLlmOptions: SessionData['callLlmOptions'];
+    messageWindowConfig: SessionData['messageWindowConfig'];
+    userPromptTemplate: string | undefined;
+    agentLoopConfig: SessionData['agentLoopConfig'];
+    tools: AgentTool[];
+  }): Promise<this> {
+    await this.upsertSystemPrompt(schema.systemPrompt);
+    this.sessionData.toolSchemas = schema.toolSchemas;
+    this.sessionData.skillSchemas = schema.skillSchemas;
+    this.sessionData.contextFiles = schema.contextFiles;
+    this.sessionData.contextFoldersInfos = schema.contextFoldersInfos;
+    this.sessionData.callLlmOptions = schema.callLlmOptions;
+    this.sessionData.messageWindowConfig = schema.messageWindowConfig;
+    this.sessionData.userPromptTemplate = schema.userPromptTemplate;
+    this.sessionData.agentLoopConfig = schema.agentLoopConfig;
+    this.tools = schema.tools;
+    return this;
+  }
 
   async addContextFiles(files: FileInfo[]): Promise<this> {
     const contextFiles = await this.app.data.flowSessionRepository.addContextFiles(this.sessionData.id, files);
