@@ -1,15 +1,14 @@
 import { Flow, type FlowSchema, error } from '../../utils/agent/flow.js';
 import { App } from '../../app.js';
-import { MessageWindowConfig } from '../../services/sessionService/types.js';
+import type { MessageWindowConfig } from '../../services/sessionService/types.js';
 import { RuntimeUser } from '../../services/userService/index.js';
-import { CallLlmOptions } from '../../utils/callLlm.js';
-import { fillSystemPrompt, readFilesWithLimit, readFoldersInfos } from './utils.js';
-import { SUBMIT_RESULT_SCHEMA } from './tools.js';
+import type { CallLlmOptions } from '../../utils/callLlm.js';
 import { PrepareInput, DecideAction, AskUser, UserResponse, ToolCalls, SubmitAnswer, BestAnswer } from './nodes.js';
 import type { AgenticLoopContext } from './types.js';
 import { Session } from '../../services/sessionService/session.js';
 import { Type, type Static } from '@sinclair/typebox';
 import type { AgentTool } from '../../types.js';
+import { SUBMIT_RESULT_SCHEMA } from './tools.js';
 
 export interface ToolkitConfig {
   slug: string;
@@ -87,64 +86,12 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
     const schema = await app.data.agenticLoopSchemaRepository.getSchema(input.name);
     if (!schema) throw new Error(`AgenticLoopFlow: schema '${input.name}' not found`);
 
-    const {
-      name: flowName,
-      systemPrompt,
-      toolNames,
-      skillNames,
-      toolkits,
-      contextPaths,
-      callLlmOptions,
-      messageWindowConfig,
-      userPromptTemplate,
-      agentLoopConfig,
-    } = schema;
-
-    console.log(
-      `[AgenticLoopFlow.createSession] schema='${input.name}' toolNames=${JSON.stringify(toolNames)} toolkits=${JSON.stringify(toolkits)} agentLoopConfig=${JSON.stringify(agentLoopConfig)}`,
-    );
-
-    const filledSystemPrompt = `Current datetime: ${new Date().toISOString()}\nUser timezone: ${user.timezone ?? 'UTC'}\n\n${systemPrompt}`;
-
-    const builtInTools = app.tools.getSlice(toolNames);
-    const userToolkitTools = toolkits?.length
-      ? await app.services.userService.loadUser(user.id).then((u) => u.buildAgentTools(toolkits))
-      : [];
-    const tools = [...builtInTools, ...userToolkitTools];
-    const skills = app.skills.getSlice(skillNames);
-
-    console.log(
-      `[AgenticLoopFlow.createSession] flowName='${flowName}' tools=[${tools.map((t) => t.name).join(', ')}] skills=[${skills.map((s) => s.name).join(', ')}]`,
-    );
-
-    const toolSchemas = [
-      ...tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
-      SUBMIT_RESULT_SCHEMA,
-    ];
-    const skillSchemas = skills.map((s) => ({ name: s.name, description: s.description, location: s.location }));
-
-    const contextFiles = await readFilesWithLimit(contextPaths.files);
-    const contextFoldersInfos = await readFoldersInfos(contextPaths.folders);
-
     const session = await app.services.sessionService.create({
-      flowName,
-      systemPrompt: filledSystemPrompt,
-      userPromptTemplate,
+      flowName: input.name,
       userId: user.id,
-      messageWindowConfig: messageWindowConfig as MessageWindowConfig,
-      tools: toolSchemas,
-      skills: skillSchemas,
-      contextFiles,
-      contextFoldersInfos,
-      callLlmOptions,
-      agentLoopConfig,
     });
 
-    session.tools = tools as any;
-
-    await session.upsertSystemPrompt(filledSystemPrompt);
     await session.setFlowSchema(this.toSchema());
-
     return session;
   }
 
@@ -158,9 +105,6 @@ export class AgenticLoopFlow extends Flow<App, AgenticLoopContext, AgentFlowPara
     let userTools: (AgentTool & { toolkitSlug: string })[] = [];
     if (providerToolNames.length > 0) {
       const runtimeUser = await app.services.userService.loadUser(user.id);
-      // Rebuild all user toolkit tools then filter to exactly the names stored in the session.
-      // The session toolSchemas already reflect the original allowedTools restrictions, so
-      // filtering by name here correctly restores the per-toolkit tool limits.
       const allUserTools = await runtimeUser.buildAgentTools();
       userTools = allUserTools.filter((t) => providerToolNames.includes(t.name));
     }

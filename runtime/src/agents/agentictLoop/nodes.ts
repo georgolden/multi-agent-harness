@@ -32,33 +32,65 @@ import {
 } from '../../utils/message.js';
 import { FillTemplateFlow } from '../fillTemplate/flow.js';
 import type { AgentFlowParameters } from './flow.js';
+import { SUBMIT_RESULT_SCHEMA } from './tools.js';
+import { readFilesWithLimit, readFoldersInfos } from './utils.js';
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
-/**
- * PrepareInput: Add the user's message to the pre-created session (runs once).
- * Session is already created by prepareAgenticLoop before flow.run().
- * Outputs the session for DecideAction to use.
- */
 export class PrepareInput extends Node<App, AgenticLoopContext, AgentFlowParameters | undefined, { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const { session, user } = p.context;
-    const input = p.data;
+    const app = p.deps;
 
-    // First entry: input has a message. Loop-backs (from ToolCalls/UserResponse) pass undefined.
+    // Fetch schema fresh on every entry — picks up any changes since last iteration.
+    const schema = await app.data.agenticLoopSchemaRepository.getSchema(session.flowName);
+    if (!schema) throw new Error(`PrepareInput: schema '${session.flowName}' not found`);
+
+    const { systemPrompt, toolNames, skillNames, toolkits, contextPaths, callLlmOptions, messageWindowConfig, userPromptTemplate, agentLoopConfig } = schema;
+
+    const filledSystemPrompt = `Current datetime: ${new Date().toISOString()}\nUser timezone: ${user.timezone ?? 'UTC'}\n\n${systemPrompt}`;
+
+    const builtInTools = app.tools.getSlice(toolNames);
+    const userToolkitTools = toolkits?.length
+      ? await app.services.userService.loadUser(user.id).then((u) => u.buildAgentTools(toolkits))
+      : [];
+    const tools = [...builtInTools, ...userToolkitTools];
+    const skills = app.skills.getSlice(skillNames);
+
+    const toolSchemas = [
+      ...tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
+      SUBMIT_RESULT_SCHEMA,
+    ];
+    const skillSchemas = skills.map((s) => ({ name: s.name, description: s.description, location: s.location }));
+    const contextFiles = await readFilesWithLimit(contextPaths.files);
+    const contextFoldersInfos = await readFoldersInfos(contextPaths.folders);
+
+    await session.applySchema({
+      systemPrompt: filledSystemPrompt,
+      toolSchemas,
+      skillSchemas,
+      contextFiles,
+      contextFoldersInfos,
+      callLlmOptions,
+      messageWindowConfig,
+      userPromptTemplate,
+      agentLoopConfig,
+      tools,
+    });
+
+    console.log(`[PrepareInput] schema='${session.flowName}' tools=[${tools.map((t) => t.name).join(', ')}] skills=[${skills.map((s) => s.name).join(', ')}]`);
+
+    // First entry: input has a message. Loop-backs pass undefined.
+    const input = p.data;
     if (input?.message) {
       let message = input.message;
-      console.log(`[PrepareInput.run] session='${session.id}' firstEntry message='${message.slice(0, 120)}'`);
-      if (session.userPromptTemplate) {
+      if (userPromptTemplate) {
         const fillFlow = new FillTemplateFlow();
-        const fillSession = await fillFlow.createSession(p.deps, user, session, {
-          message,
-          template: session.userPromptTemplate,
-        });
+        const fillSession = await fillFlow.createSession(app, user, session, { message, template: userPromptTemplate });
         const result = await fillFlow.run({
-          deps: p.deps,
+          deps: app,
           context: { user, parent: session, session: fillSession },
-          data: { message, template: session.userPromptTemplate },
+          data: { message, template: userPromptTemplate },
         });
         message = result.data ?? message;
       }
