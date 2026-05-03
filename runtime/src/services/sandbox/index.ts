@@ -34,6 +34,11 @@ import { SANDBOX_REALM_ROOT } from '../../sandbox/constants.js';
 import type { App } from '../../app.js';
 import type { Skill } from '../../skills/index.js';
 import type { Session } from '../sessionService/session.js';
+import type { AgentTool } from '../../types.js';
+import { createBashTool } from '../../tools/bash.js';
+import { createReadTool } from '../../tools/read.js';
+import { createEditTool } from '../../tools/edit.js';
+import { createWriteTool } from '../../tools/write.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -477,6 +482,71 @@ export class SandboxService {
     }
 
     console.log(`[SandboxService] Cleaned up skill session ${opts.session.id}`);
+  }
+
+  createSandboxedTools(execSession: SkillExecutionSession): {
+    bash: AgentTool<any>;
+    read: AgentTool<any>;
+    edit: AgentTool<any>;
+    write: AgentTool<any>;
+  } {
+    const { realmHostPath } = execSession;
+
+    const bash = createBashTool(realmHostPath, {
+      operations: {
+        exec: async (command, _cwd, opts) => {
+          const result = await this.executeSkillCommands({
+            session: { id: execSession.id } as Session,
+            commands: [command],
+          });
+          const { stdout, stderr } = result.results[0] ?? { stdout: '', stderr: '' };
+          opts.onData?.(Buffer.from(stdout + (stderr ? '\n' + stderr : ''), 'utf-8'));
+          return { exitCode: stderr ? 1 : 0 };
+        },
+      },
+    });
+
+    const realmOps = {
+      readFile: (p: string) => readFile(this._realmPath(realmHostPath, p)),
+      access: (p: string) => access(this._realmPath(realmHostPath, p)),
+      readdir: (p: string) => readdir(this._realmPath(realmHostPath, p)),
+      stat: async (p: string) => {
+        const s = await stat(this._realmPath(realmHostPath, p));
+        return { isDirectory: () => s.isDirectory(), isFile: () => s.isFile(), size: s.size };
+      },
+    };
+
+    const read = createReadTool(realmHostPath, { operations: realmOps });
+
+    const edit = createEditTool(realmHostPath, {
+      operations: {
+        readFile: (p: string) => readFile(this._realmPath(realmHostPath, p)),
+        writeFile: (p: string, content: string) => writeFile(this._realmPath(realmHostPath, p), Buffer.from(content, 'utf-8')),
+        access: (p: string) => access(this._realmPath(realmHostPath, p)),
+      },
+    });
+
+    const write = createWriteTool(realmHostPath, {
+      operations: {
+        writeFile: (p: string, content: string) => writeFile(this._realmPath(realmHostPath, p), Buffer.from(content, 'utf-8')),
+        mkdir: (p: string) => mkdir(this._realmPath(realmHostPath, p), { recursive: true }).then(() => {}),
+        exists: async (p: string) => {
+          try { await access(this._realmPath(realmHostPath, p)); return true; } catch { return false; }
+        },
+        readFileString: (p: string) => readFile(this._realmPath(realmHostPath, p), 'utf-8'),
+      },
+    });
+
+    return { bash, read, edit, write };
+  }
+
+  private _realmPath(realmHostPath: string, filePath: string): string {
+    const rel = filePath.replace(/^\/+/, '');
+    const resolved = join(realmHostPath, rel);
+    if (!resolved.startsWith(realmHostPath)) {
+      throw new Error(`Path '${filePath}' escapes sandbox realm`);
+    }
+    return resolved;
   }
 
   getRuntimeForSkill(skillName: string): string | null {
