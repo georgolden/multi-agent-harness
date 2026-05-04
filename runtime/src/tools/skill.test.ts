@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createSkillTool } from './skill.js';
 import type { Skills, Skill } from '../skills/index.js';
 import type { SandboxService } from '../services/sandbox/index.js';
 import type { Session } from '../services/sessionService/session.js';
+import type { App } from '../app.js';
+import type { ToolCallContext } from './index.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,138 +43,144 @@ function makeSession(initialPrompt = 'base prompt'): Session {
     upsertSystemPrompt: vi.fn(async (p: string) => { _systemPrompt = p; return session; }),
     enableSkill: vi.fn(async (name: string, entry: any) => { enabledMap.set(name, entry); return session; }),
     getEnabledSkill: vi.fn((name: string) => enabledMap.get(name)),
+    activateSkill: vi.fn(async (name: string, skill: any, md: string) => {
+      _systemPrompt = `${_systemPrompt}\n\n<skill name="${name}">\n${md}\n</skill>`;
+      enabledMap.set(name, { skill, sandboxSession: null });
+      return session;
+    }),
+    ensureSkillSandbox: vi.fn(async () => ({ sandboxToolNames: [] })),
     addOrReplaceAgentTools: vi.fn(),
-    updateEnabledSkillSandbox: vi.fn(),
   } as unknown as Session;
   return session;
 }
 
-const ctx = { toolCallId: 'test-call-id' };
+function makeApp(skill: Skill, sandbox: SandboxService): App {
+  return {
+    skills: makeSkills(skill),
+    services: { sandbox },
+  } as unknown as App;
+}
+
+function makeCtx(session: Session): ToolCallContext {
+  return { session } as unknown as ToolCallContext;
+}
+
+const callCtx = { toolCallId: 'test-call-id' };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('createSkillTool', () => {
   it('returns error when skill not found', async () => {
     const skill = makeSkill();
-    const tool = createSkillTool(makeSkills(skill), makeSandbox(), makeSession());
+    const sandbox = makeSandbox();
+    const session = makeSession();
+    const tool = createSkillTool();
 
-    const result = await tool.execute(null as any, null, { name: 'unknown' }, ctx);
+    const result = await tool.execute(makeApp(skill, sandbox), makeCtx(session), { name: 'unknown' }, callCtx);
 
     expect(result.error).toBeDefined();
     expect(result.error!.message).toContain("'unknown' not found");
-    expect(result.data.content as string).toContain('Available skills: foo');
+    const parsed = JSON.parse(result.data.content as string);
+    expect(parsed.error).toContain("'unknown' not found");
+    expect(parsed.error).toContain('foo');
   });
 
-  it('returns early when skill already active', async () => {
+  it('returns error when skill already active', async () => {
     const skill = makeSkill();
+    const sandbox = makeSandbox();
     const session = makeSession();
-    // Pre-enable the skill
     (session.getEnabledSkill as any).mockReturnValue({ skill, sandboxSession: null });
-    const tool = createSkillTool(makeSkills(skill), makeSandbox(), session);
+    const tool = createSkillTool();
 
-    const result = await tool.execute(null as any, null, { name: 'foo' }, ctx);
+    const result = await tool.execute(makeApp(skill, sandbox), makeCtx(session), { name: 'foo' }, callCtx);
 
-    expect(result.error).toBeUndefined();
-    expect(result.data.content as string).toContain('already active');
-    expect(session.upsertSystemPrompt).not.toHaveBeenCalled();
+    expect(result.error).toBeDefined();
+    const parsed = JSON.parse(result.data.content as string);
+    expect(parsed.error).toContain('already active');
+    expect(session.activateSkill).not.toHaveBeenCalled();
   });
 
-  it('injects SKILL.md into system prompt', async () => {
+  it('injects SKILL.md into system prompt via activateSkill', async () => {
     const skill = makeSkill();
+    const sandbox = makeSandbox();
     const session = makeSession('initial prompt');
-    const tool = createSkillTool(makeSkills(skill), makeSandbox(), session);
+    const tool = createSkillTool();
 
-    await tool.execute(null as any, null, { name: 'foo' }, ctx);
+    await tool.execute(makeApp(skill, sandbox), makeCtx(session), { name: 'foo' }, callCtx);
 
-    expect(session.upsertSystemPrompt).toHaveBeenCalledOnce();
-    const newPrompt: string = (session.upsertSystemPrompt as any).mock.calls[0][0];
-    expect(newPrompt).toContain('initial prompt');
-    expect(newPrompt).toContain('<skill name="foo">');
-    expect(newPrompt).toContain('# Foo');
-    expect(newPrompt).toContain('</skill>');
-  });
-
-  it('persists enabled skill via session.enableSkill', async () => {
-    const skill = makeSkill();
-    const session = makeSession();
-    const tool = createSkillTool(makeSkills(skill), makeSandbox(), session);
-
-    await tool.execute(null as any, null, { name: 'foo' }, ctx);
-
-    expect(session.enableSkill).toHaveBeenCalledWith('foo', { skill, sandboxSession: null });
+    expect(session.activateSkill).toHaveBeenCalledOnce();
+    const [calledName, , calledMd] = (session.activateSkill as any).mock.calls[0];
+    expect(calledName).toBe('foo');
+    expect(calledMd).toContain('# Foo');
   });
 
   it('includes skill content and file list in result', async () => {
     const skill = makeSkill();
+    const sandbox = makeSandbox();
     const session = makeSession();
-    const tool = createSkillTool(makeSkills(skill), makeSandbox(), session);
+    const tool = createSkillTool();
 
-    const result = await tool.execute(null as any, null, { name: 'foo' }, ctx);
+    const result = await tool.execute(makeApp(skill, sandbox), makeCtx(session), { name: 'foo' }, callCtx);
 
-    expect(result.data.content as string).toContain('<skill_content name="foo"');
-    expect(result.data.content as string).toContain('# Foo');
-    expect(result.data.content as string).toContain('foo.py');
+    const parsed = JSON.parse(result.data.content as string);
+    expect(parsed.skill).toBe('foo');
+    expect(parsed.instructions).toContain('# Foo');
+    expect(parsed.files).toContain('foo.py');
   });
 
-  it('does not create sandbox when skill has no runtime', async () => {
+  it('does not call ensureSkillSandbox when skill has no runtime', async () => {
     const skill = makeSkill({ runtime: undefined });
     const sandbox = makeSandbox();
     const session = makeSession();
-    const tool = createSkillTool(makeSkills(skill), sandbox, session);
+    const tool = createSkillTool();
 
-    await tool.execute(null as any, null, { name: 'foo' }, ctx);
+    await tool.execute(makeApp(skill, sandbox), makeCtx(session), { name: 'foo' }, callCtx);
 
-    expect(sandbox.createSkillSession).not.toHaveBeenCalled();
-    expect(session.addOrReplaceAgentTools).not.toHaveBeenCalled();
+    expect(session.ensureSkillSandbox).not.toHaveBeenCalled();
   });
 
-  it('creates sandbox and replaces tools when skill has runtime', async () => {
+  it('calls ensureSkillSandbox and returns namespaced tools when skill has runtime', async () => {
     const skill = makeSkill({ runtime: 'node' });
     const sandbox = makeSandbox();
-    const execSession = { id: 'sess-1', runtimeName: 'node', mode: 'exclusive', realmHostPath: '/tmp/realm', containerWorkingDir: '/workspace' };
-    const sandboxedTools = { bash: { name: 'bash' }, read: { name: 'read' }, edit: { name: 'edit' }, write: { name: 'write' } };
-    (sandbox.createSkillSession as any).mockResolvedValue(execSession);
-    (sandbox.createSandboxedTools as any).mockReturnValue(sandboxedTools);
-
     const session = makeSession();
-    const tool = createSkillTool(makeSkills(skill), sandbox, session);
+    (session.ensureSkillSandbox as any).mockResolvedValue({
+      sandboxToolNames: ['foo_bash', 'foo_read', 'foo_edit', 'foo_write'],
+    });
+    const tool = createSkillTool();
 
-    const result = await tool.execute(null as any, null, { name: 'foo' }, ctx);
+    const result = await tool.execute(makeApp(skill, sandbox), makeCtx(session), { name: 'foo' }, callCtx);
 
-    expect(sandbox.createSkillSession).toHaveBeenCalledWith({ session, skill });
-    expect(sandbox.createSandboxedTools).toHaveBeenCalledWith(execSession);
-    expect(session.addOrReplaceAgentTools).toHaveBeenCalledWith([
-      sandboxedTools.bash, sandboxedTools.read, sandboxedTools.edit, sandboxedTools.write,
-    ]);
-    expect(session.updateEnabledSkillSandbox).toHaveBeenCalledWith('foo', execSession);
-    expect(result.data.content as string).toContain('bash, read, edit, and write now operate inside the skill sandbox');
+    expect(session.ensureSkillSandbox).toHaveBeenCalledWith('foo', sandbox);
+    const parsed = JSON.parse(result.data.content as string);
+    expect(parsed.sandbox.sandboxed_tools).toEqual(['foo_bash', 'foo_read', 'foo_edit', 'foo_write']);
   });
 
-  it('notes sandbox failure but still activates skill', async () => {
+  it('returns error when sandbox fails', async () => {
     const skill = makeSkill({ runtime: 'node' });
     const sandbox = makeSandbox();
-    (sandbox.createSkillSession as any).mockRejectedValue(new Error('podman not found'));
-
     const session = makeSession();
-    const tool = createSkillTool(makeSkills(skill), sandbox, session);
+    (session.ensureSkillSandbox as any).mockResolvedValue({ error: new Error('podman not found') });
+    const tool = createSkillTool();
 
-    const result = await tool.execute(null as any, null, { name: 'foo' }, ctx);
+    const result = await tool.execute(makeApp(skill, sandbox), makeCtx(session), { name: 'foo' }, callCtx);
 
-    expect(result.error).toBeUndefined();
-    expect(result.data.content as string).toContain('podman not found');
-    expect(session.enableSkill).toHaveBeenCalled();
+    expect(result.error).toBeDefined();
+    const parsed = JSON.parse(result.data.content as string);
+    expect(parsed.error).toContain('podman not found');
+    expect(session.activateSkill).toHaveBeenCalled();
   });
 
   it('caps file list at 10 entries', async () => {
     const files = Array.from({ length: 15 }, (_, i) => ({ path: `file${i}.py`, content: '' }));
     const skill = makeSkill({ readContent: async () => files });
+    const sandbox = makeSandbox();
     const session = makeSession();
-    const tool = createSkillTool(makeSkills(skill), makeSandbox(), session);
+    const tool = createSkillTool();
 
-    const result = await tool.execute(null as any, null, { name: 'foo' }, ctx);
+    const result = await tool.execute(makeApp(skill, sandbox), makeCtx(session), { name: 'foo' }, callCtx);
 
-    const matches = (result.data.content as string).match(/<file path=/g) ?? [];
-    expect(matches.length).toBe(10);
+    const parsed = JSON.parse(result.data.content as string);
+    expect(parsed.files).toHaveLength(10);
   });
 });
 

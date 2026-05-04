@@ -83,7 +83,7 @@ export class Skills {
             const absolutePath = path.join(skillLocation, file);
             const content = await readFile(absolutePath, 'utf-8');
             return {
-              path: absolutePath,
+              path: file, // relative to skillLocation, preserves directory structure
               content,
             };
           }),

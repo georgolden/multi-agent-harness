@@ -43,6 +43,8 @@ export class Session {
   app: App;
   hooks: SessionHooks;
   tools: AgentTool[] = [];
+  // Namespaced sandbox tools keyed by "{skillName}_{toolName}" — survive applySchema resets
+  private _sandboxedTools: Map<string, AgentTool> = new Map();
 
   private _enabledSkills: Map<string, EnabledSkill> = new Map();
   private _userMessageCallbacks: Array<(payload: { session: SessionData; message: string; user: RuntimeUser }) => void> = [];
@@ -141,6 +143,7 @@ export class Session {
 
   addOrReplaceAgentTools(tools: AgentTool[]): void {
     for (const tool of tools) {
+      this._sandboxedTools.set(tool.name, tool);
       const idx = this.tools.findIndex((t) => t.name === tool.name);
       if (idx >= 0) this.tools[idx] = tool;
       else this.tools.push(tool);
@@ -165,16 +168,115 @@ export class Session {
     return this._enabledSkills.get(name);
   }
 
+  /** Persist the enabled skill record (name + empty sandboxToolNames) and register in-memory. */
   async enableSkill(name: string, entry: EnabledSkill): Promise<this> {
     await this.app.data.flowSessionRepository.enableSkill(this.sessionData.id, name);
-    this.sessionData.enabledSkills = [...this.sessionData.enabledSkills.filter((s) => s.name !== name), { name }];
+    this.sessionData.enabledSkills = [
+      ...this.sessionData.enabledSkills.filter((s) => s.name !== name),
+      { name, sandboxToolNames: [] },
+    ];
     this._enabledSkills.set(name, entry);
     return this;
   }
 
-  updateEnabledSkillSandbox(name: string, sandboxSession: import('../sandbox/index.js').SkillExecutionSession): void {
-    const entry = this._enabledSkills.get(name);
-    if (entry) entry.sandboxSession = sandboxSession;
+  /** Append skill SKILL.md to the system prompt and persist the enabled skill record. */
+  async activateSkill(name: string, skill: import('../../skills/index.js').Skill, md: string): Promise<this> {
+    const newPrompt = `${this.sessionData.systemPrompt}\n\n<skill name="${name}">\n${md}\n</skill>`;
+    await this.upsertSystemPrompt(newPrompt);
+    await this.enableSkill(name, { skill, sandboxSession: null });
+    return this;
+  }
+
+  /**
+   * Create (or reuse) a sandbox for the named skill. Registers namespaced tools
+   * ("{skillName}_{toolName}") in both session.tools and session.toolSchemas so
+   * the LLM sees them immediately. Persists sandboxToolNames into the DB record.
+   * Returns `{ sandboxToolNames }` on success or `{ error }` on failure.
+   */
+  async ensureSkillSandbox(
+    skillName: string,
+    sandbox: SandboxService,
+  ): Promise<{ sandboxToolNames?: string[]; error?: Error }> {
+    const entry = this._enabledSkills.get(skillName);
+    if (!entry) return { error: new Error(`Skill '${skillName}' not enabled`) };
+
+    // Already has a live sandbox — nothing to do
+    if (entry.sandboxSession) return { sandboxToolNames: this._sandboxToolNamesFor(skillName) };
+
+    if (!entry.skill.runtime) return { sandboxToolNames: [] };
+
+    try {
+      const execSession = await sandbox.createSkillSession({ session: this, skill: entry.skill });
+      const raw = sandbox.createSandboxedTools(execSession);
+      entry.sandboxSession = execSession;
+
+      const namespacedTools = [raw.bash, raw.read, raw.edit, raw.write].map((t) => ({
+        ...t,
+        name: `${skillName}_${t.name}`,
+        label: `${skillName}_${t.name}`,
+        description: `[${skillName} sandbox] ${t.description}`,
+      }));
+
+      this.addOrReplaceAgentTools(namespacedTools);
+
+      // Extend toolSchemas so DecideAction/LLM sees the new tools
+      const newSchemas = namespacedTools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+      }));
+      this.sessionData.toolSchemas = [
+        ...this.sessionData.toolSchemas.filter((s) => !newSchemas.some((ns) => ns.name === s.name)),
+        ...newSchemas,
+      ];
+
+      const sandboxToolNames = namespacedTools.map((t) => t.name);
+
+      // Persist sandboxToolNames into the DB record
+      await this.app.data.flowSessionRepository.updateEnabledSkillRecord(this.sessionData.id, {
+        name: skillName,
+        sandboxToolNames,
+      });
+      this.sessionData.enabledSkills = this.sessionData.enabledSkills.map((r) =>
+        r.name === skillName ? { ...r, sandboxToolNames } : r,
+      );
+
+      return { sandboxToolNames };
+    } catch (err: any) {
+      return { error: err instanceof Error ? err : new Error(String(err)) };
+    }
+  }
+
+  private _sandboxToolNamesFor(skillName: string): string[] {
+    return (this.sessionData.enabledSkills.find((r) => r.name === skillName)?.sandboxToolNames ?? []);
+  }
+
+  /**
+   * Called by PrepareInput on every loop iteration.
+   * After base tools are set via applySchema, this re-applies all sandboxed tools
+   * and ensures every enabled skill with a runtime has a live sandbox.
+   * Self-healing: recreates lost sandboxes on crash/restart.
+   */
+  async ensureSkillsReady(sandbox: SandboxService): Promise<void> {
+    // Re-overlay all known sandboxed tools on top of the freshly reset base tools
+    for (const [name, tool] of this._sandboxedTools) {
+      const idx = this.tools.findIndex((t) => t.name === name);
+      if (idx >= 0) this.tools[idx] = tool;
+      else this.tools.push(tool);
+    }
+
+    // Ensure every enabled skill with a runtime has a live sandbox
+    for (const record of this.sessionData.enabledSkills) {
+      const entry = this._enabledSkills.get(record.name);
+      if (!entry) continue;
+      if (!entry.skill.runtime) continue;
+      if (entry.sandboxSession) continue; // already live
+
+      const result = await this.ensureSkillSandbox(record.name, sandbox);
+      if (result.error) {
+        console.warn(`[Session.ensureSkillsReady] sandbox restore failed for '${record.name}': ${result.error.message}`);
+      }
+    }
   }
 
   async disableSkill(name: string, sandbox?: SandboxService): Promise<this> {
@@ -184,6 +286,17 @@ export class Session {
     if (entry.sandboxSession && sandbox) {
       await sandbox.cleanupSkillSession({ session: this });
     }
+
+    // Remove namespaced sandbox tools from session and schemas
+    const sandboxToolNames = this._sandboxToolNamesFor(name);
+    for (const toolName of sandboxToolNames) {
+      this._sandboxedTools.delete(toolName);
+      this.tools = this.tools.filter((t) => t.name !== toolName);
+    }
+    this.sessionData.toolSchemas = this.sessionData.toolSchemas.filter(
+      (s) => !sandboxToolNames.includes(s.name),
+    );
+
     this._enabledSkills.delete(name);
     await this.app.data.flowSessionRepository.disableSkill(this.sessionData.id, name);
     this.sessionData.enabledSkills = this.sessionData.enabledSkills.filter((s) => s.name !== name);
@@ -198,22 +311,12 @@ export class Session {
     return this;
   }
 
-  async rehydrateEnabledSkills(skills: Skills, sandbox?: SandboxService): Promise<this> {
+  /** Restore in-memory skill map from DB records (called on session load). */
+  async rehydrateEnabledSkills(skills: Skills): Promise<this> {
     for (const record of this.sessionData.enabledSkills) {
       const skill = skills.getSkill(record.name);
       if (!skill) continue;
-
-      let sandboxSession = null;
-      if (skill.runtime && sandbox) {
-        try {
-          sandboxSession = await sandbox.createSkillSession({ session: this, skill });
-          const sandboxedTools = sandbox.createSandboxedTools(sandboxSession);
-          this.addOrReplaceAgentTools([sandboxedTools.bash, sandboxedTools.read, sandboxedTools.edit, sandboxedTools.write]);
-        } catch {
-          // sandbox unavailable — continue without it
-        }
-      }
-      this._enabledSkills.set(record.name, { skill, sandboxSession });
+      this._enabledSkills.set(record.name, { skill, sandboxSession: null });
     }
     return this;
   }
@@ -248,8 +351,9 @@ export class Session {
    * Also updates `session.systemPrompt` so callers see the new value immediately.
    */
   async upsertSystemPrompt(content: string): Promise<this> {
-    const activeMessages = await this.app.data.flowSessionRepository.upsertSystemPrompt(this.sessionData.id, content);
+    const { allMessages, activeMessages } = await this.app.data.flowSessionRepository.upsertSystemPrompt(this.sessionData.id, content);
     this.sessionData.systemPrompt = content;
+    this.sessionData.messages = allMessages;
     this.sessionData.activeMessages = activeMessages;
     return this;
   }
@@ -264,7 +368,8 @@ export class Session {
 
   /** Add messages; refreshes the active window and fires onMessage hook. */
   async addMessages(messages: Omit<SessionMessage, 'timestamp'>[]): Promise<this> {
-    const activeMessages = await this.app.data.flowSessionRepository.addMessages(this.sessionData.id, messages);
+    const { allMessages, activeMessages } = await this.app.data.flowSessionRepository.addMessages(this.sessionData.id, messages);
+    this.sessionData.messages = allMessages;
     this.sessionData.activeMessages = activeMessages;
     await this.hooks.onMessage?.(this);
     return this;
@@ -378,8 +483,31 @@ export class Session {
     agentLoopConfig: SessionData['agentLoopConfig'];
     tools: AgentTool[];
   }): Promise<this> {
+    // Collect sandbox tool schemas from all currently enabled skills so they
+    // survive the base-schema overwrite and are persisted to DB.
+    const sandboxSchemas: ToolSchema[] = this.sessionData.enabledSkills.flatMap((r) =>
+      (r.sandboxToolNames ?? []).flatMap((toolName) => {
+        const tool = this._sandboxedTools.get(toolName);
+        if (!tool) return [];
+        return [{ name: tool.name, description: tool.description, parameters: tool.parameters as Record<string, unknown> }];
+      }),
+    );
+
+    const mergedToolSchemas = [...schema.toolSchemas, ...sandboxSchemas];
+    console.log(`[Session.applySchema] toolSchemas=${mergedToolSchemas.map((t) => t.name).join(',')} (${sandboxSchemas.length} sandbox)`);
+
     await this.upsertSystemPrompt(schema.systemPrompt);
-    this.sessionData.toolSchemas = schema.toolSchemas;
+    await this.app.data.flowSessionRepository.applySchema(this.sessionData.id, {
+      toolSchemas: mergedToolSchemas,
+      skillSchemas: schema.skillSchemas,
+      contextFiles: schema.contextFiles,
+      contextFoldersInfos: schema.contextFoldersInfos,
+      callLlmOptions: schema.callLlmOptions as Record<string, unknown>,
+      messageWindowConfig: schema.messageWindowConfig as unknown as Record<string, unknown>,
+      agentLoopConfig: schema.agentLoopConfig as Record<string, unknown>,
+      userPromptTemplate: schema.userPromptTemplate,
+    });
+    this.sessionData.toolSchemas = mergedToolSchemas;
     this.sessionData.skillSchemas = schema.skillSchemas;
     this.sessionData.contextFiles = schema.contextFiles;
     this.sessionData.contextFoldersInfos = schema.contextFoldersInfos;
@@ -387,7 +515,7 @@ export class Session {
     this.sessionData.messageWindowConfig = schema.messageWindowConfig;
     this.sessionData.userPromptTemplate = schema.userPromptTemplate;
     this.sessionData.agentLoopConfig = schema.agentLoopConfig;
-    this.tools = schema.tools;
+    this.tools = [...schema.tools];
     return this;
   }
 
@@ -473,11 +601,22 @@ export class Session {
   async respond(user: RuntimeUser, message: string): Promise<this> {
     console.log(`[Session.respond] sessionId=${this.sessionData.id} message=${message.slice(0, 80)}`);
     await this.addMessages([{ message: new AssistantTextMessage({ text: message }).toJSON() }]);
+    this._emitMessage(user, message);
+    return this;
+  }
+
+  /** Emit session:message to listeners without adding it to message history. */
+  notify(user: RuntimeUser, message: string): this {
+    console.log(`[Session.notify] sessionId=${this.sessionData.id} message=${message.slice(0, 80)}`);
+    this._emitMessage(user, message);
+    return this;
+  }
+
+  private _emitMessage(user: RuntimeUser, message: string): void {
     const listenerCount = this.app.infra.bus.listenerCount('session:message');
     console.log(`[Session.respond] emitting session:message listenerCount=${listenerCount}`);
     this.app.infra.bus.emit('session:message', { session: this.sessionData, message, user: user });
     console.log(`[Session.respond] emitted session:message`);
-    return this;
   }
 
   onUserMessage(cb: (payload: { session: SessionData; message: string; user: RuntimeUser }) => void) {

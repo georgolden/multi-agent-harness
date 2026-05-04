@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import { SandboxService } from './index.js';
 import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync, mkdtempSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { resolve, join, basename } from 'node:path';
+import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { App } from '../../app.js';
 import type { Skill, SkillFile } from '../../skills/index.js';
@@ -395,7 +395,7 @@ describe('SandboxService', () => {
     it('mounts host file at create time and exposes its content', async () => {
       const r = await service.executeSkillCommands({
         session: session as any,
-        commands: ['cat doc.txt'],
+        commands: [`cat ${hostFilePath}`],
       });
       expect(r.results[0].stdout).toContain('host-content');
     }, 30000);
@@ -403,7 +403,7 @@ describe('SandboxService', () => {
     it('mounts host folder at create time and exposes its contents', async () => {
       const r = await service.executeSkillCommands({
         session: session as any,
-        commands: ['cat project/a.txt'],
+        commands: [`cat ${join(hostFolderPath, 'a.txt')}`],
       });
       expect(r.results[0].stdout).toContain('aaa');
     }, 30000);
@@ -411,7 +411,7 @@ describe('SandboxService', () => {
     it('skill edits to mounted file flow through to host immediately', async () => {
       await service.executeSkillCommands({
         session: session as any,
-        commands: ['echo edited > doc.txt'],
+        commands: [`echo edited > ${hostFilePath}`],
       });
       expect(readFileSync(hostFilePath, 'utf-8').trim()).toBe('edited');
     }, 30000);
@@ -419,7 +419,7 @@ describe('SandboxService', () => {
     it('skill edits to file in mounted folder flow through to host immediately', async () => {
       await service.executeSkillCommands({
         session: session as any,
-        commands: ['echo bbb > project/a.txt', 'echo new > project/b.txt'],
+        commands: [`echo bbb > ${join(hostFolderPath, 'a.txt')}`, `echo new > ${join(hostFolderPath, 'b.txt')}`],
       });
       expect(readFileSync(join(hostFolderPath, 'a.txt'), 'utf-8').trim()).toBe('bbb');
       expect(readFileSync(join(hostFolderPath, 'b.txt'), 'utf-8').trim()).toBe('new');
@@ -430,41 +430,32 @@ describe('SandboxService', () => {
       const mapPath = join(realm, '.meta/path-map.json');
       expect(existsSync(mapPath)).toBe(true);
       const map = JSON.parse(readFileSync(mapPath, 'utf-8'));
-      expect(map['/workspace/doc.txt']).toBe(hostFilePath);
-      expect(map['/workspace/project']).toBe(hostFolderPath);
+      const fileRealmKey = `/workspace/${hostFilePath.replace(/^\/+/, '')}`;
+      const folderRealmKey = `/workspace/${hostFolderPath.replace(/^\/+/, '')}`;
+      expect(map[fileRealmKey]).toBe(hostFilePath);
+      expect(map[folderRealmKey]).toBe(hostFolderPath);
     });
 
-    it('ignores removal of a mounted context file (cannot unmount)', async () => {
-      // Removing a mounted file from the session must NOT throw and
-      // must NOT change the entry — mount stays live for the container's lifetime.
+    it('removes realm copy when context file is removed from session; host file untouched', async () => {
+      const realmFile = join(realmRoot, 'exclusive-test/exclusive', session.id, hostFilePath.replace(/^\/+/, ''));
+      expect(existsSync(realmFile)).toBe(true);
+
       session.contextFiles = [];
       await service.executeSkillCommands({ session: session as any, commands: ['true'] });
 
-      // Skill can still read the mounted file via its realm name (still mounted).
-      const r = await service.executeSkillCommands({
-        session: session as any,
-        commands: ['cat doc.txt'],
-      });
-      expect(r.results[0].stdout).toContain('host-content');
-
-      // The entry is still tracked internally as mounted.
-      const state = (service as any).sessions.get(session.id);
-      const entries = [...state.contextEntries.values()];
-      const docEntry = entries.find((e: any) => e.realmName === 'doc.txt');
-      expect(docEntry).toBeDefined();
-      expect(docEntry.state).toBe('mounted');
+      expect(existsSync(realmFile)).toBe(false);
+      expect(readFileSync(hostFilePath, 'utf-8')).toBe('host-content'); // host untouched
     }, 30000);
 
-    it('empties host folder when a mounted context folder is removed from session', async () => {
-      // Pre-condition: host folder has a.txt
-      expect(existsSync(join(hostFolderPath, 'a.txt'))).toBe(true);
+    it('removes realm copy when context folder is removed from session; host folder untouched', async () => {
+      const realmFolder = join(realmRoot, 'exclusive-test/exclusive', session.id, hostFolderPath.replace(/^\/+/, ''));
+      expect(existsSync(realmFolder)).toBe(true);
 
       session.contextFoldersInfos = [];
       await service.executeSkillCommands({ session: session as any, commands: ['true'] });
 
-      // Host folder still exists (mount is still live), but its children are gone.
-      expect(existsSync(hostFolderPath)).toBe(true);
-      expect(existsSync(join(hostFolderPath, 'a.txt'))).toBe(false);
+      expect(existsSync(realmFolder)).toBe(false);
+      expect(existsSync(join(hostFolderPath, 'a.txt'))).toBe(true); // host untouched
     }, 30000);
   });
 
@@ -497,9 +488,9 @@ describe('SandboxService', () => {
       session.contextFiles.push({ path: hostFilePath });
       await service.executeSkillCommands({ session: session as any, commands: ['true'] });
 
-      const realm = join(realmRoot, 'exclusive-test/exclusive', session.id, 'late.txt');
-      expect(existsSync(realm)).toBe(true);
-      expect(readFileSync(realm, 'utf-8')).toBe('late-content');
+      const realmFile = join(realmRoot, 'exclusive-test/exclusive', session.id, hostFilePath.replace(/^\/+/, ''));
+      expect(existsSync(realmFile)).toBe(true);
+      expect(readFileSync(realmFile, 'utf-8')).toBe('late-content');
     }, 30000);
 
     it('flushes copied context file edits back to host on sync-out', async () => {
@@ -507,7 +498,7 @@ describe('SandboxService', () => {
       await service.executeSkillCommands({ session: session as any, commands: ['true'] });
       await service.executeSkillCommands({
         session: session as any,
-        commands: ['echo updated > late.txt'],
+        commands: [`echo updated > ${hostFilePath}`],
       });
       expect(readFileSync(hostFilePath, 'utf-8').trim()).toBe('updated');
     }, 30000);
@@ -516,47 +507,36 @@ describe('SandboxService', () => {
       session.contextFiles.push({ path: hostFilePath });
       await service.executeSkillCommands({ session: session as any, commands: ['true'] });
 
-      const realm = join(realmRoot, 'exclusive-test/exclusive', session.id, 'late.txt');
-      expect(existsSync(realm)).toBe(true);
+      const realmFile = join(realmRoot, 'exclusive-test/exclusive', session.id, hostFilePath.replace(/^\/+/, ''));
+      expect(existsSync(realmFile)).toBe(true);
 
       session.contextFiles = [];
       await service.executeSkillCommands({ session: session as any, commands: ['true'] });
-      expect(existsSync(realm)).toBe(false);
+      expect(existsSync(realmFile)).toBe(false);
     }, 30000);
 
     it('mirrors copied folder back to host with adds, mods, AND deletions on sync-out', async () => {
-      // Build a host folder with two files: keep.txt and gone.txt
       const folderHost = mkdtempSync(join(tmpdir(), 'sandbox-folder-'));
       writeFileSync(join(folderHost, 'keep.txt'), 'original');
       writeFileSync(join(folderHost, 'gone.txt'), 'will-be-deleted');
 
       try {
-        // Add the folder mid-session (after createSkillSession, so it's 'copied')
         session.contextFoldersInfos.push({ path: folderHost });
         await service.executeSkillCommands({ session: session as any, commands: ['true'] });
 
-        const folderName = basename(folderHost);
-        const realm = join(
-          realmRoot,
-          'exclusive-test/exclusive',
-          session.id,
-          folderName,
-        );
-        // Realm should now contain both files (copied)
-        expect(readFileSync(join(realm, 'keep.txt'), 'utf-8')).toBe('original');
-        expect(readFileSync(join(realm, 'gone.txt'), 'utf-8')).toBe('will-be-deleted');
+        const realmFolder = join(realmRoot, 'exclusive-test/exclusive', session.id, folderHost.replace(/^\/+/, ''));
+        expect(readFileSync(join(realmFolder, 'keep.txt'), 'utf-8')).toBe('original');
+        expect(readFileSync(join(realmFolder, 'gone.txt'), 'utf-8')).toBe('will-be-deleted');
 
-        // Skill: modify keep.txt, delete gone.txt, add new.txt
         await service.executeSkillCommands({
           session: session as any,
           commands: [
-            `echo modified > ${folderName}/keep.txt`,
-            `rm ${folderName}/gone.txt`,
-            `echo brand-new > ${folderName}/new.txt`,
+            `echo modified > ${join(folderHost, 'keep.txt')}`,
+            `rm ${join(folderHost, 'gone.txt')}`,
+            `echo brand-new > ${join(folderHost, 'new.txt')}`,
           ],
         });
 
-        // Host folder should mirror all three changes
         expect(readFileSync(join(folderHost, 'keep.txt'), 'utf-8').trim()).toBe('modified');
         expect(existsSync(join(folderHost, 'gone.txt'))).toBe(false);
         expect(readFileSync(join(folderHost, 'new.txt'), 'utf-8').trim()).toBe('brand-new');
@@ -698,34 +678,32 @@ describe('SandboxService', () => {
     }, 60000);
   });
 
-  // ─── Path collisions ─────────────────────────────────────────────────────
+  // ─── Context files with same basename at different host paths ───────────────
 
-  describe('Path collisions', () => {
+  describe('Context files at different paths', () => {
     const skill = makeSkill({ name: 'exclusive-skill', runtime: 'exclusive-test' });
 
-    it('dedupes context files with the same basename', async () => {
+    it('two context files with the same basename at different host paths are both accessible', async () => {
       const dirA = mkdtempSync(join(tmpdir(), 'sb-collide-a-'));
       const dirB = mkdtempSync(join(tmpdir(), 'sb-collide-b-'));
       writeFileSync(join(dirA, 'report.txt'), 'A');
       writeFileSync(join(dirB, 'report.txt'), 'B');
+      const pathA = join(dirA, 'report.txt');
+      const pathB = join(dirB, 'report.txt');
 
       const session = new FakeSession(
         `collide-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       );
-      session.contextFiles = [{ path: join(dirA, 'report.txt') }, { path: join(dirB, 'report.txt') }];
+      session.contextFiles = [{ path: pathA }, { path: pathB }];
 
       try {
         await service.createSkillSession({ session: session as any, skill });
         const r = await service.executeSkillCommands({
           session: session as any,
-          commands: ['ls', 'cat report.txt', 'cat report.dup.1.txt'],
+          commands: [`cat ${pathA}`, `cat ${pathB}`],
         });
-        expect(r.results[0].stdout).toContain('report.txt');
-        expect(r.results[0].stdout).toContain('report.dup.1.txt');
-        // The two reads return A and B in some order — both must show up
-        const combined = r.results[1].stdout + r.results[2].stdout;
-        expect(combined).toContain('A');
-        expect(combined).toContain('B');
+        expect(r.results[0].stdout).toContain('A');
+        expect(r.results[1].stdout).toContain('B');
       } finally {
         await service.cleanupSkillSession({ session: session as any }).catch(() => {});
         rmSync(dirA, { recursive: true, force: true });

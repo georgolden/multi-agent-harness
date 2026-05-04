@@ -28,7 +28,7 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises';
-import { basename, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import type { RuntimeConfig, SandboxMode } from '../../sandbox/types.js';
 import { SANDBOX_REALM_ROOT } from '../../sandbox/constants.js';
 import type { App } from '../../app.js';
@@ -39,6 +39,7 @@ import { createBashTool } from '../../tools/bash.js';
 import { createReadTool } from '../../tools/read.js';
 import { createEditTool } from '../../tools/edit.js';
 import { createWriteTool } from '../../tools/write.js';
+import { ToolResultMessage } from '../../utils/message.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -80,7 +81,7 @@ interface SkillExecutionState {
   container: Container;
   realmHostPath: string;
   containerWorkingDir: string;
-  skillFileNames: Set<string>;
+  skillFilePaths: Set<string>;
   contextEntries: Map<string, ContextEntry>;
   knownTempFileSnapshot: Map<string, Buffer>;
   syncMutex: AsyncLock;
@@ -157,16 +158,6 @@ async function rmRfIfExists(p: string): Promise<void> {
   await rm(p, { recursive: true, force: true });
 }
 
-async function emptyDirectory(dir: string): Promise<void> {
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return;
-    throw err;
-  }
-  await Promise.all(entries.map((e) => rm(join(dir, e), { recursive: true, force: true })));
-}
 
 /**
  * rsync-style mirror with deletions: dst becomes a copy of src.
@@ -329,16 +320,17 @@ export class SandboxService {
     const realmHostPath = join(this.realmRoot, runtimeName, mode, session.id);
     await mkdir(realmHostPath, { recursive: true });
 
-    // Skill files (flat by basename)
+    // Skill files — written at their relative paths, preserving directory structure
     const skillFiles = await skill.readContent();
-    const skillFileNames = new Set<string>();
+    const skillFilePaths = new Set<string>();
     for (const f of skillFiles) {
-      const name = basename(f.path);
-      if (skillFileNames.has(name)) {
-        throw new Error(`Skill '${skill.name}' has duplicate file basename: ${name}`);
+      if (skillFilePaths.has(f.path)) {
+        throw new Error(`Skill '${skill.name}' has duplicate file path: ${f.path}`);
       }
-      await writeFile(join(realmHostPath, name), f.content);
-      skillFileNames.add(name);
+      const dest = join(realmHostPath, f.path);
+      await mkdir(dirname(dest), { recursive: true });
+      await writeFile(dest, f.content);
+      skillFilePaths.add(f.path);
     }
 
     // Temp files
@@ -359,7 +351,6 @@ export class SandboxService {
 
     // Context entries
     const contextEntries = new Map<string, ContextEntry>();
-    const usedNames = new Set<string>([...skillFileNames, ...knownTempFileSnapshot.keys()]);
 
     if (mode === 'shared' && (session.contextFiles.length > 0 || session.contextFoldersInfos.length > 0)) {
       throw new Error(
@@ -367,25 +358,27 @@ export class SandboxService {
       );
     }
 
+    // Copy context files/folders into realm preserving absolute path structure.
+    // /home/user/Downloads → {realmHostPath}/home/user/Downloads
+    // All entries are 'copied' — no nested bind mounts needed.
     for (const cf of session.contextFiles ?? []) {
-      const realmName = dedupe(basename(cf.path), usedNames);
-      usedNames.add(realmName);
-      // Empty placeholder for the bind mount target
-      await writeFile(join(realmHostPath, realmName), '');
-      contextEntries.set(cf.path, { hostPath: cf.path, realmName, type: 'file', state: 'mounted' });
+      const realmName = cf.path.replace(/^\/+/, '');
+      await mkdir(dirname(join(realmHostPath, realmName)), { recursive: true });
+      await cp(cf.path, join(realmHostPath, realmName));
+      contextEntries.set(cf.path, { hostPath: cf.path, realmName, type: 'file', state: 'copied' });
     }
     for (const cfo of session.contextFoldersInfos ?? []) {
-      const realmName = dedupe(basename(cfo.path), usedNames);
-      usedNames.add(realmName);
+      const realmName = cfo.path.replace(/^\/+/, '');
       await mkdir(join(realmHostPath, realmName), { recursive: true });
-      contextEntries.set(cfo.path, { hostPath: cfo.path, realmName, type: 'folder', state: 'mounted' });
+      await cp(cfo.path, join(realmHostPath, realmName), { recursive: true });
+      contextEntries.set(cfo.path, { hostPath: cfo.path, realmName, type: 'folder', state: 'copied' });
     }
 
-    // Acquire container
+    // Acquire container — no extra bind mounts needed since everything is copied into the realm
     const container =
       mode === 'shared'
         ? await this.getOrSpawnSharedContainer(runtimeName, config)
-        : await this.acquireExclusiveContainer(runtimeName, config, realmHostPath, contextEntries);
+        : await this.acquireExclusiveContainer(runtimeName, config, realmHostPath);
 
     const containerWorkingDir = mode === 'shared' ? `/realm/${session.id}` : '/workspace';
 
@@ -417,7 +410,7 @@ export class SandboxService {
       container,
       realmHostPath,
       containerWorkingDir,
-      skillFileNames,
+      skillFilePaths,
       contextEntries,
       knownTempFileSnapshot,
       syncMutex: new AsyncLock(),
@@ -492,6 +485,9 @@ export class SandboxService {
   } {
     const { realmHostPath } = execSession;
 
+    const { containerWorkingDir } = execSession;
+    const sanitizeOutput = (s: string) => s.replaceAll(`${containerWorkingDir}/`, '/').replaceAll(`${containerWorkingDir}`, '/');
+
     const bash = createBashTool(realmHostPath, {
       operations: {
         exec: async (command, _cwd, opts) => {
@@ -500,7 +496,8 @@ export class SandboxService {
             commands: [command],
           });
           const { stdout, stderr } = result.results[0] ?? { stdout: '', stderr: '' };
-          opts.onData?.(Buffer.from(stdout + (stderr ? '\n' + stderr : ''), 'utf-8'));
+          const out = sanitizeOutput(stdout + (stderr ? '\n' + stderr : ''));
+          opts.onData?.(Buffer.from(out, 'utf-8'));
           return { exitCode: stderr ? 1 : 0 };
         },
       },
@@ -516,17 +513,33 @@ export class SandboxService {
       },
     };
 
-    const read = createReadTool(realmHostPath, { operations: realmOps });
+    const sanitizeStr = (s: string) => s.replaceAll(`${realmHostPath}/`, '/').replaceAll(`${realmHostPath}`, '/');
 
-    const edit = createEditTool(realmHostPath, {
+    const wrapTool = (tool: AgentTool<any>): AgentTool<any> => ({
+      ...tool,
+      execute: async (...args: Parameters<typeof tool.execute>) => {
+        const result = await tool.execute(...args);
+        if (typeof result.data.content === 'string' && result.data.content.includes(realmHostPath)) {
+          result.data = new ToolResultMessage({
+            toolCallId: result.data.toolCallId,
+            content: sanitizeStr(result.data.content),
+          });
+        }
+        return result;
+      },
+    });
+
+    const read = wrapTool(createReadTool(realmHostPath, { operations: realmOps }));
+
+    const edit = wrapTool(createEditTool(realmHostPath, {
       operations: {
         readFile: (p: string) => readFile(this._realmPath(realmHostPath, p)),
         writeFile: (p: string, content: string) => writeFile(this._realmPath(realmHostPath, p), Buffer.from(content, 'utf-8')),
         access: (p: string) => access(this._realmPath(realmHostPath, p)),
       },
-    });
+    }));
 
-    const write = createWriteTool(realmHostPath, {
+    const write = wrapTool(createWriteTool(realmHostPath, {
       operations: {
         writeFile: (p: string, content: string) => writeFile(this._realmPath(realmHostPath, p), Buffer.from(content, 'utf-8')),
         mkdir: (p: string) => mkdir(this._realmPath(realmHostPath, p), { recursive: true }).then(() => {}),
@@ -535,7 +548,7 @@ export class SandboxService {
         },
         readFileString: (p: string) => readFile(this._realmPath(realmHostPath, p), 'utf-8'),
       },
-    });
+    }));
 
     return { bash, read, edit, write };
   }
@@ -578,15 +591,8 @@ export class SandboxService {
       if (needsWrite) await writeFile(realmPath, contentBuf);
     }
 
-    const contextNames = new Set<string>(
-      Array.from(state.contextEntries.values()).map((e) => e.realmName),
-    );
     for (const name of state.knownTempFileSnapshot.keys()) {
-      if (
-        !current.has(name) &&
-        !state.skillFileNames.has(name) &&
-        !contextNames.has(name)
-      ) {
+      if (!current.has(name)) {
         await unlinkIfExists(join(state.realmHostPath, name));
       }
     }
@@ -598,16 +604,10 @@ export class SandboxService {
       (state.session.contextFoldersInfos ?? []).map((cfo) => cfo.path),
     );
 
-    const usedNames = (): Set<string> => {
-      const s = new Set<string>(state.skillFileNames);
-      for (const k of state.knownTempFileSnapshot.keys()) s.add(k);
-      for (const e of state.contextEntries.values()) s.add(e.realmName);
-      return s;
-    };
-
     for (const cf of state.session.contextFiles ?? []) {
       if (!state.contextEntries.has(cf.path)) {
-        const realmName = dedupe(basename(cf.path), usedNames());
+        const realmName = cf.path.replace(/^\/+/, '');
+        await mkdir(dirname(join(state.realmHostPath, realmName)), { recursive: true });
         await cp(cf.path, join(state.realmHostPath, realmName));
         state.contextEntries.set(cf.path, {
           hostPath: cf.path,
@@ -620,18 +620,16 @@ export class SandboxService {
 
     for (const [hostPath, entry] of [...state.contextEntries.entries()]) {
       if (entry.type === 'file' && !currentCfPaths.has(hostPath)) {
-        if (entry.state === 'copied') {
-          await unlinkIfExists(join(state.realmHostPath, entry.realmName));
-          state.contextEntries.delete(hostPath);
-        }
-        // mounted: ignore (cannot unmount)
+        await unlinkIfExists(join(state.realmHostPath, entry.realmName));
+        state.contextEntries.delete(hostPath);
       }
     }
 
     // Context folders
     for (const cfo of state.session.contextFoldersInfos ?? []) {
       if (!state.contextEntries.has(cfo.path)) {
-        const realmName = dedupe(basename(cfo.path), usedNames());
+        const realmName = cfo.path.replace(/^\/+/, '');
+        await mkdir(join(state.realmHostPath, realmName), { recursive: true });
         await cp(cfo.path, join(state.realmHostPath, realmName), { recursive: true });
         state.contextEntries.set(cfo.path, {
           hostPath: cfo.path,
@@ -644,13 +642,8 @@ export class SandboxService {
 
     for (const [hostPath, entry] of [...state.contextEntries.entries()]) {
       if (entry.type === 'folder' && !currentCfoPaths.has(hostPath)) {
-        if (entry.state === 'copied') {
-          await rmRfIfExists(join(state.realmHostPath, entry.realmName));
-          state.contextEntries.delete(hostPath);
-        } else {
-          // mounted: empty host folder, keep dir mounted
-          await emptyDirectory(hostPath);
-        }
+        await rmRfIfExists(join(state.realmHostPath, entry.realmName));
+        state.contextEntries.delete(hostPath);
       }
     }
   }
@@ -658,76 +651,62 @@ export class SandboxService {
   // ─── Sync: session ← realm ───────────────────────────────────────────────
 
   private async syncSessionFromRealm(state: SkillExecutionState): Promise<void> {
-    const contextNames = new Set<string>(
-      Array.from(state.contextEntries.values()).map((e) => e.realmName),
-    );
+    // Top-level directory names in the realm that are owned by skill files or context entries.
+    // realmName is a relative path like "scripts" or "home/jebuscross/Downloads" — the
+    // top-level component is the first path segment.
+    const ownedTopLevel = new Set<string>();
+    for (const p of state.skillFilePaths) ownedTopLevel.add(p.split('/')[0]);
+    for (const e of state.contextEntries.values()) ownedTopLevel.add(e.realmName.split('/')[0]);
+    ownedTopLevel.add('.meta');
 
-    // Temp files: realm authoritative for top-level files
+    // Temp files: only top-level FILES that are not owned by skill/context
     const dirEntries = await readdir(state.realmHostPath, { withFileTypes: true });
     const seen = new Map<string, Buffer>();
 
     for (const e of dirEntries) {
-      if (e.name === '.meta') continue;
-      if (state.skillFileNames.has(e.name)) continue;
-      if (contextNames.has(e.name)) continue;
-      if (e.isDirectory()) {
-        console.warn(
-          `[SandboxService] Skill created top-level subdirectory '${e.name}' in flat realm; ignored on sync-out`,
-        );
-        continue;
-      }
+      if (ownedTopLevel.has(e.name)) continue;
+      if (e.isDirectory()) continue; // skill/agent may create dirs — ignore on sync-out
       if (!e.isFile()) continue;
 
       const filePath = join(state.realmHostPath, e.name);
       const buf = await readFile(filePath);
       const existing = (state.session.tempFiles ?? []).find((f) => f.name === e.name);
       const existingBuf = existing ? toBuffer(existing.content) : null;
-      const differs =
-        !existingBuf || existingBuf.length !== buf.length || existingBuf.compare(buf) !== 0;
-      if (differs) {
-        await state.session.writeTempFile({ name: e.name, content: buf });
-      }
+      const differs = !existingBuf || existingBuf.length !== buf.length || existingBuf.compare(buf) !== 0;
+      if (differs) await state.session.writeTempFile({ name: e.name, content: buf });
       seen.set(e.name, buf);
     }
 
-    // Deletions: anything in session.tempFiles not in `seen` and not skill/context
+    // Deletions: temp files that no longer exist in realm
     for (const f of [...(state.session.tempFiles ?? [])]) {
-      if (state.skillFileNames.has(f.name)) continue;
-      if (contextNames.has(f.name)) continue;
-      if (!seen.has(f.name)) {
-        await state.session.removeTempFile(f.name);
-      }
+      if (!seen.has(f.name)) await state.session.removeTempFile(f.name);
     }
 
     state.knownTempFileSnapshot = seen;
 
-    // Context files (copied state) — flush realm → host if differs
+    // Context files (copied) — flush realm → host if changed
     for (const entry of state.contextEntries.values()) {
       if (entry.state !== 'copied' || entry.type !== 'file') continue;
       const realmPath = join(state.realmHostPath, entry.realmName);
       let realmBuf: Buffer;
-      try {
-        realmBuf = await readFile(realmPath);
-      } catch {
-        continue;
-      }
+      try { realmBuf = await readFile(realmPath); } catch { continue; }
       let hostBuf: Buffer | null = null;
-      try {
-        hostBuf = await readFile(entry.hostPath);
-      } catch {
-        hostBuf = null;
-      }
-      const differs =
-        !hostBuf || hostBuf.length !== realmBuf.length || hostBuf.compare(realmBuf) !== 0;
+      try { hostBuf = await readFile(entry.hostPath); } catch { /* missing */ }
+      const differs = !hostBuf || hostBuf.length !== realmBuf.length || hostBuf.compare(realmBuf) !== 0;
       if (differs) await writeFile(entry.hostPath, realmBuf);
     }
 
-    // Context folders (copied state) — rsync mirror back to host
+    // Context folders (copied) — rsync mirror back to host
     for (const entry of state.contextEntries.values()) {
       if (entry.state !== 'copied' || entry.type !== 'folder') continue;
-      const realmDir = join(state.realmHostPath, entry.realmName);
-      await mirrorDirectory(realmDir, entry.hostPath);
+      await mirrorDirectory(join(state.realmHostPath, entry.realmName), entry.hostPath);
     }
+  }
+
+  // Rewrite all absolute paths to relative: /foo/bar → ./foo/bar
+  // The container cwd is /workspace which mirrors the realm, so all host absolute paths resolve correctly.
+  private rewriteCommand(cmd: string): string {
+    return cmd.replace(/(["']?)(\/[^\s"'\\;|&><!(){}[\]*?]+)/g, (_match, quote, path) => `${quote}./${path.replace(/^\/+/, '')}`);
   }
 
   // ─── Command runner ──────────────────────────────────────────────────────
@@ -739,10 +718,11 @@ export class SandboxService {
   ): Promise<Array<{ command: string; stdout: string; stderr: string }>> {
     const results: Array<{ command: string; stdout: string; stderr: string }> = [];
     for (const cmd of commands) {
+      const rewritten = this.rewriteCommand(cmd);
       try {
         const { stdout, stderr } = await execFileAsync(
           'podman',
-          ['exec', '-w', state.containerWorkingDir, state.container.id, 'bash', '-c', cmd],
+          ['exec', '-w', state.containerWorkingDir, state.container.id, 'bash', '-c', rewritten],
           { timeout: config.executionTimeout, maxBuffer: 16 * 1024 * 1024 },
         );
         results.push({ command: cmd, stdout, stderr });
@@ -796,7 +776,6 @@ export class SandboxService {
     runtimeName: string,
     config: RuntimeConfig,
     realmHostPath: string,
-    contextEntries: Map<string, ContextEntry>,
   ): Promise<Container> {
     const set = this.exclusiveContainers.get(runtimeName)!;
 
@@ -811,10 +790,6 @@ export class SandboxService {
         '--mount',
         `type=bind,source=${realmHostPath},target=/workspace`,
       ];
-      for (const e of contextEntries.values()) {
-        if (e.state !== 'mounted') continue;
-        args.push('--mount', `type=bind,source=${e.hostPath},target=/workspace/${e.realmName}`);
-      }
       args.push(config.image, 'sleep', 'infinity');
 
       const { stdout } = await execFileAsync('podman', args);

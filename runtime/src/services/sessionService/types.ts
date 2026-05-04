@@ -11,6 +11,7 @@ import type { SkillExecutionSession } from '../sandbox/index.js';
 
 export interface EnabledSkillRecord {
   name: string;
+  sandboxToolNames: string[]; // namespaced tool names exposed by this skill's sandbox, e.g. ["docx_bash", "docx_read"]
 }
 
 export interface EnabledSkill {

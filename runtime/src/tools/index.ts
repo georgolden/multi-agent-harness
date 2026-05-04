@@ -228,9 +228,7 @@ export class Tools {
       runAgent: createRunAgentTool(),
       writeTempFile: createWriteTempFileTool(),
       spawnAgent: createSpawnAgentTool(),
-      ...(skillOptions
-        ? { skill: createSkillTool(skillOptions.skills, skillOptions.sandbox, skillOptions.session) }
-        : {}),
+      skill: createSkillTool(),
     };
   }
 
