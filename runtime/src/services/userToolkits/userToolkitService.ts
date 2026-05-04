@@ -87,6 +87,18 @@ export class UserToolkitService {
     return this.app.data.userToolkitRepository.getToolkits(userId);
   }
 
+  async listToolkitTools(userId: string, provider: string, toolkitSlug: string) {
+    const toolkits = await this.app.data.userToolkitRepository.getToolkits(userId);
+    const toolkit = toolkits.find((t) => t.provider === provider && t.toolkitSlug === toolkitSlug);
+    if (!toolkit) throw new Error(`Toolkit "${toolkitSlug}" not connected`);
+    const providerData = toolkit.providerData as { externalUserId: string; authConfigId: string };
+    const providerInstance = this.app.services.toolProviderRegistry.get(provider);
+    return providerInstance.getToolSchemas({
+      externalUserId: providerData.externalUserId,
+      authConfigId: providerData.authConfigId,
+    });
+  }
+
   /**
    * Remove a toolkit: disconnects the account on the provider side and deletes the DB record.
    */

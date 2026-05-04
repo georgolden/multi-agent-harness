@@ -203,11 +203,22 @@ export class SessionDataRepository {
     if (!session) throw new Error(`Session '${sessionId}' not found`);
 
     if (session.enabledSkills.some((s) => s.name === name)) return;
-    const enabledSkills: EnabledSkillRecord[] = [...session.enabledSkills, { name }];
+    const enabledSkills: EnabledSkillRecord[] = [...session.enabledSkills, { name, sandboxToolNames: [] }];
     const client = this._client(sessionId) as any;
     await client.flowSession.update({ where: { id: sessionId }, data: { enabledSkills: enabledSkills as any } });
     this.app.infra.bus.emit('flowSession:skillEnabled', { sessionId, name });
     console.log(`[SessionDataRepository] Enabled skill '${name}' on session '${sessionId}'`);
+  }
+
+  async updateEnabledSkillRecord(sessionId: string, patch: { name: string; sandboxToolNames: string[] }): Promise<void> {
+    const session = await this.getSession(sessionId);
+    if (!session) throw new Error(`Session '${sessionId}' not found`);
+
+    const enabledSkills: EnabledSkillRecord[] = session.enabledSkills.map((r) =>
+      r.name === patch.name ? { ...r, sandboxToolNames: patch.sandboxToolNames } : r,
+    );
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({ where: { id: sessionId }, data: { enabledSkills: enabledSkills as any } });
   }
 
   async disableSkill(sessionId: string, name: string): Promise<void> {
@@ -222,7 +233,8 @@ export class SessionDataRepository {
   }
 
   async getSession(sessionId: string): Promise<SessionData | null> {
-    const row = await this.prisma.flowSession.findUnique({ where: { id: sessionId } });
+    const client = this._client(sessionId) as any;
+    const row = await client.flowSession.findUnique({ where: { id: sessionId } });
     return row ? this.mapRow(row) : null;
   }
 
@@ -267,7 +279,7 @@ export class SessionDataRepository {
    * Also updates the `systemPrompt` column and rewrites both `messages` and
    * `activeMessages` so every future active window sees the updated prompt.
    */
-  async upsertSystemPrompt(sessionId: string, content: string): Promise<SessionMessage[]> {
+  async upsertSystemPrompt(sessionId: string, content: string): Promise<{ allMessages: SessionMessage[]; activeMessages: SessionMessage[] }> {
     const session = await this.getSession(sessionId);
     if (!session) throw new Error(`Session '${sessionId}' not found`);
 
@@ -290,13 +302,13 @@ export class SessionDataRepository {
     });
 
     console.log(`[SessionDataRepository] Upserted system prompt for session '${sessionId}'`);
-    return activeMessages;
+    return { allMessages, activeMessages };
   }
 
   async addMessages(
     sessionId: string,
     messages: Omit<SessionMessage, 'timestamp'>[],
-  ): Promise<SessionMessage[]> {
+  ): Promise<{ allMessages: SessionMessage[]; activeMessages: SessionMessage[] }> {
     const session = await this.getSession(sessionId);
     if (!session) throw new Error(`Session '${sessionId}' not found`);
 
@@ -312,7 +324,37 @@ export class SessionDataRepository {
 
     this.app.infra.bus.emit('flowSession:messagesAdded', { sessionId, activeMessages, allMessages });
     console.log(`[SessionDataRepository] Added ${messages.length} messages to session '${sessionId}'`);
-    return activeMessages;
+    return { allMessages, activeMessages };
+  }
+
+  async applySchema(
+    sessionId: string,
+    schema: {
+      toolSchemas: ToolSchema[];
+      skillSchemas: SkillSchema[];
+      contextFiles: FileInfo[];
+      contextFoldersInfos: FolderInfo[];
+      callLlmOptions: Record<string, unknown>;
+      messageWindowConfig: Record<string, unknown>;
+      agentLoopConfig: Record<string, unknown>;
+      userPromptTemplate: string | undefined;
+    },
+  ): Promise<void> {
+    const client = this._client(sessionId) as any;
+    await client.flowSession.update({
+      where: { id: sessionId },
+      data: {
+        toolSchemas: schema.toolSchemas as any,
+        skillSchemas: schema.skillSchemas as any,
+        contextFiles: schema.contextFiles as any,
+        contextFoldersInfos: schema.contextFoldersInfos as any,
+        callLlmOptions: schema.callLlmOptions as any,
+        messageWindowConfig: schema.messageWindowConfig as any,
+        agentLoopConfig: schema.agentLoopConfig as any,
+        userPromptTemplate: schema.userPromptTemplate,
+      },
+    });
+    console.log(`[SessionDataRepository] Applied schema to session '${sessionId}'`);
   }
 
   async addContextFiles(sessionId: string, files: FileInfo[]): Promise<FileInfo[]> {

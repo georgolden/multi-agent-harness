@@ -154,7 +154,7 @@ export class ComposioService implements ToolProvider {
     const tools = await this.composio.tools.getRawComposioTools(
       toolSlugs && toolSlugs.length > 0
         ? { tools: toolSlugs }
-        : { authConfigIds: [authConfigId], ...(limit ? { limit } : {}) },
+        : { authConfigIds: [authConfigId], limit: limit ?? 100 },
     );
 
     const arr = Array.isArray(tools) ? tools : (tools as any)?.items ?? [];
