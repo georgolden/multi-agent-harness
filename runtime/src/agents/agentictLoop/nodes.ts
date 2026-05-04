@@ -78,7 +78,9 @@ export class PrepareInput extends Node<App, AgenticLoopContext, AgentFlowParamet
       tools,
     });
 
-    console.log(`[PrepareInput] schema='${session.flowName}' tools=[${tools.map((t) => t.name).join(', ')}] skills=[${skills.map((s) => s.name).join(', ')}]`);
+    await session.ensureSkillsReady(app.services.sandbox);
+
+    console.log(`[PrepareInput] schema='${session.flowName}' tools=[${session.tools.map((t) => t.name).join(', ')}] skills=[${skills.map((s) => s.name).join(', ')}]`);
 
     // First entry: input has a message. Loop-backs pass undefined.
     const input = p.data;
@@ -136,7 +138,7 @@ export class DecideAction extends Node<
 
     const callLlmOptions = session.callLlmOptions;
 
-    console.log(`[DecideAction.run] Calling LLM with ${messages.length} messages`);
+    console.log(`[DecideAction.run] Calling LLM with ${messages.length} messages, tools=[${session.toolSchemas.map((t) => t.name).join(',')}]`);
 
     const response = await callLlmWithTools(messages, tools, callLlmOptions);
     const assistantMsg = AssistantMessage.from(response[0].message);
@@ -193,7 +195,7 @@ export class AskUser extends Node<App, AgenticLoopContext, string, { default: vo
     const session = ctx.session!;
     const message = p.data;
     console.log(`[AskUser.run] Sending question to user, session '${session!.id}'`);
-    await session.respond(ctx.user, message);
+    session.notify(ctx.user, message);
     session.onUserMessage(({ message }) => {
       this.resume({ data: message, context: p.context, deps: p.deps });
     });
