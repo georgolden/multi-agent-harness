@@ -100,6 +100,12 @@ export const appRouter = router({
     return ctx.app.services.userToolkitService.getUserToolkits(ctx.userId);
   }),
 
+  listToolkitTools: publicProcedure
+    .input(z.object({ provider: z.string().default('composio'), toolkitSlug: z.string() }))
+    .query(async ({ ctx, input }) => {
+      return ctx.app.services.userToolkitService.listToolkitTools(ctx.userId, input.provider, input.toolkitSlug);
+    }),
+
   initiateToolkitConnection: publicProcedure
     .input(z.object({ provider: z.string().default('composio'), toolkitSlug: z.string() }))
     .mutation(async ({ ctx, input }) => {
@@ -213,6 +219,9 @@ export const appRouter = router({
               useMemory: z.boolean(),
               useKnowledgeBase: z.boolean(),
             })
+            .optional(),
+          toolkits: z
+            .array(z.object({ slug: z.string(), allowedTools: z.array(z.string()) }))
             .optional(),
         }),
       }),

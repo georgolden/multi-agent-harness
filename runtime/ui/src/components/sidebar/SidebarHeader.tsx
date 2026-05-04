@@ -10,7 +10,7 @@ export function SidebarHeader({ collapsed, onToggle }: SidebarHeaderProps) {
     <div className="flex items-center justify-between px-4 py-4">
       {!collapsed && (
         <div>
-          <h1 className="text-lg font-semibold tracking-tight text-gray-900">AGI Runtime</h1>
+          <h1 className="text-lg font-semibold tracking-tight text-gray-900">Agents Runtime</h1>
           <p className="text-xs text-gray-600 mt-0.5">Agents</p>
         </div>
       )}

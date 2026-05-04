@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { trpc } from '../../trpcClient.js';
 import { Save, X, ChevronDown, ChevronUp, ChevronLeft, Plus, Eye, EyeOff } from 'lucide-react';
 import { MarkdownRenderer } from '../chat/MarkdownRenderer.js';
@@ -14,6 +14,218 @@ interface AgentLoopConfig {
   loopExit: 'failure' | 'bestAnswer';
   useMemory: boolean;
   useKnowledgeBase: boolean;
+}
+
+interface ToolkitConfig {
+  slug: string;
+  allowedTools: string[];
+}
+
+function AutoResizeTextarea({
+  value,
+  onChange,
+  className,
+  ...props
+}: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { value: string; onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void }) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
+
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={onChange}
+      className={className}
+      style={{ overflow: 'hidden', resize: 'none' }}
+      {...props}
+    />
+  );
+}
+
+function ToolkitToolPicker({
+  toolkitSlug,
+  allowedTools,
+  onChange,
+}: {
+  toolkitSlug: string;
+  allowedTools: string[];
+  onChange: (tools: string[]) => void;
+}) {
+  const { data: toolSchemas, isLoading } = trpc.listToolkitTools.useQuery({ toolkitSlug });
+  const [search, setSearch] = useState('');
+
+  if (isLoading) {
+    return <p className="text-[11px] text-gray-400 py-1">Loading tools…</p>;
+  }
+  if (!toolSchemas?.length) {
+    return <p className="text-[11px] text-gray-400 py-1">No tools found for this toolkit.</p>;
+  }
+
+  const allSelected = allowedTools.length === 0;
+  const selectedSet = new Set(allowedTools);
+
+  const toggleAll = () => onChange([]);
+
+  const toggleTool = (slug: string) => {
+    if (allSelected) {
+      // currently "all" — switch to all except this one
+      onChange(toolSchemas.map((t) => t.slug).filter((s) => s !== slug));
+    } else if (selectedSet.has(slug)) {
+      const next = allowedTools.filter((s) => s !== slug);
+      // if nothing left selected, treat as "all"
+      onChange(next.length === toolSchemas.length ? [] : next);
+    } else {
+      const next = [...allowedTools, slug];
+      onChange(next.length === toolSchemas.length ? [] : next);
+    }
+  };
+
+  const visible = search
+    ? toolSchemas.filter((t) => t.slug.toLowerCase().includes(search.toLowerCase()) || t.name.toLowerCase().includes(search.toLowerCase()))
+    : toolSchemas;
+
+  return (
+    <div className="flex flex-col gap-1.5 mt-1">
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filter tools…"
+            className="w-full text-xs border border-gray-200 rounded-lg pl-2 pr-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={toggleAll}
+          className={`text-[11px] px-2 py-1 rounded-lg border transition-colors flex-none ${allSelected ? 'bg-blue-500 text-white border-blue-500' : 'border-gray-200 text-gray-500 hover:border-blue-300 hover:text-blue-600'}`}
+        >
+          All
+        </button>
+      </div>
+      <div className="flex flex-col gap-0.5 max-h-48 overflow-y-auto pr-0.5">
+        {visible.map((tool) => {
+          const checked = allSelected || selectedSet.has(tool.slug);
+          return (
+            <label
+              key={tool.slug}
+              className={`flex items-start gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors ${checked ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+            >
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() => toggleTool(tool.slug)}
+                className="mt-0.5 flex-none accent-blue-500"
+              />
+              <div className="flex flex-col gap-0 min-w-0">
+                <span className="text-xs font-mono text-gray-700 leading-tight">{tool.slug}</span>
+                {tool.description && (
+                  <span className="text-[11px] text-gray-400 leading-tight truncate">{tool.description}</span>
+                )}
+              </div>
+            </label>
+          );
+        })}
+      </div>
+      <p className="text-[10px] text-gray-400">
+        {allSelected ? `All ${toolSchemas.length} tools allowed` : `${allowedTools.length} / ${toolSchemas.length} tools selected`}
+      </p>
+    </div>
+  );
+}
+
+function ToolkitEditor({
+  toolkits,
+  onChange,
+}: {
+  toolkits: ToolkitConfig[];
+  onChange: (v: ToolkitConfig[]) => void;
+}) {
+  const { data: userToolkitsRaw } = trpc.getUserToolkits.useQuery();
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const userToolkits: Array<{ toolkitSlug: string; name: string; logo: string }> = userToolkitsRaw ?? [];
+
+  const enabledSlugs = new Set(toolkits.map((t) => t.slug));
+
+  const toggle = (slug: string) => {
+    if (enabledSlugs.has(slug)) {
+      onChange(toolkits.filter((t) => t.slug !== slug));
+      if (expanded === slug) setExpanded(null);
+    } else {
+      onChange([...toolkits, { slug, allowedTools: [] }]);
+      setExpanded(slug);
+    }
+  };
+
+  const updateAllowedTools = (slug: string, tools: string[]) => {
+    onChange(toolkits.map((t) => (t.slug === slug ? { ...t, allowedTools: tools } : t)));
+  };
+
+  if (userToolkits.length === 0) {
+    return (
+      <div className="flex flex-col gap-1">
+        <label className="text-xs text-gray-500">Toolkits</label>
+        <p className="text-xs text-gray-400 italic">No toolkits connected. Connect toolkits first to use them in agents.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <label className="text-xs text-gray-500">Toolkits</label>
+      {userToolkits.map((ut) => {
+        const active = enabledSlugs.has(ut.toolkitSlug);
+        const cfg = toolkits.find((t) => t.slug === ut.toolkitSlug);
+        const open = active && expanded === ut.toolkitSlug;
+        return (
+          <div
+            key={ut.toolkitSlug}
+            className={`flex flex-col border rounded-lg transition-colors ${active ? 'border-blue-200 bg-blue-50/20' : 'border-gray-200'}`}
+          >
+            <div className="flex items-center gap-2 px-3 py-2">
+              {ut.logo && (
+                <img src={ut.logo} alt={ut.name} className="w-5 h-5 rounded object-contain flex-none" />
+              )}
+              <span className="text-sm font-medium text-gray-700 flex-1">{ut.name}</span>
+              <span className="text-[11px] font-mono text-gray-400">{ut.toolkitSlug}</span>
+              {active && (
+                <button
+                  type="button"
+                  onClick={() => setExpanded(open ? null : ut.toolkitSlug)}
+                  className="p-0.5 text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => toggle(ut.toolkitSlug)}
+                className={`relative inline-flex h-5 w-9 flex-none rounded-full transition-colors focus:outline-none ${active ? 'bg-blue-500' : 'bg-gray-200'}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform mt-0.5 ${active ? 'translate-x-4' : 'translate-x-0.5'}`} />
+              </button>
+            </div>
+            {open && (
+              <div className="px-3 pb-3 border-t border-blue-100">
+                <ToolkitToolPicker
+                  toolkitSlug={ut.toolkitSlug}
+                  allowedTools={cfg?.allowedTools ?? []}
+                  onChange={(tools) => updateAllowedTools(ut.toolkitSlug, tools)}
+                />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 type PromptView = 'systemPrompt' | 'userPromptTemplate' | null;
@@ -120,6 +332,7 @@ export function SchemaEditor({ flowName, onClose }: SchemaEditorProps) {
   const [userPromptTemplate, setUserPromptTemplate] = useState('');
   const [toolNames, setToolNames] = useState<string[]>([]);
   const [skillNames, setSkillNames] = useState<string[]>([]);
+  const [toolkits, setToolkits] = useState<ToolkitConfig[]>([]);
   const [contextFiles, setContextFiles] = useState<string[]>([]);
   const [contextFolders, setContextFolders] = useState<string[]>([]);
   const [agentLoopConfig, setAgentLoopConfig] = useState<AgentLoopConfig>({
@@ -150,6 +363,7 @@ export function SchemaEditor({ flowName, onClose }: SchemaEditorProps) {
     setUserPromptTemplate(schema.userPromptTemplate ?? '');
     setToolNames(schema.toolNames ?? []);
     setSkillNames(schema.skillNames ?? []);
+    setToolkits((schema.toolkits as ToolkitConfig[]) ?? []);
     setContextFiles(schema.contextPaths?.files ?? []);
     setContextFolders(schema.contextPaths?.folders ?? []);
     if (schema.agentLoopConfig) setAgentLoopConfig(schema.agentLoopConfig as AgentLoopConfig);
@@ -169,6 +383,7 @@ export function SchemaEditor({ flowName, onClose }: SchemaEditorProps) {
           userPromptTemplate: userPromptTemplate || undefined,
           toolNames,
           skillNames,
+          toolkits,
           contextPaths: { files: contextFiles, folders: contextFolders },
           agentLoopConfig,
         },
@@ -306,11 +521,10 @@ export function SchemaEditor({ flowName, onClose }: SchemaEditorProps) {
             </div>
             <div className="flex flex-col gap-1">
               <label className="text-xs text-gray-500">Description</label>
-              <textarea
-                rows={2}
+              <AutoResizeTextarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 resize-y focus:outline-none focus:ring-1 focus:ring-blue-400"
+                className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-400"
               />
             </div>
           </div>
@@ -357,6 +571,7 @@ export function SchemaEditor({ flowName, onClose }: SchemaEditorProps) {
           <div className="flex flex-col gap-4 pb-4">
             <TagListEditor label="Tool Names" values={toolNames} onChange={setToolNames} placeholder="tool name…" />
             <TagListEditor label="Skill Names" values={skillNames} onChange={setSkillNames} placeholder="skill name…" />
+            <ToolkitEditor toolkits={toolkits} onChange={setToolkits} />
           </div>
         )}
         <div className="h-px bg-gray-100" />
