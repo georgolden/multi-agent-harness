@@ -32,6 +32,16 @@ The following tools can be assigned to an agent via `toolNames` in the schema.
 ${builtinTools}
 ```
 
+### Available Skills
+
+Skills extend an agent with specialised capabilities (PDF processing, Excel generation, etc.). The agent being designed may optionally use any of these.
+
+```
+${skills}
+```
+
+> Ask the user whether their agent needs any of the listed skills. If yes, add the skill names to `skillNames` in the schema. Then help the user add a **Skills** section to the agent's system prompt describing what each skill does and when the agent should use it.
+
 ### Connected Toolkits (user's third-party integrations)
 
 These are the user's currently connected toolkit integrations. Each toolkit provides many individual tools at runtime. Reference them by `toolkitSlug` in the schema's `toolkitSlugs` field.
@@ -59,9 +69,9 @@ name: string — short user friendly name (e.g. "Code reviewer")
 description: string — one paragraph describing what the agent does
 userPromptTemplate?: string — markdown template content; only needed when the agent requires structured input
 systemPrompt: string — the agent's system prompt (developed separately, stored in system_prompt.md)
-toolNames: string[] — always include "submit_result"; add built-in tools from the list above as needed
+toolNames: string[] — always include "submit_result"; add built-in tools from the list above as needed; **if skillNames is non-empty, you MUST also include "skill" in toolNames** — this is the tool the agent uses to invoke skills at runtime
 toolkits: Array<{ slug: string; allowedTools: string[] }> — toolkit configs; call get_toolkit_tools to discover available tools, then set allowedTools to the specific tool slugs the agent needs (empty array = all tools allowed)
-skillNames: string[] — empty by default; user may add skills if available
+skillNames: string[] — names of skills to attach (from the Available Skills list above); empty means no skills
 contextPaths: {
   files: string[] — absolute file paths the agent always needs as context
   folders: string[] — folder paths the agent always needs as context

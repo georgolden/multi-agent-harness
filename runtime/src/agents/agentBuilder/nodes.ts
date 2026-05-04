@@ -37,7 +37,13 @@ export class PrepareInput extends Node<App, AgentBuilderContext, { message: stri
         ? userToolkits.map((t) => `- ${t.toolkitSlug} (${t.name}): ${t.description}`).join('\n')
         : '(none connected)';
 
-    const systemPrompt = createSystemPrompt({ builtinTools, toolkits });
+    const availableSkills = p.deps.skills.getSkills();
+    const skills =
+      availableSkills.length > 0
+        ? availableSkills.map((s) => `- ${s.name}: ${s.description}`).join('\n')
+        : '(none available)';
+
+    const systemPrompt = createSystemPrompt({ builtinTools, toolkits, skills });
     await session.upsertSystemPrompt(systemPrompt);
 
     // First entry: p.data is { message: string } — add it as the user message.
@@ -58,7 +64,7 @@ export class DecideAction extends Node<
   App,
   AgentBuilderContext,
   void,
-  { write_temp_file: LLMToolCall; get_toolkit_tools: LLMToolCall; ask_user: string; submit_result: LLMToolCall }
+  { write_temp_file: LLMToolCall[]; get_toolkit_tools: LLMToolCall; ask_user: string; submit_result: LLMToolCall }
 > {
   constructor() {
     super({ maxRunTries: 3, wait: 1000 });
@@ -77,14 +83,14 @@ export class DecideAction extends Node<
     if ('toolCalls' in assistantMsg && assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0) {
       const toolCalls = assistantMsg.toolCalls;
       const submitCall = toolCalls.find((tc) => tc.name === 'submit_result');
-      const writeCall = toolCalls.find((tc) => tc.name === 'write_temp_file');
+      const writeCalls = toolCalls.filter((tc) => tc.name === 'write_temp_file');
       const getToolsCall = toolCalls.find((tc) => tc.name === 'get_toolkit_tools');
 
       if (submitCall) {
         return packet({ data: submitCall, context: p.context, branch: 'submit_result', deps: p.deps });
       }
-      if (writeCall) {
-        return packet({ data: writeCall, context: p.context, branch: 'write_temp_file', deps: p.deps });
+      if (writeCalls.length > 0) {
+        return packet({ data: writeCalls, context: p.context, branch: 'write_temp_file', deps: p.deps });
       }
       if (getToolsCall) {
         return packet({ data: getToolsCall, context: p.context, branch: 'get_toolkit_tools', deps: p.deps });
@@ -98,24 +104,25 @@ export class DecideAction extends Node<
 
 // ─── WriteTempFile ─────────────────────────────────────────────────────────────
 
-export class WriteTempFile extends Node<App, AgentBuilderContext, LLMToolCall, { default: void }> {
+export class WriteTempFile extends Node<App, AgentBuilderContext, LLMToolCall[], { default: void }> {
   async run(p: this['In']): Promise<this['Out']> {
     const session = p.context.session;
-    const toolCall = p.data;
-    const { name, content } = toolCall.args as { name: string; content: string };
+    const toolCalls = p.data;
 
-    console.log(`[agentBuilder.WriteTempFile] writing '${name}' (${content.length} chars) session='${session.id}'`);
-
-    await session.writeTempFile({ name, content });
-    await session.addMessages([
-      {
+    const results: { message: ReturnType<ToolResultMessage['toJSON']> }[] = [];
+    for (const toolCall of toolCalls) {
+      const { name, content } = toolCall.args as { name: string; content: string };
+      console.log(`[agentBuilder.WriteTempFile] writing '${name}' (${content.length} chars) session='${session.id}'`);
+      await session.writeTempFile({ name, content });
+      results.push({
         message: new ToolResultMessage({
           toolCallId: toolCall.id,
           content: JSON.stringify({ success: true, name, contentLength: content.length }),
         }).toJSON(),
-      },
-    ]);
+      });
+    }
 
+    await session.addMessages(results);
     return packet({ data: undefined, context: p.context, deps: p.deps });
   }
 }
@@ -167,7 +174,7 @@ export class AskUser extends Node<App, AgentBuilderContext, string, { default: v
   async run(p: this['In']): Promise<this['Out']> {
     const { session, user } = p.context;
     console.log(`[agentBuilder.AskUser] session='${session.id}'`);
-    await session.respond(user, p.data);
+    session.notify(user, p.data);
     session.onUserMessage(({ message }: { message: string }) => {
       this.resume({ data: message, context: p.context, deps: p.deps });
     });

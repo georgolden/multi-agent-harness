@@ -10,6 +10,7 @@ const systemPromptTemplate = await readFile(systemPromptPath, 'utf-8');
 export interface SystemPromptVars {
   builtinTools: string;
   toolkits: string;
+  skills: string;
 }
 
 export function createSystemPrompt(vars: SystemPromptVars): string {
