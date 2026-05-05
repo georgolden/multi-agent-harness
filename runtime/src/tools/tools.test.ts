@@ -2,10 +2,13 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import nodePath from 'node:path';
+import { createServer } from 'node:http';
 import { createReadTool } from './read.js';
 import { createWriteTool } from './write.js';
 import { createEditTool } from './edit.js';
 import { createBashTool } from './bash.js';
+import { createWebFetchTool } from './webfetch.js';
+import { createWebSearchTool } from './websearch.js';
 
 // ── Temp dir helpers ───────────────────────────────────────────────────────────
 
@@ -416,5 +419,197 @@ describe('bash tool', () => {
     const result = await tool.execute(null as any, null, { command: 'echo test', description: 'My description' }, ctx);
 
     expect(result.details?.description).toBe('My description');
+  });
+});
+
+// ── WebFetch tool ─────────────────────────────────────────────────────────────
+
+function startTestServer(): Promise<{ url: string; close: () => Promise<void> }> {
+  return new Promise((resolve) => {
+    const server = createServer((req, res) => {
+      const url = new URL(req.url || '/', `http://localhost`);
+      if (url.pathname === '/html') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html><head><title>Test</title></head><body><h1>Hello</h1><p>World</p><script>alert("x")</script></body></html>');
+      } else if (url.pathname === '/text') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Plain text content');
+      } else if (url.pathname === '/markdown') {
+        res.writeHead(200, { 'Content-Type': 'text/markdown' });
+        res.end('# Markdown Title\n\nSome content');
+      } else if (url.pathname === '/json') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"key": "value"}');
+      } else if (url.pathname === '/large') {
+        res.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': '6000000' });
+        res.end('x'.repeat(6000000));
+      } else if (url.pathname === '/403') {
+        res.writeHead(403, { 'cf-mitigated': 'challenge' });
+        res.end('Forbidden');
+      } else {
+        res.writeHead(404);
+        res.end('Not Found');
+      }
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise<void>((res) => server.close(() => res())),
+      });
+    });
+  });
+}
+
+describe('webfetch tool', () => {
+  let server: { url: string; close: () => Promise<void> };
+
+  beforeAll(async () => {
+    server = await startTestServer();
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it('rejects URL without http:// or https://', async () => {
+    const tool = createWebFetchTool();
+    const result = await tool.execute(null as any, null, { url: 'ftp://example.com' }, ctx);
+
+    expect(result.error).toBeDefined();
+    expect(result.error!.message).toContain('URL must start with http:// or https://');
+  });
+
+  it('fetches HTML and converts to markdown by default', async () => {
+    const tool = createWebFetchTool();
+    const result = await tool.execute(null as any, null, { url: `${server.url}/html` }, ctx);
+
+    expect(result.error).toBeUndefined();
+    expect(result.data.content).toContain('# Hello');
+    expect(result.data.content).toContain('World');
+    expect(result.data.content).not.toContain('alert');
+  });
+
+  it('fetches HTML and converts to text', async () => {
+    const tool = createWebFetchTool();
+    const result = await tool.execute(null as any, null, { url: `${server.url}/html`, format: 'text' }, ctx);
+
+    expect(result.error).toBeUndefined();
+    expect(result.data.content).toContain('Hello');
+    expect(result.data.content).toContain('World');
+    expect(result.data.content).not.toContain('alert');
+  });
+
+  it('fetches HTML and returns raw html', async () => {
+    const tool = createWebFetchTool();
+    const result = await tool.execute(null as any, null, { url: `${server.url}/html`, format: 'html' }, ctx);
+
+    expect(result.error).toBeUndefined();
+    expect(result.data.content).toContain('<h1>Hello</h1>');
+    expect(result.data.content).toContain('<p>World</p>');
+  });
+
+  it('fetches plain text as-is in markdown mode', async () => {
+    const tool = createWebFetchTool();
+    const result = await tool.execute(null as any, null, { url: `${server.url}/text`, format: 'markdown' }, ctx);
+
+    expect(result.error).toBeUndefined();
+    expect(result.data.content).toBe('Plain text content');
+  });
+
+  it('fetches markdown content as-is', async () => {
+    const tool = createWebFetchTool();
+    const result = await tool.execute(null as any, null, { url: `${server.url}/markdown`, format: 'markdown' }, ctx);
+
+    expect(result.error).toBeUndefined();
+    expect(result.data.content).toContain('# Markdown Title');
+  });
+
+  it('fetches json content as-is', async () => {
+    const tool = createWebFetchTool();
+    const result = await tool.execute(null as any, null, { url: `${server.url}/json` }, ctx);
+
+    expect(result.error).toBeUndefined();
+    expect(result.data.content).toContain('"key": "value"');
+  });
+
+  it('returns error for 404', async () => {
+    const tool = createWebFetchTool();
+    const result = await tool.execute(null as any, null, { url: `${server.url}/notfound` }, ctx);
+
+    expect(result.error).toBeDefined();
+    expect(result.data.content).toContain('HTTP 404');
+  });
+
+  it('returns error for oversized content-length', async () => {
+    const tool = createWebFetchTool();
+    const result = await tool.execute(null as any, null, { url: `${server.url}/large` }, ctx);
+
+    expect(result.error).toBeDefined();
+    expect(result.error!.message).toContain('Response too large');
+  });
+
+  it('handles abort signal', async () => {
+    const tool = createWebFetchTool();
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await tool.execute(
+      null as any,
+      null,
+      { url: `${server.url}/html` },
+      { toolCallId: 'test-call-id', signal: controller.signal },
+    );
+
+    expect(result.error).toBeDefined();
+    expect(result.data.content).toContain('Operation aborted');
+  });
+});
+
+// ── WebSearch tool ────────────────────────────────────────────────────────────
+
+describe('websearch tool', () => {
+  it('has correct parameters schema', () => {
+    const tool = createWebSearchTool();
+    expect(tool.name).toBe('websearch');
+    expect(tool.parameters.type).toBe('object');
+    expect(tool.parameters.properties).toHaveProperty('query');
+    expect(tool.parameters.properties).toHaveProperty('numResults');
+    expect(tool.parameters.properties).toHaveProperty('livecrawl');
+    expect(tool.parameters.properties).toHaveProperty('type');
+    expect(tool.parameters.properties).toHaveProperty('contextMaxCharacters');
+  });
+
+  it('handles abort signal', async () => {
+    const tool = createWebSearchTool();
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await tool.execute(
+      null as any,
+      null,
+      { query: 'test' },
+      { toolCallId: 'test-call-id', signal: controller.signal },
+    );
+
+    expect(result.error).toBeDefined();
+    expect(result.data.content).toContain('Operation aborted');
+  });
+
+  it('returns error for invalid URL or network failure', async () => {
+    const tool = createWebSearchTool();
+    const result = await tool.execute(
+      null as any,
+      null,
+      { query: 'test', numResults: 1 },
+      ctx,
+    );
+
+    // Without EXA_API_KEY, the request to mcp.exa.ai may succeed or fail depending on network
+    // We just verify the tool executes and returns a structured result
+    expect(result.data).toBeDefined();
+    expect(result.data.content).toBeDefined();
   });
 });

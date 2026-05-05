@@ -97,6 +97,16 @@ export {
   spawnAgentTool,
 } from './spawnAgent.js';
 export { createSkillTool, type SkillToolInput } from './skill.js';
+export {
+  createWebFetchTool,
+  type WebFetchToolInput,
+  webFetchTool,
+} from './webfetch.js';
+export {
+  createWebSearchTool,
+  type WebSearchToolInput,
+  webSearchTool,
+} from './websearch.js';
 
 import type { AgentTool } from '../types.js';
 import { type BashToolOptions, bashTool, createBashTool } from './bash.js';
@@ -111,6 +121,8 @@ import { createRunAgentTool } from './runAgent.js';
 import { createWriteTempFileTool } from './writeTempFile.js';
 import { createSpawnAgentTool } from './spawnAgent.js';
 import { createSkillTool } from './skill.js';
+import { createWebFetchTool } from './webfetch.js';
+import { createWebSearchTool } from './websearch.js';
 import { RuntimeUser } from '../services/userService/index.js';
 import { Session } from '../services/sessionService/session.js';
 import type { Skills } from '../skills/index.js';
@@ -229,6 +241,8 @@ export class Tools {
       writeTempFile: createWriteTempFileTool(),
       spawnAgent: createSpawnAgentTool(),
       skill: createSkillTool(),
+      webfetch: createWebFetchTool(),
+      websearch: createWebSearchTool(),
     };
   }
 
