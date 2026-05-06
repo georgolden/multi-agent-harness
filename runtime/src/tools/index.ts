@@ -127,6 +127,7 @@ import { RuntimeUser } from '../services/userService/index.js';
 import { Session } from '../services/sessionService/session.js';
 import type { Skills } from '../skills/index.js';
 import type { SandboxService } from '../services/sandbox/index.js';
+import type { AgentSecurityConfig, AgentSandboxConfig } from './security-types.js';
 
 /** Tool type (AgentTool from pi-ai) */
 export type Tool = AgentTool<any>;
@@ -213,12 +214,24 @@ export interface ToolsSkillOptions {
   session: Session;
 }
 
+export interface ResolveToolOptions {
+  /** Per-agent security config — applied to fs tools that support it. */
+  security?: AgentSecurityConfig;
+  /** Per-agent sandbox config — reserved for the sandbox step. Currently ignored. */
+  sandbox?: AgentSandboxConfig;
+}
+
 export class Tools {
   toolsMap: Record<string, Tool>;
   readonlyToolsMap: Record<string, Tool>;
   codingToolsMap: Record<string, Tool>;
+  private _cwd: string;
+  private _options?: ToolsOptions;
 
   constructor(cwd: string, options?: ToolsOptions, skillOptions?: ToolsSkillOptions) {
+    this._cwd = cwd;
+    this._options = options;
+    void skillOptions;
     this.readonlyToolsMap = {
       read: createReadTool(cwd, options?.read),
       grep: createGrepTool(cwd),
@@ -263,6 +276,51 @@ export class Tools {
    */
   getSlice(names: string[]): Tool[] {
     return names.filter((name) => name in this.toolsMap).map((name) => this.toolsMap[name]);
+  }
+
+  /**
+   * Resolve a single tool by name with per-agent security/sandbox config.
+   * Re-runs the underlying factory for fs tools so the supplied
+   * `security` is baked into the returned tool's `execute`.
+   *
+   * Behavior is fully determined by `(name, opts)` — there is no hidden
+   * runtime state, so a crashed runtime can rebuild identical tools from
+   * the persisted (toolName, securityConfig, sandboxConfig) snapshot.
+   */
+  resolveByName(name: string, opts?: ResolveToolOptions): Tool | undefined {
+    const security = opts?.security;
+    const cwd = this._cwd;
+    switch (name) {
+      case 'read':
+        return createReadTool(cwd, { ...this._options?.read, security });
+      case 'write':
+        return createWriteTool(cwd, { security });
+      case 'edit':
+        return createEditTool(cwd, { security });
+      case 'find':
+        return createFindTool(cwd, { security });
+      case 'grep':
+        return createGrepTool(cwd, { security });
+      case 'ls':
+        return createLsTool(cwd, { security });
+      case 'tree':
+        return createTreeTool(cwd, { security });
+      default:
+        return this.toolsMap[name];
+    }
+  }
+
+  /**
+   * Resolve a slice of tools by name with per-agent security/sandbox config,
+   * skipping unknown names.
+   */
+  resolveSlice(names: string[], opts?: ResolveToolOptions): Tool[] {
+    const out: Tool[] = [];
+    for (const name of names) {
+      const tool = this.resolveByName(name, opts);
+      if (tool) out.push(tool);
+    }
+    return out;
   }
 
   /**

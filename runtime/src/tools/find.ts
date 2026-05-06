@@ -9,6 +9,8 @@ import { ToolResultMessage } from '../utils/message.js';
 import { resolveToCwd } from './path-utils.js';
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from './truncate.js';
 import { App } from '../app.js';
+import type { AgentSecurityConfig } from './security-types.js';
+import { enforceFsScope } from './fs-scope.js';
 
 const findSchema = Type.Object({
   pattern: Type.String({
@@ -49,10 +51,13 @@ const defaultFindOperations: FindOperations = {
 export interface FindToolOptions {
   /** Custom operations for find. Default: local filesystem + fd */
   operations?: FindOperations;
+  /** Per-agent security config — when set, scope check + secret blocklist apply. */
+  security?: AgentSecurityConfig;
 }
 
 export function createFindTool(cwd: string, options?: FindToolOptions): AgentTool<typeof findSchema> {
   const customOps = options?.operations;
+  const security = options?.security;
 
   return {
     name: 'find',
@@ -91,6 +96,16 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
             const searchPath = resolveToCwd(searchDir || '.', cwd);
             const effectiveLimit = limit ?? DEFAULT_LIMIT;
             const ops = customOps ?? defaultFindOperations;
+
+            const check = enforceFsScope({ absolutePath: searchPath, mode: 'read', security });
+            if (!check.ok) {
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: check.message }),
+                details: undefined,
+                error: new Error(check.message),
+              });
+              return;
+            }
 
             // If custom operations provided with glob, use that
             if (customOps?.glob) {

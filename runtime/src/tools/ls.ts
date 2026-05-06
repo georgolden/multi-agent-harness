@@ -6,6 +6,8 @@ import { ToolResultMessage } from '../utils/message.js';
 import { resolveToCwd } from './path-utils.js';
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from './truncate.js';
 import { App } from '../app.js';
+import type { AgentSecurityConfig } from './security-types.js';
+import { enforceFsScope } from './fs-scope.js';
 
 const lsSchema = Type.Object({
   filePath: Type.Optional(Type.String({ description: 'The absolute path to the directory to list (default: current directory)' })),
@@ -43,10 +45,13 @@ const defaultLsOperations: LsOperations = {
 export interface LsToolOptions {
   /** Custom operations for directory listing. Default: local filesystem */
   operations?: LsOperations;
+  /** Per-agent security config — when set, scope check + secret blocklist apply. */
+  security?: AgentSecurityConfig;
 }
 
 export function createLsTool(cwd: string, options?: LsToolOptions): AgentTool<typeof lsSchema> {
   const ops = options?.operations ?? defaultLsOperations;
+  const security = options?.security;
 
   return {
     name: 'ls',
@@ -84,6 +89,16 @@ export function createLsTool(cwd: string, options?: LsToolOptions): AgentTool<ty
           try {
             const dirPath = resolveToCwd(filePath || '.', cwd);
             const effectiveLimit = limit ?? DEFAULT_LIMIT;
+
+            const check = enforceFsScope({ absolutePath: dirPath, mode: 'read', security });
+            if (!check.ok) {
+              resolve({
+                data: new ToolResultMessage({ toolCallId, content: check.message }),
+                details: undefined,
+                error: new Error(check.message),
+              });
+              return;
+            }
 
             // Check if path exists
             if (!(await ops.exists(dirPath))) {

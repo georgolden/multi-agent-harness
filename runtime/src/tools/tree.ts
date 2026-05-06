@@ -7,6 +7,8 @@ import { ToolResultMessage } from '../utils/message.js';
 import { resolveToCwd } from './path-utils.js';
 import { DEFAULT_MAX_BYTES, formatSize, truncateHead } from './truncate.js';
 import { App } from '../app.js';
+import type { AgentSecurityConfig } from './security-types.js';
+import { enforceFsScope } from './fs-scope.js';
 
 const DEFAULT_FILE_LIMIT = 400;
 const DEFAULT_LEVEL = 4;
@@ -123,6 +125,8 @@ export interface TreeToolDetails {
 export interface TreeToolOptions {
   /** Override default ignore patterns entirely */
   defaultIgnore?: string[];
+  /** Per-agent security config — when set, scope check + secret blocklist apply. */
+  security?: AgentSecurityConfig;
 }
 
 export interface RunTreeOptions {
@@ -313,6 +317,7 @@ export function runTreeCommand(dirPath: string, options?: RunTreeOptions): Promi
 
 export function createTreeTool(cwd: string, options?: TreeToolOptions): AgentTool<typeof treeSchema, TreeToolDetails | undefined> {
   const baseIgnore = options?.defaultIgnore ?? DEFAULT_TREE_IGNORE;
+  const security = options?.security;
 
   return {
     name: 'tree',
@@ -326,6 +331,15 @@ export function createTreeTool(cwd: string, options?: TreeToolOptions): AgentToo
       { toolCallId, signal }: { toolCallId: string; signal?: AbortSignal },
     ) => {
       const dirPath = resolveToCwd(path || '.', cwd);
+
+      const check = enforceFsScope({ absolutePath: dirPath, mode: 'read', security });
+      if (!check.ok) {
+        return {
+          data: new ToolResultMessage({ toolCallId, content: check.message }),
+          details: undefined,
+          error: new Error(check.message),
+        };
+      }
 
       if (!existsSync(dirPath)) {
         const error = new Error(`Path not found: ${dirPath}`);

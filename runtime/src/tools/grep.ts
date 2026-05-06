@@ -16,6 +16,8 @@ import {
   truncateLine,
 } from './truncate.js';
 import { App } from '../app.js';
+import type { AgentSecurityConfig } from './security-types.js';
+import { enforceFsScope } from './fs-scope.js';
 
 const grepSchema = Type.Object({
   pattern: Type.String({ description: 'Search pattern (regex or literal string)' }),
@@ -60,10 +62,13 @@ const defaultGrepOperations: GrepOperations = {
 export interface GrepToolOptions {
   /** Custom operations for grep. Default: local filesystem + ripgrep */
   operations?: GrepOperations;
+  /** Per-agent security config — when set, scope check + secret blocklist apply. */
+  security?: AgentSecurityConfig;
 }
 
 export function createGrepTool(cwd: string, options?: GrepToolOptions): AgentTool<typeof grepSchema> {
   const customOps = options?.operations;
+  const security = options?.security;
 
   return {
     name: 'grep',
@@ -118,6 +123,18 @@ export function createGrepTool(cwd: string, options?: GrepToolOptions): AgentToo
 
             const searchPath = resolveToCwd(searchDir || '.', cwd);
             const ops = customOps ?? defaultGrepOperations;
+
+            const scopeCheck = enforceFsScope({ absolutePath: searchPath, mode: 'read', security });
+            if (!scopeCheck.ok) {
+              settle(() =>
+                resolve({
+                  data: new ToolResultMessage({ toolCallId, content: scopeCheck.message }),
+                  details: undefined,
+                  error: new Error(scopeCheck.message),
+                }),
+              );
+              return;
+            }
 
             let isDirectory: boolean;
             try {

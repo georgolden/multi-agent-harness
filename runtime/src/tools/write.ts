@@ -5,6 +5,8 @@ import { dirname } from 'path';
 import { ToolResultMessage } from '../utils/message.js';
 import { resolveToCwd } from './path-utils.js';
 import { App } from '../app.js';
+import type { AgentSecurityConfig } from './security-types.js';
+import { enforceFsScope } from './fs-scope.js';
 
 const writeSchema = Type.Object({
   filePath: Type.String({ description: 'The absolute path to the file to write (must be absolute, not relative)' }),
@@ -55,10 +57,13 @@ const defaultWriteOperations: WriteOperations = {
 export interface WriteToolOptions {
   /** Custom operations for file writing. Default: local filesystem */
   operations?: WriteOperations;
+  /** Per-agent security config — when set, scope check + secret blocklist apply. */
+  security?: AgentSecurityConfig;
 }
 
 export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentTool<typeof writeSchema> {
   const ops = options?.operations ?? defaultWriteOperations;
+  const security = options?.security;
 
   return {
     name: 'write',
@@ -82,6 +87,15 @@ export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentT
 
       const absolutePath = resolveToCwd(filePath, cwd);
       const dir = dirname(absolutePath);
+
+      const check = enforceFsScope({ absolutePath, mode: 'write', security });
+      if (!check.ok) {
+        return {
+          data: new ToolResultMessage({ toolCallId, content: check.message }),
+          details: undefined,
+          error: new Error(check.message),
+        };
+      }
 
       try {
         // Create parent directories if needed

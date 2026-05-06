@@ -13,6 +13,8 @@ import {
 import { ToolResultMessage } from '../utils/message.js';
 import { resolveToCwd } from './path-utils.js';
 import { App } from '../app.js';
+import type { AgentSecurityConfig } from './security-types.js';
+import { enforceFsScope } from './fs-scope.js';
 
 const editSchema = Type.Object({
   filePath: Type.String({ description: 'The absolute path to the file to modify' }),
@@ -52,10 +54,13 @@ const defaultEditOperations: EditOperations = {
 export interface EditToolOptions {
   /** Custom operations for file editing. Default: local filesystem */
   operations?: EditOperations;
+  /** Per-agent security config — when set, scope check + secret blocklist apply. */
+  security?: AgentSecurityConfig;
 }
 
 export function createEditTool(cwd: string, options?: EditToolOptions): AgentTool<typeof editSchema> {
   const ops = options?.operations ?? defaultEditOperations;
+  const security = options?.security;
 
   return {
     name: 'edit',
@@ -86,6 +91,15 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
       }
 
       const absolutePath = resolveToCwd(filePath, cwd);
+
+      const check = enforceFsScope({ absolutePath, mode: 'write', security });
+      if (!check.ok) {
+        return {
+          data: new ToolResultMessage({ toolCallId, content: check.message }),
+          details: { diff: '' },
+          error: new Error(check.message),
+        };
+      }
 
       try {
         // Handle empty oldString → create new file

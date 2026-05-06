@@ -12,6 +12,8 @@ import { ToolResultMessage } from '../utils/message.js';
 import { resolveReadPath } from './path-utils.js';
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from './truncate.js';
 import { App } from '../app.js';
+import type { AgentSecurityConfig } from './security-types.js';
+import { enforceFsScope } from './fs-scope.js';
 
 const MAX_LINE_LENGTH = 2000;
 const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`;
@@ -65,6 +67,8 @@ export interface ReadToolOptions {
   autoResizeImages?: boolean;
   /** Custom operations for file reading. Default: local filesystem */
   operations?: ReadOperations;
+  /** Per-agent security config — when set, scope check + secret blocklist apply. */
+  security?: AgentSecurityConfig;
 }
 
 function isBinaryFile(filePath: string, bytes: Uint8Array): boolean {
@@ -171,6 +175,7 @@ async function readLines(filePath: string, opts: { limit: number; offset: number
 export function createReadTool(cwd: string, options?: ReadToolOptions): AgentTool<typeof readSchema> {
   const autoResizeImages = options?.autoResizeImages ?? true;
   const ops = options?.operations ?? defaultReadOperations;
+  const security = options?.security;
 
   return {
     name: 'read',
@@ -192,6 +197,15 @@ export function createReadTool(cwd: string, options?: ReadToolOptions): AgentToo
       }
 
       const absolutePath = resolveReadPath(filePath, cwd);
+
+      const check = enforceFsScope({ absolutePath, mode: 'read', security });
+      if (!check.ok) {
+        return {
+          data: new ToolResultMessage({ toolCallId, content: check.message }),
+          details: undefined,
+          error: new Error(check.message),
+        };
+      }
 
       try {
         // Stat the path
