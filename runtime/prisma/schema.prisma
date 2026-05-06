@@ -83,6 +83,8 @@ model FlowSession {
   currentPacketData   Json?         @map("current_packet_data")
   flowSchema          Json?         @map("flow_schema")
   enabledSkills       Json          @default("[]") @map("enabled_skills")
+  securityConfig      Json?         @map("security_config")
+  sandboxConfig       Json?         @map("sandbox_config")
   agentSession        AgentSession? @relation(fields: [agentSessionId], references: [id])
   parent              FlowSession?  @relation("SessionTree", fields: [parentSessionId], references: [id])
   children            FlowSession[] @relation("SessionTree")
@@ -97,15 +99,17 @@ model FlowSession {
 }
 
 model AgentSession {
-  id           String        @id @db.VarChar(16)
-  userId       String        @map("user_id") @db.VarChar(255)
-  agentName    String        @map("agent_name") @db.VarChar(255)
-  agentSchema  Json          @map("agent_schema")
-  status       String        @default("running") @db.VarChar(20)
-  currentStep  Json?         @map("current_step")
-  startedAt    DateTime      @default(now()) @map("started_at")
-  endedAt      DateTime?     @map("ended_at")
-  flowSessions FlowSession[]
+  id             String        @id @db.VarChar(16)
+  userId         String        @map("user_id") @db.VarChar(255)
+  agentName      String        @map("agent_name") @db.VarChar(255)
+  agentSchema    Json          @map("agent_schema")
+  status         String        @default("running") @db.VarChar(20)
+  currentStep    Json?         @map("current_step")
+  startedAt      DateTime      @default(now()) @map("started_at")
+  endedAt        DateTime?     @map("ended_at")
+  securityConfig Json?         @map("security_config")
+  sandboxConfig  Json?         @map("sandbox_config")
+  flowSessions   FlowSession[]
 
   @@index([userId], map: "idx_agent_sessions_user_id")
   @@index([status], map: "idx_agent_sessions_status")
@@ -126,6 +130,8 @@ model AgenticLoopSchema {
   messageWindowConfig Json     @map("message_window_config")
   agentLoopConfig     Json     @map("agent_loop_config")
   toolkits            Json?    @default("[]") @map("toolkit_slugs")
+  securityConfig      Json?    @map("security_config")
+  sandboxConfig       Json?    @map("sandbox_config")
 
   @@index([userId], map: "idx_agentic_loop_schemas_user")
   @@map("agentic_loop_schemas")

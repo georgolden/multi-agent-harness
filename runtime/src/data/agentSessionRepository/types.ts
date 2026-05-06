@@ -1,3 +1,5 @@
+import type { AgentSecurityConfig, AgentSandboxConfig } from '../../tools/security-types.js';
+
 export type AgentStatus = 'running' | 'completed' | 'failed' | 'paused' | 'continuing';
 
 export type AgentStepItem = {
@@ -23,6 +25,8 @@ export type AgentSessionData = {
   currentStep?: AgentStep;
   startedAt: Date;
   endedAt?: Date;
+  securityConfig?: AgentSecurityConfig;
+  sandboxConfig?: AgentSandboxConfig;
 };
 
 export type CreateAgentSessionParams = {
@@ -30,4 +34,6 @@ export type CreateAgentSessionParams = {
   userId: string;
   agentName: string;
   agentSchema: unknown;
+  securityConfig?: AgentSecurityConfig;
+  sandboxConfig?: AgentSandboxConfig;
 };

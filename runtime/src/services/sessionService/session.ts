@@ -483,6 +483,8 @@ export class Session {
     messageWindowConfig: SessionData['messageWindowConfig'];
     userPromptTemplate: string | undefined;
     agentLoopConfig: SessionData['agentLoopConfig'];
+    securityConfig?: SessionData['securityConfig'];
+    sandboxConfig?: SessionData['sandboxConfig'];
     tools: AgentTool[];
   }): Promise<this> {
     // Collect sandbox tool schemas from all currently enabled skills so they
@@ -508,6 +510,8 @@ export class Session {
       messageWindowConfig: schema.messageWindowConfig as unknown as Record<string, unknown>,
       agentLoopConfig: schema.agentLoopConfig as Record<string, unknown>,
       userPromptTemplate: schema.userPromptTemplate,
+      securityConfig: schema.securityConfig,
+      sandboxConfig: schema.sandboxConfig,
     });
     this.sessionData.toolSchemas = mergedToolSchemas;
     this.sessionData.skillSchemas = schema.skillSchemas;
@@ -517,6 +521,8 @@ export class Session {
     this.sessionData.messageWindowConfig = schema.messageWindowConfig;
     this.sessionData.userPromptTemplate = schema.userPromptTemplate;
     this.sessionData.agentLoopConfig = schema.agentLoopConfig;
+    if (schema.securityConfig !== undefined) this.sessionData.securityConfig = schema.securityConfig;
+    if (schema.sandboxConfig !== undefined) this.sessionData.sandboxConfig = schema.sandboxConfig;
     this.tools = [...schema.tools];
     return this;
   }

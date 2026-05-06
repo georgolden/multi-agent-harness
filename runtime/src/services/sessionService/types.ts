@@ -5,9 +5,12 @@ import type { FileInfo } from '../../utils/file.js';
 import type { FolderInfo } from '../../utils/folder.js';
 import type { LLMMessageData } from '../../utils/message.js';
 import type { ToolLog, ToolSchema } from '../../tools/index.js';
+import type { AgentSecurityConfig, AgentSandboxConfig } from '../../tools/security-types.js';
 import type { SkillLog, SkillSchema } from '../../skills/index.js';
 import type { Skill } from '../../skills/index.js';
 import type { SkillExecutionSession } from '../sandbox/index.js';
+
+export type { AgentSecurityConfig, AgentSandboxConfig };
 
 export interface EnabledSkillRecord {
   name: string;
@@ -65,6 +68,8 @@ export interface CreateSessionParams {
   agentLoopConfig?: AgentLoopConfig;
   agentSessionId?: string;
   enabledSkills?: EnabledSkillRecord[];
+  securityConfig?: AgentSecurityConfig;
+  sandboxConfig?: AgentSandboxConfig;
 }
 
 // Lightweight session info for tree traversal
@@ -134,6 +139,12 @@ export interface SessionData {
 
   // Persisted enabled skills (DB-backed)
   enabledSkills: EnabledSkillRecord[];
+
+  // Security / sandbox config snapshot — see runtime/docs/security-sandbox-implementation-plan.md §4.2-4.3.
+  // Snapshotted on the flow session so a crashed runtime can rebuild the agent
+  // with the same restrictions even if AgenticLoopSchema has been edited since.
+  securityConfig?: AgentSecurityConfig;
+  sandboxConfig?: AgentSandboxConfig;
 }
 
 export interface SessionDataTreeNode {

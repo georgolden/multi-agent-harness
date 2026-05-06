@@ -164,6 +164,8 @@ export class SessionDataRepository {
       currentPacketData: row.currentPacketData ?? undefined,
       agentSessionId: row.agentSessionId ?? undefined,
       enabledSkills: (row.enabledSkills as EnabledSkillRecord[]) || [],
+      securityConfig: row.securityConfig ?? undefined,
+      sandboxConfig: row.sandboxConfig ?? undefined,
     };
   }
 
@@ -189,6 +191,8 @@ export class SessionDataRepository {
         agentLoopConfig: params.agentLoopConfig as any,
         agentSessionId: params.agentSessionId,
         enabledSkills: (params.enabledSkills ?? []) as any,
+        securityConfig: (params.securityConfig as any) ?? null,
+        sandboxConfig: (params.sandboxConfig as any) ?? null,
       },
     });
 
@@ -338,22 +342,24 @@ export class SessionDataRepository {
       messageWindowConfig: Record<string, unknown>;
       agentLoopConfig: Record<string, unknown>;
       userPromptTemplate: string | undefined;
+      securityConfig?: unknown;
+      sandboxConfig?: unknown;
     },
   ): Promise<void> {
     const client = this._client(sessionId) as any;
-    await client.flowSession.update({
-      where: { id: sessionId },
-      data: {
-        toolSchemas: schema.toolSchemas as any,
-        skillSchemas: schema.skillSchemas as any,
-        contextFiles: schema.contextFiles as any,
-        contextFoldersInfos: schema.contextFoldersInfos as any,
-        callLlmOptions: schema.callLlmOptions as any,
-        messageWindowConfig: schema.messageWindowConfig as any,
-        agentLoopConfig: schema.agentLoopConfig as any,
-        userPromptTemplate: schema.userPromptTemplate,
-      },
-    });
+    const data: Record<string, unknown> = {
+      toolSchemas: schema.toolSchemas as any,
+      skillSchemas: schema.skillSchemas as any,
+      contextFiles: schema.contextFiles as any,
+      contextFoldersInfos: schema.contextFoldersInfos as any,
+      callLlmOptions: schema.callLlmOptions as any,
+      messageWindowConfig: schema.messageWindowConfig as any,
+      agentLoopConfig: schema.agentLoopConfig as any,
+      userPromptTemplate: schema.userPromptTemplate,
+    };
+    if (schema.securityConfig !== undefined) data.securityConfig = schema.securityConfig as any;
+    if (schema.sandboxConfig !== undefined) data.sandboxConfig = schema.sandboxConfig as any;
+    await client.flowSession.update({ where: { id: sessionId }, data });
     console.log(`[SessionDataRepository] Applied schema to session '${sessionId}'`);
   }
 

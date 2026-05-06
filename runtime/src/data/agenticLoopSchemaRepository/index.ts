@@ -37,6 +37,8 @@ export class AgenticLoopSchemaRepository {
       callLlmOptions: row.callLlmOptions as any,
       messageWindowConfig: row.messageWindowConfig as any,
       agentLoopConfig: row.agentLoopConfig as any,
+      securityConfig: row.securityConfig ?? undefined,
+      sandboxConfig: row.sandboxConfig ?? undefined,
     };
     console.log(`[AgenticLoopSchemaRepository.mapRow] name='${schema.name}' toolNames=${JSON.stringify(schema.toolNames)} skillNames=${JSON.stringify(schema.skillNames)} toolkits=${JSON.stringify(schema.toolkits)} agentLoopConfig=${JSON.stringify(schema.agentLoopConfig)} contextPaths=${JSON.stringify(schema.contextPaths)} callLlmOptions=${JSON.stringify(schema.callLlmOptions)} messageWindowConfig=${JSON.stringify(schema.messageWindowConfig)}`);
     return schema;
@@ -57,6 +59,8 @@ export class AgenticLoopSchemaRepository {
         callLlmOptions: params.schema.callLlmOptions as any,
         messageWindowConfig: params.schema.messageWindowConfig as any,
         agentLoopConfig: params.schema.agentLoopConfig as any,
+        securityConfig: (params.schema.securityConfig as any) ?? null,
+        sandboxConfig: (params.schema.sandboxConfig as any) ?? null,
       },
     });
     const schema = this.mapRow(row);
@@ -100,6 +104,8 @@ export class AgenticLoopSchemaRepository {
     if (params.callLlmOptions !== undefined) data.callLlmOptions = params.callLlmOptions as any;
     if (params.messageWindowConfig !== undefined) data.messageWindowConfig = params.messageWindowConfig as any;
     if (params.agentLoopConfig !== undefined) data.agentLoopConfig = params.agentLoopConfig as any;
+    if (params.securityConfig !== undefined) data.securityConfig = (params.securityConfig as any) ?? null;
+    if (params.sandboxConfig !== undefined) data.sandboxConfig = (params.sandboxConfig as any) ?? null;
 
     if (Object.keys(data).length === 0) return this.getSchema(name);
 

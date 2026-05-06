@@ -34,6 +34,33 @@ import { FillTemplateFlow } from '../fillTemplate/flow.js';
 import type { AgentFlowParameters } from './flow.js';
 import { SUBMIT_RESULT_SCHEMA } from './tools.js';
 import { readFilesWithLimit, readFoldersInfos } from './utils.js';
+import type { AgentSecurityConfig } from '../../tools/security-types.js';
+import path from 'node:path';
+
+/**
+ * If a schema agent declares no explicit securityConfig but has contextPaths,
+ * derive an fs scope from those paths (read+write — no read-only mode yet).
+ * Built-in agents with neither contextPaths nor securityConfig get no scope;
+ * only the always-on secret blocklist applies inside fs tools.
+ */
+function deriveEffectiveSecurity(
+  securityConfig: AgentSecurityConfig | undefined,
+  contextPaths: { files: string[]; folders: string[] },
+): AgentSecurityConfig | undefined {
+  if (securityConfig) return securityConfig;
+  const roots = [
+    ...contextPaths.folders,
+    ...contextPaths.files.map((f) => path.dirname(f)),
+  ].filter((p) => path.isAbsolute(p));
+  if (roots.length === 0) return undefined;
+  return {
+    fsScope: {
+      allowedReadPaths: roots,
+      allowedWritePaths: roots,
+      outOfScopePolicy: 'deny',
+    },
+  };
+}
 
 // ─── PrepareInput ────────────────────────────────────────────────────────────
 
@@ -46,11 +73,12 @@ export class PrepareInput extends Node<App, AgenticLoopContext, AgentFlowParamet
     const schema = await app.data.agenticLoopSchemaRepository.getSchema(session.flowName);
     if (!schema) throw new Error(`PrepareInput: schema '${session.flowName}' not found`);
 
-    const { systemPrompt, toolNames, skillNames, toolkits, contextPaths, callLlmOptions, messageWindowConfig, userPromptTemplate, agentLoopConfig } = schema;
+    const { systemPrompt, toolNames, skillNames, toolkits, contextPaths, callLlmOptions, messageWindowConfig, userPromptTemplate, agentLoopConfig, securityConfig, sandboxConfig } = schema;
 
     const filledSystemPrompt = `Current datetime: ${new Date().toISOString()}\nUser timezone: ${user.timezone ?? 'UTC'}\n\n${systemPrompt}`;
 
-    const builtInTools = app.tools.getSlice(toolNames);
+    const effectiveSecurity = deriveEffectiveSecurity(securityConfig, contextPaths);
+    const builtInTools = app.tools.resolveSlice(toolNames, { security: effectiveSecurity, sandbox: sandboxConfig });
     const userToolkitTools = toolkits?.length
       ? await app.services.userService.loadUser(user.id).then((u) => u.buildAgentTools(toolkits))
       : [];
@@ -75,6 +103,8 @@ export class PrepareInput extends Node<App, AgenticLoopContext, AgentFlowParamet
       messageWindowConfig,
       userPromptTemplate,
       agentLoopConfig,
+      securityConfig: effectiveSecurity,
+      sandboxConfig,
       tools,
     });
 

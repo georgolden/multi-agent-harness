@@ -84,6 +84,8 @@ export class AgentSessionRepository {
       currentStep: row.currentStep ?? undefined,
       startedAt: row.startedAt,
       endedAt: row.endedAt ?? undefined,
+      securityConfig: row.securityConfig ?? undefined,
+      sandboxConfig: row.sandboxConfig ?? undefined,
     };
   }
 
@@ -100,6 +102,8 @@ export class AgentSessionRepository {
         agentName: params.agentName,
         agentSchema: params.agentSchema as any,
         status: 'running',
+        securityConfig: (params.securityConfig as any) ?? null,
+        sandboxConfig: (params.sandboxConfig as any) ?? null,
       },
     });
     return this.mapRow(row);

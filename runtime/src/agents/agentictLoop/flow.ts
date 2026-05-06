@@ -9,6 +9,7 @@ import { Session } from '../../services/sessionService/session.js';
 import { Type, type Static } from '@sinclair/typebox';
 import type { AgentTool } from '../../types.js';
 import { SUBMIT_RESULT_SCHEMA } from './tools.js';
+import type { AgentSecurityConfig, AgentSandboxConfig } from '../../tools/security-types.js';
 
 export interface ToolkitConfig {
   slug: string;
@@ -30,6 +31,8 @@ export interface AgenticLoopSchema {
   callLlmOptions: CallLlmOptions;
   messageWindowConfig: MessageWindowConfig;
   agentLoopConfig: AgentLoopConfig;
+  securityConfig?: AgentSecurityConfig;
+  sandboxConfig?: AgentSandboxConfig;
 }
 
 export type AgentLoopConfig = {
