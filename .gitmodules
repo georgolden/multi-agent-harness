@@ -7,3 +7,6 @@
 [submodule "opencode"]
 	path = opencode
 	url = git@github.com:anomalyco/opencode.git
+[submodule "oh-my-openagent"]
+	path = oh-my-openagent
+	url = git@github.com:code-yeongyu/oh-my-openagent.git
