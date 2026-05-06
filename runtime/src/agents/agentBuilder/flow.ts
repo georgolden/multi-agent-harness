@@ -1,5 +1,5 @@
 import { Flow, type FlowSchema } from '../../utils/agent/flow.js';
-import { PrepareInput, DecideAction, WriteTempFile, GetToolkitTools, AskUser, UserResponse, SubmitAnswer } from './nodes.js';
+import { PrepareInput, DecideAction, WriteTempFile, GetToolkitTools, GetToolkitToolSchemas, AskUser, UserResponse, SubmitAnswer } from './nodes.js';
 import { agentBuilderInputSchema, type AgentBuilderContext } from './types.js';
 import { App } from '../../app.js';
 import { Session } from '../../services/sessionService/session.js';
@@ -13,16 +13,23 @@ export class AgentBuilderFlow extends Flow<App, AgentBuilderContext> {
     startNode: 'PrepareInput',
     nodes: {
       PrepareInput: 'DecideAction',
-      DecideAction: { write_temp_file: 'WriteTempFile', get_toolkit_tools: 'GetToolkitTools', ask_user: 'AskUser', submit_result: 'SubmitAnswer' },
+      DecideAction: {
+        write_temp_file: 'WriteTempFile',
+        get_toolkit_tools: 'GetToolkitTools',
+        get_toolkit_tool_schemas: 'GetToolkitToolSchemas',
+        ask_user: 'AskUser',
+        submit_result: 'SubmitAnswer',
+      },
       WriteTempFile: 'PrepareInput',
       GetToolkitTools: 'PrepareInput',
+      GetToolkitToolSchemas: 'PrepareInput',
       AskUser: { pause: 'UserResponse' },
       UserResponse: 'PrepareInput',
       SubmitAnswer: { error: 'PrepareInput' },
     },
   };
 
-  nodeConstructors = { PrepareInput, DecideAction, WriteTempFile, GetToolkitTools, AskUser, UserResponse, SubmitAnswer };
+  nodeConstructors = { PrepareInput, DecideAction, WriteTempFile, GetToolkitTools, GetToolkitToolSchemas, AskUser, UserResponse, SubmitAnswer };
 
   async createSession(
     app: App,

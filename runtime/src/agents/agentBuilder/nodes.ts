@@ -13,7 +13,7 @@
  *      On loop-back (from WriteTempFile or UserResponse) p.data is undefined — skip.
  */
 import { Node, packet, exit, pause } from '../../utils/agent/flow.js';
-import { callLlmWithTools } from '../../utils/callLlm.js';
+import { callLlmWithTools, callLlmWithToolsStream } from '../../utils/callLlm.js';
 import { TOOLS } from './tools.js';
 import { AssistantMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
 import type { AgentBuilderContext } from './types.js';
@@ -64,7 +64,13 @@ export class DecideAction extends Node<
   App,
   AgentBuilderContext,
   void,
-  { write_temp_file: LLMToolCall[]; get_toolkit_tools: LLMToolCall; ask_user: string; submit_result: LLMToolCall }
+  {
+    write_temp_file: LLMToolCall[];
+    get_toolkit_tools: LLMToolCall;
+    get_toolkit_tool_schemas: LLMToolCall;
+    ask_user: string;
+    submit_result: LLMToolCall;
+  }
 > {
   constructor() {
     super({ maxRunTries: 3, wait: 1000 });
@@ -76,7 +82,9 @@ export class DecideAction extends Node<
 
     console.log(`[agentBuilder.DecideAction] session='${session.id}' messages=${messages.length}`);
 
-    const response = await callLlmWithTools(messages, TOOLS);
+    const { stream, finalResult } = callLlmWithToolsStream(messages, TOOLS);
+    await session.streamToBus(stream);
+    const response = await finalResult;
     const assistantMsg = AssistantMessage.from(response[0].message);
     await session.addMessages([{ message: assistantMsg.toJSON() }]);
 
@@ -85,6 +93,7 @@ export class DecideAction extends Node<
       const submitCall = toolCalls.find((tc) => tc.name === 'submit_result');
       const writeCalls = toolCalls.filter((tc) => tc.name === 'write_temp_file');
       const getToolsCall = toolCalls.find((tc) => tc.name === 'get_toolkit_tools');
+      const getSchemasCall = toolCalls.find((tc) => tc.name === 'get_toolkit_tool_schemas');
 
       if (submitCall) {
         return packet({ data: submitCall, context: p.context, branch: 'submit_result', deps: p.deps });
@@ -95,9 +104,20 @@ export class DecideAction extends Node<
       if (getToolsCall) {
         return packet({ data: getToolsCall, context: p.context, branch: 'get_toolkit_tools', deps: p.deps });
       }
+      if (getSchemasCall) {
+        return packet({ data: getSchemasCall, context: p.context, branch: 'get_toolkit_tool_schemas', deps: p.deps });
+      }
     }
 
-    const text = assistantMsg.toJSON().content || '';
+    const text = (assistantMsg.toJSON().content || '').trim();
+    if (!text) {
+      // Empty turn (no tool calls, no content — usually reasoning-only). Throwing
+      // here triggers the node's maxRunTries retry; if it keeps coming back empty
+      // we fall through with an explicit nudge so the user isn't stuck on silent
+      // pause/resume loops.
+      console.warn(`[agentBuilder.DecideAction] empty assistant turn — retrying`);
+      throw new Error('Empty assistant turn (no text and no tool calls)');
+    }
     return packet({ data: text, context: p.context, branch: 'ask_user', deps: p.deps });
   }
 }
@@ -138,11 +158,12 @@ export class GetToolkitTools extends Node<App, AgentBuilderContext, LLMToolCall,
     console.log(`[agentBuilder.GetToolkitTools] slugs=${JSON.stringify(toolkit_slugs)} session='${session.id}'`);
 
     const userToolkits = await user.getToolkits();
-    const results: Record<string, string[]> = {};
+    type ToolBrief = { slug: string; name: string; description: string };
+    const results: Record<string, { error?: string; tools?: ToolBrief[] }> = {};
     for (const slug of toolkit_slugs) {
       const toolkit = userToolkits.find((t) => t.toolkitSlug === slug);
       if (!toolkit) {
-        results[slug] = [];
+        results[slug] = { error: `Toolkit '${slug}' is not connected for this user.` };
         continue;
       }
       const provider = p.deps.services.toolProviderRegistry.get(toolkit.provider);
@@ -152,7 +173,9 @@ export class GetToolkitTools extends Node<App, AgentBuilderContext, LLMToolCall,
         authConfigId: providerData.authConfigId,
         limit: 100,
       });
-      results[slug] = schemas.map((s) => s.slug);
+      results[slug] = {
+        tools: schemas.map((s) => ({ slug: s.slug, name: s.name, description: s.description })),
+      };
     }
 
     await session.addMessages([
@@ -160,6 +183,61 @@ export class GetToolkitTools extends Node<App, AgentBuilderContext, LLMToolCall,
         message: new ToolResultMessage({
           toolCallId: toolCall.id,
           content: JSON.stringify(results),
+        }).toJSON(),
+      },
+    ]);
+
+    return packet({ data: undefined, context: p.context, deps: p.deps });
+  }
+}
+
+// ─── GetToolkitToolSchemas ────────────────────────────────────────────────────
+
+export class GetToolkitToolSchemas extends Node<App, AgentBuilderContext, LLMToolCall, { default: void }> {
+  async run(p: this['In']): Promise<this['Out']> {
+    const { session, user } = p.context;
+    const toolCall = p.data;
+    const { toolkit_slug, tool_slugs } = toolCall.args as { toolkit_slug: string; tool_slugs: string[] };
+
+    console.log(`[agentBuilder.GetToolkitToolSchemas] toolkit='${toolkit_slug}' tools=${JSON.stringify(tool_slugs)} session='${session.id}'`);
+
+    const userToolkits = await user.getToolkits();
+    const toolkit = userToolkits.find((t) => t.toolkitSlug === toolkit_slug);
+    if (!toolkit) {
+      await session.addToolError(toolCall.id, `Toolkit '${toolkit_slug}' is not connected for this user.`);
+      return packet({ data: undefined, context: p.context, deps: p.deps });
+    }
+
+    const provider = p.deps.services.toolProviderRegistry.get(toolkit.provider);
+    const providerData = toolkit.providerData as { externalUserId: string; authConfigId: string };
+    const schemas = await provider.getToolSchemas({
+      externalUserId: providerData.externalUserId,
+      authConfigId: providerData.authConfigId,
+      toolSlugs: tool_slugs,
+    });
+
+    type SchemaOut = {
+      slug: string;
+      name: string;
+      description: string;
+      inputParameters: Record<string, unknown>;
+      outputParameters: Record<string, unknown>;
+    };
+    const found: SchemaOut[] = schemas.map((s) => ({
+      slug: s.slug,
+      name: s.name,
+      description: s.description,
+      inputParameters: s.inputParameters,
+      outputParameters: s.outputParameters,
+    }));
+    const foundSlugs = new Set(found.map((s) => s.slug));
+    const missing = tool_slugs.filter((s) => !foundSlugs.has(s));
+
+    await session.addMessages([
+      {
+        message: new ToolResultMessage({
+          toolCallId: toolCall.id,
+          content: JSON.stringify({ tools: found, missing }),
         }).toJSON(),
       },
     ]);
