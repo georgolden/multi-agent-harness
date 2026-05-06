@@ -37,8 +37,9 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
     function: {
       name: 'get_toolkit_tools',
       description:
-        'Fetch the list of available tools for one or more of the user\'s connected toolkits. ' +
-        'Call this when the user selects a toolkit so you can show them the individual tools and ask which ones to allow.',
+        "Fetch the list of available tools for one or more of the user's connected toolkits. " +
+        'Returns each tool with its real provider slug (UPPER_SNAKE_CASE, e.g. LINKEDIN_SEARCH_FOR_JOBS), name, and short description. ' +
+        'You MUST call this before listing or selecting any toolkit tools — never invent or guess tool slugs.',
       parameters: {
         type: 'object',
         properties: {
@@ -49,6 +50,33 @@ export const TOOLS: OpenAI.ChatCompletionTool[] = [
           },
         },
         required: ['toolkit_slugs'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_toolkit_tool_schemas',
+      description:
+        'Fetch full input/output JSON schemas for one or more specific toolkit tools. ' +
+        'Call this when the user asks what data a tool consumes or returns, or otherwise needs the parameter shape. ' +
+        'Tool slugs MUST be exact provider slugs returned earlier by get_toolkit_tools (UPPER_SNAKE_CASE). ' +
+        'Do not invent slugs — if you do not have them, call get_toolkit_tools first.',
+      parameters: {
+        type: 'object',
+        properties: {
+          toolkit_slug: {
+            type: 'string',
+            description: 'Slug of the toolkit the tools belong to (e.g. "linkedin").',
+          },
+          tool_slugs: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Exact provider tool slugs (UPPER_SNAKE_CASE) to fetch schemas for, e.g. ["LINKEDIN_SEARCH_FOR_JOBS"].',
+          },
+        },
+        required: ['toolkit_slug', 'tool_slugs'],
       },
     },
   },

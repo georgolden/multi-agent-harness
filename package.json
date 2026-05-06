@@ -19,6 +19,12 @@
   },
   "homepage": "https://github.com/georgolden/agi#readme",
   "dependencies": {
-    "create-pocketflow": "^0.1.3"
+    "create-pocketflow": "^0.1.3",
+    "linkedom": "^0.18.12",
+    "turndown": "^7.2.4"
+  },
+  "devDependencies": {
+    "@types/turndown": "^5.0.6",
+    "typescript": "^6.0.3"
   }
 }
