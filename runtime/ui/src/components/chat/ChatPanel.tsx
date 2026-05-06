@@ -150,7 +150,10 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
   const [activeTempFileName, setActiveTempFileName] = useState<string | null>(null);
   const [fileDialogRaw, setFileDialogRaw] = useState(false);
   const [fileCopied, setFileCopied] = useState(false);
+  const [liveStream, setLiveStream] = useState<{ id: string; text: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const STREAM_WINDOW = 800;
 
   // Compute the effective session ID for rendering/queries.
   // NOTE: sessionIdRef.current is set synchronously in handleSend (before state updates),
@@ -246,6 +249,29 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
           }
           setLocalAgentStatus(e.to);
         }
+        if (event.type === 'session:stream:start' || event.type === 'session:stream:delta' || event.type === 'session:stream:end') {
+          const e = event as { type: string; sessionId?: string; streamId?: string; text?: string };
+          // Accept events for the active session OR the just-created session whose id is in the ref
+          // but not yet in activeFlowSessionId (mutation resolve race on first message).
+          const tracked = new Set([activeFlowSessionId, sessionIdRef.current, ...flowSessions.map((fs) => fs.id)].filter(Boolean));
+          // First-message race: no session id known yet on the client but the agent already started streaming.
+          // Server already filtered by userId, so any stream event here is for this user.
+          const noSessionYet = tracked.size === 0;
+          if (!e.streamId || (!noSessionYet && (!e.sessionId || !tracked.has(e.sessionId)))) {
+            // skip
+          } else if (event.type === 'session:stream:start') {
+            setLiveStream({ id: e.streamId, text: '' });
+          } else if (event.type === 'session:stream:delta') {
+            if (!e.text) return;
+            setLiveStream((prev) => {
+              if (!prev || prev.id !== e.streamId) return { id: e.streamId!, text: e.text!.slice(-STREAM_WINDOW) };
+              const merged = prev.text + e.text;
+              return { id: prev.id, text: merged.length > STREAM_WINDOW ? merged.slice(-STREAM_WINDOW) : merged };
+            });
+          } else {
+            setLiveStream((prev) => (prev?.id === e.streamId ? null : prev));
+          }
+        }
         if (event.type === 'session:message') {
           const e = event as { type: string; sessionId?: string; message?: string };
           const sid = e.sessionId ?? '';
@@ -281,6 +307,7 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
     sessionIdRef.current = null;
     setSessionTempFiles([]);
     setLocalAgentStatus(null);
+    setLiveStream(null);
   }, [selectedFlow, selectedSession]);
 
   const waitingForResponse = isAwaitingResponse(messages);
@@ -365,11 +392,17 @@ export function ChatPanel({ selectedFlow, selectedSession, onSessionCreated, onS
                     <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center mr-2 mt-0.5 flex-shrink-0 shadow-sm">
                       <span className="text-white text-[10px] font-bold">AI</span>
                     </div>
-                    <div className="px-4 py-2.5 rounded-2xl rounded-bl-md bg-white border border-gray-100 shadow-sm flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:0ms]" />
-                      <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:150ms]" />
-                      <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:300ms]" />
-                    </div>
+                    {liveStream && liveStream.text.length > 0 ? (
+                      <div className="px-4 py-2.5 rounded-2xl rounded-bl-md bg-white border border-gray-100 shadow-sm max-w-[80%]">
+                        <pre className="text-xs text-gray-500 font-mono leading-relaxed whitespace-pre-wrap break-words">{liveStream.text}</pre>
+                      </div>
+                    ) : (
+                      <div className="px-4 py-2.5 rounded-2xl rounded-bl-md bg-white border border-gray-100 shadow-sm flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:0ms]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:150ms]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:300ms]" />
+                      </div>
+                    )}
                   </div>
                 )}
                 <div ref={bottomRef} />

@@ -7,6 +7,9 @@ export type BusEvent =
   | { type: 'session:statusChange'; sessionId: string; flowName: string; userId: string; from: string; to: string }
   | { type: 'session:message:update'; sessionId: string; flowName: string; userId: string }
   | { type: 'session:message'; sessionId: string; message: string }
+  | { type: 'session:stream:start'; sessionId: string; userId: string; streamId: string }
+  | { type: 'session:stream:delta'; sessionId: string; userId: string; streamId: string; kind: 'text' | 'reasoning'; text: string }
+  | { type: 'session:stream:end'; sessionId: string; userId: string; streamId: string }
   | { type: 'flow:pause'; runId: string; sessionId: string; flowName: string }
   | { type: 'flow:resume'; runId: string; sessionId: string; flowName: string }
   | { type: 'flow:exit'; runId: string; sessionId: string; flowName: string }
@@ -16,6 +19,9 @@ type BusEventName =
   | 'session:statusChange'
   | 'session:message:update'
   | 'session:message'
+  | 'session:stream:start'
+  | 'session:stream:delta'
+  | 'session:stream:end'
   | 'flow:pause'
   | 'flow:resume'
   | 'flow:exit'
@@ -25,6 +31,9 @@ const BUS_EVENT_NAMES: BusEventName[] = [
   'session:statusChange',
   'session:message:update',
   'session:message',
+  'session:stream:start',
+  'session:stream:delta',
+  'session:stream:end',
   'flow:pause',
   'flow:resume',
   'flow:exit',
@@ -320,6 +329,14 @@ export const appRouter = router({
             sessionId: sess?.['id'] as string,
             message: String(data['message'] ?? ''),
           } satisfies BusEvent;
+        } else if (
+          eventName === 'session:stream:start' ||
+          eventName === 'session:stream:delta' ||
+          eventName === 'session:stream:end'
+        ) {
+          if (data['userId'] !== userId) continue;
+          if (sessionId && data['sessionId'] !== sessionId) continue;
+          yield { type: eventName, ...data } as BusEvent;
         } else if (
           eventName === 'flow:pause' ||
           eventName === 'flow:resume' ||

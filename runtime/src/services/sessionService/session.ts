@@ -20,6 +20,8 @@ import type { Skills } from '../../skills/index.js';
 import type { SandboxService } from '../sandbox/index.js';
 import type { RuntimeUser } from '../userService/index.js';
 import { AssistantTextMessage, ToolResultMessage, UserMessage } from '../../utils/message.js';
+import { randomUUID } from 'node:crypto';
+import type { LlmStreamEvent } from '../../utils/callLlm.js';
 
 /**
  * Session — a live, self-updating object backed by the SessionDataRepository.
@@ -603,6 +605,35 @@ export class Session {
     await this.addMessages([{ message: new AssistantTextMessage({ text: message }).toJSON() }]);
     this._emitMessage(user, message);
     return this;
+  }
+
+  /**
+   * Consume an LLM stream and re-emit text/reasoning deltas onto the bus as
+   * `session:stream:start` / `session:stream:delta` / `session:stream:end`.
+   * Each call gets a fresh streamId so the UI can bind chunks to a single
+   * in-progress assistant message. Fire-and-forget for the bus side: errors
+   * iterating the stream are swallowed (the LLM call itself surfaces them via finalResult).
+   */
+  async streamToBus(stream: AsyncIterable<LlmStreamEvent>): Promise<void> {
+    const streamId = randomUUID();
+    const bus = this.app.infra.bus;
+    const sessionId = this.sessionData.id;
+    const userId = this.sessionData.userId;
+
+    bus.emit('session:stream:start', { sessionId, userId, streamId });
+    try {
+      for await (const ev of stream) {
+        if (ev.type === 'text-delta') {
+          bus.emit('session:stream:delta', { sessionId, userId, streamId, kind: 'text', text: ev.text });
+        } else if (ev.type === 'reasoning-delta') {
+          bus.emit('session:stream:delta', { sessionId, userId, streamId, kind: 'reasoning', text: ev.text });
+        }
+      }
+    } catch {
+      // ignore — finalResult promise carries the real error
+    } finally {
+      bus.emit('session:stream:end', { sessionId, userId, streamId });
+    }
   }
 
   /** Emit session:message to listeners without adding it to message history. */
