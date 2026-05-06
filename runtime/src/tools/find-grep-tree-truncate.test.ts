@@ -251,7 +251,7 @@ describe('tree tool', () => {
     const result = await tool.execute(null as any, null, { path: 'tree-large' }, ctx);
 
     expect(result.data.content).toMatch(/exceeds filelimit|limit reached/);
-    expect(Buffer.byteLength(result.data.content, 'utf-8')).toBeLessThanOrEqual(DEFAULT_MAX_BYTES + 200);
+    expect(Buffer.byteLength(result.data.content as string, 'utf-8')).toBeLessThanOrEqual(DEFAULT_MAX_BYTES + 200);
   });
 
   it('runTreeCommand returns tree output', async () => {
@@ -333,7 +333,7 @@ describe('find tool', () => {
     expect(result.error).toBeUndefined();
     expect(result.data.content).toContain('limit reached');
     // Should have at most 5 lines of results
-    const lines = result.data.content.split('\n').filter((l: string) => l.includes('.txt'));
+    const lines = (result.data.content as string).split('\n').filter((l: string) => l.includes('.txt'));
     expect(lines.length).toBeLessThanOrEqual(5);
   });
 
